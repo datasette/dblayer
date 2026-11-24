@@ -53,6 +53,13 @@ jobs:
           key: wasi-sdk-34-${{ runner.os }}-${{ runner.arch }}
       - name: Build the SQLite WebAssembly module
         run: make -C cworker wasm
+      # SQLite-WASM in a Node.js process (nodeworker/, sqlite-nodeworker):
+      # the pinned @sqlite.org/sqlite-wasm package, no build step.
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - name: Install the Node worker's npm packages
+        run: npm ci --prefix nodeworker
       # The demo group (starlette, httpx, ...) runs tests/demo against every
       # backend, PostgreSQL included; without it those tests skip.
       - name: Run tests with every optional backend and the demo app installed

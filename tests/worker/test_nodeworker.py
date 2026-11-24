@@ -16,6 +16,7 @@ import os
 import sqlite3
 import struct
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -471,6 +472,33 @@ def test_random_payloads_never_crash_the_worker(codec, tmp_path):
         if code != 0:
             failures.append((i, code, err.decode(errors="replace")[-1500:]))
     assert not failures, failures[:3]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_AS is enforced only on Linux")
+@pytest.mark.parametrize("gb", [1, 2, 4, 8, 16, 32])
+def test_rlimit_as_against_v8(tmp_path, gb):
+    """Why the Node worker does not set RLIMIT_AS: V8 reserves large
+    virtual regions (a WebAssembly memory reserves its whole 32-bit range
+    plus guard pages, per instance; every thread gets a heap reservation).
+    Start the worker under an address-space limit and run one query: report
+    which limits it survives."""
+    import resource
+
+    def limit() -> None:
+        resource.setrlimit(resource.RLIMIT_AS, (gb << 30, gb << 30))
+
+    p = subprocess.Popen([find_node(), find_script()], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, preexec_fn=limit)
+    msgs = [
+        {"type": "hello", "protocol": 1, "codecs": ["json"], "id": 1},
+        {"type": "open", "path": str(tmp_path / "r.db"), "mode": "write", "id": 2},
+        {"type": "execute", "sql": "select 40 + 2", "id": 3},
+    ]
+    data = b"".join(struct.pack(">I", len(b)) + b for b in (json.dumps(m).encode() for m in msgs))
+    out, err = p.communicate(data, timeout=60)
+    ok = b"42" in out
+    print(f"\n[nodeworker] RLIMIT_AS {gb} GB: {'query ran' if ok else 'failed'} (exit {p.returncode}); "
+          f"{err.decode(errors='replace').strip().splitlines()[-1:] if not ok else ''}")
 
 
 async def test_errors_name_the_query(tmp_path):
