@@ -138,9 +138,10 @@ class Dialect:
     native_alter: frozenset[str] = frozenset({"rename", "drop", "types"})
     """Which ``alter_table`` changes this backend does with native ``ALTER``
     statements (``rename_column_sql``, ``drop_column_sql``,
-    ``alter_column_type_sql``). Any other requested change (always including
-    ``pk``) is done by rebuilding the table, the way sqlite-utils
-    ``transform`` does. Native changes are applied first, then the rebuild."""
+    ``alter_column_type_sql`` and, for ``"pk"``, ``set_primary_key_sql``).
+    Any other requested change is done by rebuilding the table, the way
+    sqlite-utils ``transform`` does. Native changes are applied first, then
+    the rebuild."""
 
     rowid_column: str | None = None
     """Name of the implicit row id (``"rowid"`` on SQLite), used to address
@@ -253,6 +254,14 @@ class Dialect:
             f"ALTER TABLE {self.quote_identifier(table)} ALTER COLUMN "
             f"{self.quote_identifier(column)} TYPE {self.native_type(type_name)}"
         )
+
+    def set_primary_key_sql(
+        self, table: str, current_constraint: str | None, pk: Sequence[str]
+    ) -> list[str]:
+        """Statements that replace ``table``'s primary key (named
+        ``current_constraint``, or none) with ``pk`` (empty: no primary key).
+        Only called when ``"pk"`` is in ``native_alter``."""
+        raise NotImplementedError
 
     def create_index_sql(
         self,

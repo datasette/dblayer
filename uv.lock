@@ -91,6 +91,7 @@ postgres = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "asyncpg" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -105,6 +106,7 @@ provides-extras = ["postgres", "duckdb", "msgpack"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "asyncpg" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
 ]

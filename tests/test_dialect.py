@@ -6,10 +6,11 @@ import pytest
 
 from dblayer import IntegrityError, QueryError, QueryInterrupted
 from dblayer.backends.base import Dialect
+from dblayer.backends.postgres import PostgresDialect
 from dblayer.backends.sqlite import SqliteDialect
 
 
-@pytest.fixture(params=[Dialect(), SqliteDialect()], ids=["generic", "sqlite"])
+@pytest.fixture(params=[Dialect(), SqliteDialect(), PostgresDialect()], ids=["generic", "sqlite", "postgres"])
 def dialect(request):
     return request.param
 
@@ -140,3 +141,54 @@ def test_sqlite_create_table_sql_runs():
     assert fk == [("p", "pid", "id", "CASCADE")]
     assert SqliteDialect().native_alter == frozenset({"rename"})
     assert Dialect().native_alter >= {"rename", "drop", "types"}
+
+
+def test_postgres_types_and_literals():
+    d = PostgresDialect()
+    assert d.native_type("integer") == "BIGINT"
+    assert d.native_type("float") == "DOUBLE PRECISION"
+    assert d.native_type("blob") == "BYTEA"
+    assert d.native_type("timestamptz") == "timestamptz"
+    # Portable columns have no boolean type: booleans render as numbers.
+    assert d.literal(True) == "1" and d.literal(False) == "0"
+    assert d.literal(b"\x01\xff") == "'\\x01ff'::bytea"
+    assert d.native_alter == frozenset({"rename", "drop", "types", "pk"})
+    assert d.rowid_column is None
+
+
+def test_postgres_alter_sql():
+    d = PostgresDialect()
+    assert d.alter_column_type_sql("t", "a", "integer") == (
+        'ALTER TABLE "t" ALTER COLUMN "a" TYPE BIGINT USING "a"::BIGINT'
+    )
+    assert d.set_primary_key_sql("t", "t_pkey", ["a", "b"]) == [
+        'ALTER TABLE "t" DROP CONSTRAINT "t_pkey", ADD PRIMARY KEY ("a", "b")'
+    ]
+    assert d.set_primary_key_sql("t", None, ["a"]) == ['ALTER TABLE "t" ADD PRIMARY KEY ("a")']
+    assert d.set_primary_key_sql("t", "t_pkey", []) == ['ALTER TABLE "t" DROP CONSTRAINT "t_pkey"']
+    assert d.set_primary_key_sql("t", None, []) == []
+    rename, constraints = d.swap_rename_sql("_dblayer_import_1_ab", "t")
+    assert rename == 'ALTER TABLE "_dblayer_import_1_ab" RENAME TO "t"'
+    assert constraints.startswith("DO $dblayer$") and "starts_with(conname, '_dblayer_import_1_ab')" in constraints
+
+
+def test_postgres_map_exception():
+    asyncpg = pytest.importorskip("asyncpg")
+    from dblayer import ResourceLimitExceeded, TransactionExpired, WriteConflict
+
+    d = PostgresDialect()
+    e = d.map_exception(asyncpg.exceptions.UniqueViolationError("dup"))
+    assert isinstance(e, IntegrityError) and e.code == "23505"
+    assert isinstance(d.map_exception(asyncpg.exceptions.NotNullViolationError("n")), IntegrityError)
+    assert isinstance(d.map_exception(asyncpg.exceptions.QueryCanceledError("c")), QueryInterrupted)
+    assert isinstance(d.map_exception(asyncpg.exceptions.SerializationError("s")), WriteConflict)
+    assert isinstance(d.map_exception(asyncpg.exceptions.DeadlockDetectedError("d")), WriteConflict)
+    assert isinstance(
+        d.map_exception(asyncpg.exceptions.IdleInTransactionSessionTimeoutError("i")),
+        TransactionExpired,
+    )
+    assert isinstance(d.map_exception(asyncpg.exceptions.OutOfMemoryError("m")), ResourceLimitExceeded)
+    e = d.map_exception(asyncpg.exceptions.UndefinedTableError("no t"))
+    assert type(e) is QueryError and e.code == "42P01"
+    assert isinstance(d.map_exception(TimeoutError()), QueryInterrupted)
+    assert d.map_exception(ValueError("x")) is None
