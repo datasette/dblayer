@@ -580,3 +580,83 @@ Subagent-reported. Timings were taken at load 9.5 to 14 (Spotlight was indexing)
 
 - The DuckDB worker's `RLIMIT_AS` test had not finished on Linux CI when the subagent stopped; DuckDB under an address-space limit may fail at import.
 - Pool bookkeeping when a pooled process is killed mid-placement is only exercised indirectly.
+
+## 2026-11-24: experimental C worker for SQLite
+
+Subagent-reported. Benchmarks were taken at load about 5.5 (Spotlight indexing) and are provisional. I built the binary myself against the system SQLite and used it through the demo: the featured "SQLite, in a C worker process" database browses and answers queries.
+
+### Built
+
+- `cworker/`: about 4,000 lines of C11 (`worker.c`, `codec.c`, `schema.c`, `sqlutil.c`), speaking `docs/worker-protocol.md` with both JSON and MessagePack. Build with `make -C cworker` (compiles in a pinned SQLite 3.53.1 amalgamation, downloaded once and checked against a SHA-256) or `make -C cworker SQLITE=system`.
+- `dblayer/backends/sqlite_cworker.py`: `SqliteCWorker(path)`, registered as `sqlite-cworker`. Conformance and fault tests: 819 passed, 22 skipped, the same skips as the Python worker.
+- A differential test against in-process SQLite, malformed-frame tests and a seeded fuzz of the decoders.
+- CI builds it on Linux and macOS and runs its tests under AddressSanitizer and UBSan. Fifteen commits, `e047fd8` to `848628e`.
+
+### Found
+
+| Measure | In-process | Python worker | C worker |
+| --- | --- | --- | --- |
+| Open to first result, new database | 0.23 ms | 60.9 ms | 3.4 ms |
+| One-row read, median | 64 µs | about 200 µs | 53 µs |
+| Per row, 100,000-row read (MessagePack) | 0.43 µs | 0.84 µs | 0.47 µs |
+| One-row update | 250 µs | about 360 µs | about 230 µs |
+| Idle worker resident memory | n/a | 38 MB | 3 MB |
+| 1,000-database scale test | n/a | 232 requests/s | 633 requests/s |
+
+- **A C worker starts in about the time it takes to spawn any process.** Spawning `/usr/bin/true` takes 1.9 ms; the C worker reaches `hello` in 2.7 ms and its first result in 2.9 ms. The Python worker's 56 ms to `hello` is 9 to 14 ms of interpreter and the rest imports.
+- **The C worker's round trip beats in-process SQLite** (53 µs against 64 µs), because the in-process backend pays for a hop to an executor thread on every call. That says the in-process backend's thread hop is now the larger cost for small queries.
+- **The sanitizers earned their place.** Linux CI found two real bugs macOS missed: `qsort(NULL, 0)` on tables with no indexes (undefined behaviour under glibc), and a heap use-after-free in the watchdog at shutdown, hit by the fuzz test. Both fixed.
+- **Apple's system SQLite ignores `PRAGMA hard_heap_limit`** (it reads back 0) and its header does not declare `sqlite3_hard_heap_limit64`. A heap limit is not enforceable against that library. This is why the default build compiles the amalgamation in.
+- **The protocol document was not yet a specification.** Writing a second implementation found: JSON escaping of dicts that look like codec wrappers is incomplete inside lists, `params_seq` and batch statements; `hello` could not say what a worker supports (now `implementation` and `ops`); capabilities are derived from the parent's SQLite version, not the worker's; and several behaviours are defined only by what CPython's `sqlite3` module does (error class names, `rowcount` and `lastrowid` rules, the 256-row batching of the result-size check).
+
+### Decision
+
+- **Named operations run in the parent** on this backend, with round trips, since they are Python functions. The worker says so in `hello`, so no wasted message is sent. Python init hooks raise `NotSupported` at construction; loading SQLite extensions by path is the C equivalent, off by default.
+- **Recommendation from the subagent: keep it, as experimental.** It makes a worker per database affordable. The cost is about 4,000 lines of C to keep in step with CPython's `sqlite3` behaviour, and a permanent need for sanitizer CI on Linux.
+
+### Idea: to discuss
+
+- **Pre-started C spares cost 3 MB each,** against 38 MB for Python spares.
+- **Make the C worker the default for the demo fleet** and for cold fleets in general.
+- **Remove the executor hop for in-process SQLite reads that are known to be fast,** or accept that a C worker is the faster path.
+- **Put the CPython-derived semantics into the protocol document,** and pass engine capabilities in `hello`.
+- **A nightly, longer fuzz run.**
+
+### Unverified or fragile
+
+- One test fails only under ASan on Linux: `test_cap_bounds_descriptors_under_load[sqlite-cworker]` ends with fewer descriptors than its baseline. Not understood.
+- The sanitizer job leaves out the `RLIMIT_AS` tests after its first run hung for 40 minutes; the cause (a guess: `RLIMIT_AS` against ASan's shadow memory) is unconfirmed.
+- The amalgamation checksum is trust-on-first-download.
+
+### Upstream suggestions
+
+- **Datasette, unverified:** on macOS, a Python linked against Apple's system SQLite cannot enforce a heap limit, because that library ignores the pragma. Worth a line in any future documentation of memory limits.
+
+## 2026-11-24: timing-dependent tests stabilised; two real races found
+
+Subagent-reported.
+
+### Found
+
+- **A cancel or time limit could be lost, on DuckDB and on in-process SQLite.** Both engines drop an interrupt that arrives before the statement has really started. A task cancelled just after its statement reached the thread left the statement running, forever for an unbounded query. Reproduced: SQLite hung at the 17th of 1,000 random-point cancels; DuckDB within about 7. On DuckDB the stray interrupt could also land on the read wrapper's ROLLBACK and leave an aborted transaction on a pooled cursor. Fixed in both backends: a statement refuses to start once cancelled, and the cancel re-interrupts every 5 ms until the call returns. After the fix, 1,000 of 1,000 (SQLite) and 500 of 500 (DuckDB) return. DuckDB's time-limit overshoot fell from about 29 ms to about 5 ms.
+- **The DuckDB stream path still has the single-interrupt window.** Not yet fixed.
+- **The `sqlite-worker` backend can hang after a cancellation under heavy load** ("WorkerCrashed exception in shielded future", then later tests in the same process hang). Not yet investigated.
+- **`test_max_rows_stops_an_unbounded_query[duckdb-worker]` failed once on Linux 3.14 in CI:** the worker did not stop an unbounded recursive query within 5 s and was killed. Cause not found. It may be the same lost-interrupt race inside the worker.
+- **Measured latencies for the spec's promises, on a quiet machine:** cancel to write slot released 1.1 ms median (spec 50 ms); DuckDB time-limit overshoot 4.4 ms (spec 100 ms); deadline to other writer proceeding 2.3 ms. With 18 CPU burners and two suite copies running they stayed under 50 ms at worst.
+- **CPU burners ran from about 04:52 to 06:34 UTC on 2026-11-24** (20:52 to 22:34 local on the 23rd). Any timing in these notes taken in that window is unreliable, which includes the psycopg benchmark and the first worker overhead numbers.
+
+### Built
+
+- Tests now wait for the real event, move a hand-driven clock (`IdleClock`), or count (round trips, loop iterations) instead of asserting on elapsed time.
+- `helpers.check_latency`: always asserts a 10 s functional bound, prints the measured figure, and asserts the spec's tight bound only when `DBLAYER_STRICT_TIMING=1`. Documented in the README.
+- Five concurrent full-suite runs all passed: 3,082 passed, 88 skipped each.
+
+### Idea: to discuss
+
+- **Make `Backend.interrupt()`'s contract explicit:** it is a no-op when no statement is running, so callers must repeat it until the call returns.
+- **A distinct "sleeping" state,** or a public way to await the end of a sleep; tests currently reach into a private attribute.
+
+### Upstream suggestions
+
+- **Datasette and sqlite-utils:** any code that stops a query by calling `conn.interrupt()` from another thread has the lost-interrupt window if the call arrives just before the statement steps. The fix is to repeat the interrupt until the query returns, or to set a flag the progress handler checks. Verified here on Python's `sqlite3` with a stress script (hung at the 17th of 1,000 cancels); not checked against Datasette's own code, whose time limit uses the progress handler and so may not be affected. Relevant to Datasette issue 1270, which proposes moving to `interrupt()`.
+- **DuckDB itself:** `interrupt()` on an idle connection is silently dropped. Verified on 2.0.1 with a minimal script.
