@@ -126,14 +126,66 @@ puts no `\n` after the last row; this format does, as JSON Lines asks.)
 
 ## Parity
 
-To be filled in from the tests (`tests/test_export_parity.py`): for each
-native backend and format, one of
+Per native backend and format, tested in `tests/test_export_parity.py`
+(400 seeded random rows with the edge values: subnormal and huge floats,
+`-0.0`, 2^53 + 1, 64-bit extremes, empty strings, NUL, control
+characters, CR/LF/tab/quote/comma, non-BMP text, empty and random blobs,
+a SQLite column whose type changes per row, repeated column names; plus
+`max_rows` 0, 1, n-1, n, n+1):
 
-- **identical**: the native bytes equal the fallback's bytes for the same
-  rows, tested byte for byte;
-- **parse-equal**: both parse (CSV/TSV with `csv.reader`, JSON with
-  `json.loads`) to equal values after a type-aware comparison of cells
-  (floats compared as floats, timestamps as parsed ISO 8601), tested that
-  way;
-- **fallback**: the backend does not produce this natively; the core
-  serialises in Python.
+- **identical**: native bytes equal the fallback's bytes, compared byte
+  for byte;
+- **parse-equal**: both parse (`csv.reader`, `json.loads`) to the same
+  values, cells compared by type (numbers as numbers, timestamps as
+  parsed ISO 8601);
+- **fallback**: not produced natively; the core serialises in Python;
+- **unspecified**: types the definition leaves to the engine.
+
+| Values | C SQLite worker | DuckDB (in-process) | PostgreSQL (psycopg) |
+| --- | --- | --- | --- |
+| integers, floats, text, blobs, NULL (CSV, TSV, every JSON shape, NDJSON) | identical, on all four transports and both codecs | identical | identical (text cannot hold NUL on PostgreSQL) |
+| booleans | (none in SQLite) | identical | identical |
+| HUGEINT / big numerics as integers | (none) | identical | - |
+| date, time, timestamp, timestamp with zone, decimal / numeric, UUID | (stored as text or numbers in SQLite: identical) | parse-equal: DuckDB writes `03:04:05.5` and `+00`, Python `03:04:05.500000` and `+00:00` | parse-equal, as DuckDB |
+| FLOAT / REAL (32-bit) | (none) | parse-equal | identical (PostgreSQL's float4 text is what psycopg turns into the Python float) |
+| lists, structs, maps, arrays, JSON columns | (none) | unspecified (both valid JSON; equal after parsing in the tests) | unspecified (equal after parsing in the tests) |
+| statements that cannot be a subquery (PRAGMA, CALL, SHOW, EXPLAIN) | native | fallback, inside the native source | fallback, inside the native source |
+| invalid UTF-8 text | the same error | (cannot occur) | (cannot occur) |
+
+What it took to get there, per engine:
+
+- **C worker:** nothing beyond writing the definition in C. Python's float
+  `repr()` needs the shortest of 15, 16 or 17 digits re-laid-out; for
+  subnormals 15 digits are not enough to find the shortest form (first
+  parity failure: `4.94065645841247e-324` against `5e-324`), so those
+  search from one digit up.
+- **DuckDB:** its `COPY ... TO` writers are not usable (file access is
+  locked off; they also write blobs raw, `nan`, LF line ends and bare
+  `NaN` in JSON). The backend wraps the query and builds every line in
+  SQL instead. DuckDB's `DOUBLE` to `VARCHAR` cast is already Python's
+  `repr()` except that it drops the sign of `-0.0`; `to_json` of a string
+  escapes control characters with upper-case hex (`\u001F`), fixed with
+  a replace chain on the nine escapes that contain a letter. `CASE WHEN b
+  THEN 'true' ELSE 'false'` turned NULL into `false` until written with
+  `WHEN NOT b`.
+- **PostgreSQL:** `COPY (projection) TO STDOUT (FORMAT csv)` gives the
+  definition's quoting and NULL rule as it is; the projection turns
+  booleans into `true`/`false`, bytea into base64 (with PostgreSQL's line
+  breaks removed) and re-lays-out floats (PostgreSQL prints the same
+  shortest digits but writes `1` for 1.0, `-0` for -0.0, and switches to
+  an exponent at 1e15 for float8 and 1e7 for float4, Python at 1e16).
+  Rows end in LF, rewritten to CRLF per row in Python (psycopg hands over
+  one memoryview per row anyway). JSON rows are built in SQL and sent
+  through COPY's CSV mode with control characters as quote and delimiter,
+  so nothing is escaped twice; PostgreSQL 18.3 has no `FORMAT json` for
+  COPY. COPY takes no bind parameters, so parameters are inlined as
+  literals.
+
+Contract recommendation: a backend that claims a format natively must be
+**identical** for the portable value types (integers, floats, text,
+blobs, NULL, booleans) and **parse-equal** for dates, times, timestamps,
+decimals and UUIDs; nested types stay unspecified.
+
+Backends with no native export use the fallback for everything: in-process
+SQLite, the Python SQLite worker, `sqlite-cpool`, `sqlite-wasm`, apsw,
+the DuckDB workers and PostgreSQL on asyncpg.

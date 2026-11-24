@@ -102,6 +102,7 @@ so a statement can never silently run outside its transaction.
 | `batch` | `statements` (`[[sql, params], ...]`), `time_limit_ms`, `max_rows`, `tx` | `result`: one result per statement |
 | `stream` | `sql`, `params`, `chunk_rows`, `credit`, `time_limit_ms`, `max_result_bytes`, `tx` | up to `credit` frames `{"id", "rows"}` (the first also has `columns`), then the worker pauses with its cursor open; `{"id", "end": true}` when done |
 | `more` | `stream` (the stream's id), `credit` | none; grants `credit` more `rows` frames |
+| `export` (C worker only) | `sql`, `params`, `encoding`, `transport`, `chunk_bytes`, `credit`, `max_rows`, `time_limit_ms`, `data_path`, `handoff_path`, `tx` | see "Export" below |
 | `begin` | `mode` (`write`/`read`), `deadline_ms` | `ok` with `tx` |
 | `commit`, `rollback` | `tx` | `ok` (`rollback` of an expired transaction: `ok` with `expired: true`) |
 | `op` | `name`, `args` (as `normalise_args` produces them), `tx` | `result`: `rowcount`, `table_created`, `columns_added` |
@@ -290,6 +291,32 @@ C++17 program on libduckdb 2.0.1's C API (`duckdb-cpp-worker/README.md`),
   DuckDB (`tests/worker/test_duckdb_cppworker.py` checks them
   differentially). With `max_rows`, a SELECT runs as `SELECT * FROM (sql)
   LIMIT max_rows + 1` when that keeps its column names.
+
+## Export (C worker only)
+
+`export` serialises a read's rows in the worker, as
+`docs/export-formats.md` defines them (`encoding`: `csv`, `tsv`,
+`json-objects`, `json-arrays`, `ndjson`; row bytes only, the parent
+writes the header row or JSON envelope). Code: `cworker/src/export.c`;
+parent side `dblayer/backends/_cworker_export.py` and
+`cworker_handoff.py`. `hello` says what the worker can do:
+`"export": {"formats": ["csv", "tsv", "json"], "transports": [...]}`.
+
+| `transport` | Data | Control replies |
+| --- | --- | --- |
+| `frames` (default) | codec frames `{"id", "data": <bin>, "rows": 1}` (`{"$b": base64}` under JSON), up to `credit` of them, then a pause until `more`, as for `stream` | first `{"id", "columns"}`; last `{"id", "end": true, "row_count", "truncated"}` |
+| `raw` | frames whose payload is `0x00`, the request id (8 bytes, big endian) and the bytes; never decoded by the codec; the same credit rule | as `frames` |
+| `fifo` | written to the named pipe `data_path`, which the parent created and holds open (read end, plus a write end of its own so the pipe never reports end of file); starts with a 4-byte length and a JSON array of column names. Writes are at most 8 KB: on macOS a blocking write of 16 KB or more to a FIFO read through kqueue can stall for good (`scripts/macos_fifo_stall.py`) | one reply, at the end: `result` with `row_count`, `truncated`; the worker closes the pipe before sending it |
+| `socket` | the worker connects to the Unix socket `handoff_path`, receives one descriptor (`SCM_RIGHTS`: the HTTP client's connection) and writes the rows to it as HTTP/1.1 chunks, never the terminating chunk; it leaves `O_NONBLOCK` alone (it belongs to the open file description it shares with the parent) and waits out `EAGAIN` with `poll`, checking for `cancel` every 100 ms; `EPIPE` is an error, not a signal | `{"id", "columns", "rows": 0}` before it connects; `{"id", "end": true, "row_count", "truncated", "bytes"}` after it has closed its copy of the descriptor. The parent waits for the end with a `more` the worker ignores, registered before it hands the descriptor over |
+
+`cancel` of a paused `frames`/`raw` export ends it with `{"end": true,
+"cancelled": true}` as for a stream; a running one (any transport) stops
+between rows (or while waiting to write) with `QueryInterrupted`. An error
+after data was sent is an error reply like any other; the bytes already
+delivered stay delivered. The export runs on the connection's own
+statement machinery (time limit through the progress handler, a read
+connection opened read-only), and a statement that is not read-only is
+refused before it steps.
 
 ## Limits, kills and deadlines
 
