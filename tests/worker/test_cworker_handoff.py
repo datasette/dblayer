@@ -12,14 +12,15 @@ import socket
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 
-from dblayer import Database, QueryError, QueryInterrupted
-from dblayer.backends.cworker_handoff import handoff_export
-from dblayer.core.export import ExportSpec
+httpx = pytest.importorskip("httpx")  # the demo dependency group; CI jobs without it skip this file
 
-from ..conftest import _cworker_available  # type: ignore[attr-defined]
+from dblayer import Database, QueryError, QueryInterrupted  # noqa: E402
+from dblayer.backends.cworker_handoff import handoff_export  # noqa: E402
+from dblayer.core.export import ExportSpec  # noqa: E402
+
+from ..conftest import _cworker_available  # type: ignore[attr-defined]  # noqa: E402
 
 pytestmark = pytest.mark.skipif(bool(_cworker_available()), reason=str(_cworker_available()))
 
