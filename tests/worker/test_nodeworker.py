@@ -103,6 +103,7 @@ async def test_hello_and_round_trip(tmp_path, codec):
         assert (await db.execute("select id, v from t")).rows == [(1, b"\x00\xff")]
         hello = db._pool._idle_read[0].conn.process.hello  # type: ignore[union-attr]
         assert hello["implementation"] == "node" and hello["ops"] is False
+        assert hello["concurrent"] is True and hello["guard"] is True
         assert hello["codec"] == codec and hello["sqlite_version"].startswith("3.")
     finally:
         await db.close()

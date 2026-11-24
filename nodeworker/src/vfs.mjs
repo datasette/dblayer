@@ -10,7 +10,7 @@
 // each other correctly, and nothing outside the process sees them. Hence
 // the backend's rule that one Node process owns a database file while it
 // is open (see dblayer/backends/sqlite_nodeworker.py), enforced by the
-// main thread's cross-process guard (guard.mjs): hence `park` below.
+// main thread's cross-process guard (guard.mjs): hence `keepMainFds`.
 //
 // No shared memory for WAL (xShm*), so WAL mode is unavailable:
 // `journal_mode=wal` leaves the database in rollback-journal mode, and a
@@ -22,7 +22,13 @@ import nodePath from 'node:path';
 import { randomFillSync } from 'node:crypto';
 import { openHandle, closeHandle, lock as lockH, unlock as unlockH, reserved, dump } from './locks.mjs';
 
-export function installNodeVfs(sqlite3, { name = 'nodefs', lockTable, threadId, park = null }) {
+export function installNodeVfs(sqlite3, { name = 'nodefs', lockTable, threadId, keepMainFds = false }) {
+  // keepMainFds: closing any descriptor of a file drops every fcntl lock
+  // the process holds on it, the main thread's guard among them
+  // (guard.mjs). So a main database's descriptor is kept, and reused by the
+  // next open of that file on this thread; Node closes it when the thread
+  // exits, which the main thread allows only once the guard is released.
+  const kept = new Map(); // resolved path -> [{ fd, rw }]
   const { capi, wasm } = sqlite3;
   const C = capi;
   const mem = () => wasm.heap8u();
@@ -52,11 +58,10 @@ export function installNodeVfs(sqlite3, { name = 'nodefs', lockTable, threadId, 
       if (!f) return 0;
       files.delete(pFile);
       if (f.lock) closeHandle(f.lock);
-      if (f.lock && park) {
-        // a main database: closing any descriptor of it would drop the
-        // process's fcntl locks, the cross-process guard among them
-        // (guard.mjs), so the main thread closes it once that is released
-        park(f.path, f.fd);
+      if (f.lock && keepMainFds) {
+        const key = nodePath.resolve(f.path);
+        if (!kept.has(key)) kept.set(key, []);
+        kept.get(key).push({ fd: f.fd, rw: f.rw });
         return 0;
       }
       try {
@@ -172,8 +177,15 @@ export function installNodeVfs(sqlite3, { name = 'nodefs', lockTable, threadId, 
       const create = !!(flags & C.SQLITE_OPEN_CREATE);
       let fd;
       let outFlags = flags;
+      const reuse = flags & C.SQLITE_OPEN_MAIN_DB ? kept.get(nodePath.resolve(path)) : undefined;
+      const rwWanted = !!(flags & C.SQLITE_OPEN_READWRITE);
+      const k = reuse ? reuse.findIndex((e) => e.rw || !rwWanted) : -1;
       try {
-        if (flags & C.SQLITE_OPEN_READWRITE) {
+        if (k >= 0) {
+          const e = reuse.splice(k, 1)[0];
+          fd = e.fd;
+          if (rwWanted && !e.rw) outFlags = (flags & ~(C.SQLITE_OPEN_READWRITE | C.SQLITE_OPEN_CREATE)) | C.SQLITE_OPEN_READONLY;
+        } else if (flags & C.SQLITE_OPEN_READWRITE) {
           let oflags = fs.constants.O_RDWR;
           if (create) oflags |= fs.constants.O_CREAT;
           if (flags & C.SQLITE_OPEN_EXCLUSIVE) oflags |= fs.constants.O_EXCL;
@@ -196,12 +208,12 @@ export function installNodeVfs(sqlite3, { name = 'nodefs', lockTable, threadId, 
       if (flags & C.SQLITE_OPEN_MAIN_DB) {
         handle = openHandle(lockTable, nodePath.resolve(path), threadId);
         if (handle === null) {
-          fs.closeSync(fd);
+          if (!keepMainFds) fs.closeSync(fd);
           console.error('dblayer-nodeworker: the lock table is full');
           return C.SQLITE_CANTOPEN;
         }
       }
-      const f = { fd, path, deleteOnClose, syncDir: create && isJournal, lock: handle };
+      const f = { fd, path, deleteOnClose, syncDir: create && isJournal, lock: handle, rw: !(outFlags & C.SQLITE_OPEN_READONLY) };
       files.set(pFile, f);
       wasm.poke32(pFile, io.pointer);
       if (pOutFlags) wasm.poke32(pOutFlags, outFlags);

@@ -208,8 +208,10 @@ async def test_two_node_workers_in_two_processes(tmp_path):
 
 def test_closing_a_connection_keeps_the_guard(tmp_path):
     """POSIX drops every fcntl lock of a process when it closes any
-    descriptor of the file, so the VFS parks a closed connection's
-    descriptor until the guard is released. Raw protocol: two connections,
+    descriptor of the file, and Node closes a worker thread's descriptors
+    when the thread exits; so while the guard is held the VFS keeps a closed
+    connection's descriptor and the main thread keeps its thread for the
+    next connection. Raw protocol: two connections,
     close one, the guard still holds; close the other, the file is free."""
     path = str(tmp_path / "g.db")
     p = subprocess.Popen([find_node(), find_script()], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -238,7 +240,13 @@ def test_closing_a_connection_keeps_the_guard(tmp_path):
         assert call({"type": "execute", "conn": r, "sql": "select 1"})["result"]["rows"] == [[1]]
         assert native_locked()
         assert call({"type": "close", "conn": r}).get("ok")
-        assert native_locked()  # the read connection's descriptor was parked, not closed
+        time.sleep(0.3)  # long enough for a thread to exit, had it been let go
+        assert native_locked()  # its descriptor and its thread were kept
+        for _ in range(3):  # a new connection reuses the kept thread and descriptor
+            r = call({"type": "open", "path": path, "mode": "read"})["conn"]
+            assert call({"type": "execute", "conn": r, "sql": "select 2"})["result"]["rows"] == [[2]]
+            assert call({"type": "close", "conn": r}).get("ok")
+            assert native_locked()
         assert call({"type": "close", "conn": w}).get("ok")
         for _ in range(100):  # the main thread releases it once the executor is gone
             if not native_locked():

@@ -67,7 +67,7 @@ const C = capi;
 const vfs = installNodeVfs(sqlite3, {
   lockTable,
   threadId,
-  park: (path, fd) => parentPort.postMessage({ park: { path, fd } }),
+  keepMainFds: workerData.keepMainFds,
 });
 const T_READY = now();
 

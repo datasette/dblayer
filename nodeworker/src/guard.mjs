@@ -15,10 +15,11 @@
 // it never reads or writes data.
 //
 // POSIX drops every lock a process holds on a file when the process closes
-// *any* descriptor of it. So while a guard is held, the VFS does not close
-// main-database descriptors: it parks them here (`park`), and they are
-// closed after the guard is released, when the last connection on the
-// file has closed.
+// *any* descriptor of it, and Node closes the descriptors a worker thread
+// opened when the thread exits. So while a guard is held the VFS keeps
+// main-database descriptors open (reusing them for the next open on the
+// thread) and the main thread keeps retired executor threads alive for the
+// next connection (main.mjs, Executor.retire).
 //
 // No guard: an immutable open, a database in WAL mode (the VFS cannot open
 // one anyway), a file that does not exist and may not be created, or
@@ -44,7 +45,7 @@ function sqliteModule() {
   return DatabaseSync;
 }
 
-/** path -> { db, holders: Set, parked: number[], mode } */
+/** path -> { db, holders: Set, mode } */
 const guards = new Map();
 
 const isBusy = (e) => /SQLITE_BUSY|database is locked/i.test(`${e?.code} ${e?.errcode} ${e?.errstr} ${e?.message}`);
@@ -60,7 +61,7 @@ function isWal(path) {
     return false;
   } finally {
     // no guard on this file yet (we are deciding whether to take one), so
-    // closing this descriptor drops nothing
+    // closing this descriptor drops nothing of ours
     if (fd !== undefined) fs.closeSync(fd);
   }
 }
@@ -110,7 +111,7 @@ export async function acquire(path, cfg) {
     if (guards.has(key)) return null; // taken by an open that raced this one
     try {
       const { db, mode } = tryTake(key, readOnly);
-      guards.set(key, { db, mode, holders: new Set(), parked: [] });
+      guards.set(key, { db, mode, holders: new Set() });
       return null;
     } catch (e) {
       if (!isBusy(e)) {
@@ -137,12 +138,14 @@ export function hold(path, holder) {
   if (g) g.holders.add(holder);
 }
 
-/** `holder` is gone: release every guard it was the last holder of. */
+/** `holder` is gone: release every guard it was the last holder of.
+ * Returns whether any guard is still held. */
 export function drop(holder) {
   for (const [key, g] of guards) {
     if (!g.holders.delete(holder) || g.holders.size > 0) continue;
     release(key, g);
   }
+  return guards.size > 0;
 }
 
 function release(key, g) {
@@ -157,25 +160,9 @@ function release(key, g) {
   } catch {
     // closing releases the lock regardless
   }
-  for (const fd of g.parked) closeFd(fd);
 }
 
-function closeFd(fd) {
-  try {
-    fs.closeSync(fd);
-  } catch {
-    // already closed
-  }
-}
-
-/** A main-database descriptor the VFS of an executor thread is done with. */
-export function park(path, fd) {
-  const g = guards.get(nodePath.resolve(path));
-  if (g) g.parked.push(fd);
-  else closeFd(fd);
-}
-
-/** For tests and debugging: path -> lock mode and parked descriptors. */
+/** For tests and debugging: path -> lock mode and holders. */
 export function dump() {
-  return Object.fromEntries([...guards].map(([k, g]) => [k, { mode: g.mode, holders: g.holders.size, parked: g.parked.length }]));
+  return Object.fromEntries([...guards].map(([k, g]) => [k, { mode: g.mode, holders: g.holders.size }]));
 }

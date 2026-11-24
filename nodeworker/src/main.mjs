@@ -134,6 +134,7 @@ class Executor {
     this.worker = new Worker(new URL('./executor.mjs', import.meta.url), {
       workerData: {
         flags: this.flags, debug, memoryLimitMb, maxFrameBytes: maxFrame, lockTable, writeLock, wasmModule,
+        keepMainFds: guard.ENABLED,
         // null while the main thread is still compiling: then it follows as a message
       },
       resourceLimits: {
@@ -197,10 +198,6 @@ class Executor {
   }
 
   onMessage(m) {
-    if (m.park) {
-      guard.park(m.park.path, m.park.fd);
-      return;
-    }
     if (m.ready) {
       this.ready = true;
       if (m.sqliteVersion !== SQLITE_VERSION) console.error(`dblayer-nodeworker: SQLite ${m.sqliteVersion}, package says ${SQLITE_VERSION}`);
@@ -316,12 +313,22 @@ class Executor {
   retire() {
     if (this.conn !== null && executors.get(this.conn) === this) executors.delete(this.conn);
     for (const [sid, ex] of streams) if (ex === this) streams.delete(sid);
+    if (guard.drop(this) && !exiting) {
+      // Node closes the descriptors a thread opened when it exits, which
+      // would drop the guard's fcntl lock: keep the thread, for the next
+      // open, until the guard is released.
+      this.conn = null;
+      this.endTx();
+      idle.push(this);
+      return;
+    }
     this.dead = true;
     this.worker.terminate().then(() => {
       releaseThread(lockTable, this.worker.threadId);
-      guard.drop(this);
       maybeFinish();
     });
+    // the guard is released: the threads kept for it may go too
+    for (const ex of idle.splice(0)) ex.retire();
   }
 }
 
@@ -332,7 +339,11 @@ let connSeq = 0;
 
 /** An executor for a new connection: the spare if one is started, and a
  * new spare behind it. */
+const idle = []; // retired executors kept alive while a guard is held (see retire)
+
 function takeExecutor() {
+  const kept = idle.pop();
+  if (kept) return kept;
   const ex = spare ?? new Executor();
   spare = SPARES === 'always' ? new Executor() : null;
   return ex;
@@ -456,6 +467,10 @@ function hello(msg) {
       pid: process.pid,
       rlimit_as: false,
       ops: false,
+      // requests for different connections run at the same time (a thread
+      // each): the parent may send one per connection without waiting
+      concurrent: true,
+      guard: guard.ENABLED,
     }),
   ); // in JSON; everything after it in the agreed codec
   codec = chosen; // executors get it (and maxFrame) with every job

@@ -196,8 +196,11 @@ calls. Checked by `tests/worker/test_nodeworker.py` (including the C
 worker's differential cases), `tests/worker/test_nodeworker_locking.py`,
 the conformance suite (`sqlite-nodeworker`) and the fault tests.
 
-- `hello` says `"implementation": "node"`, `"ops": false`, and adds `node`
-  (the Node version) and `wasm` (the package). `op`, `init` hooks and
+- `hello` says `"implementation": "node"`, `"ops": false`,
+  `"concurrent": true` (one request in flight per connection, as the DuckDB
+  workers; the parent's `PipelinedWorkerProcess`), `"guard"` (whether the
+  cross-process guard below is on), and adds `node` (the Node version) and
+  `wasm` (the package). `op`, `init` hooks and
   `config.extensions` are refused as by the C worker (the build omits
   `load_extension`).
 - **One process per database, one thread per connection.** Node cannot take
@@ -218,8 +221,10 @@ the conformance suite (`sqlite-nodeworker`) and the fault tests.
   gets `database is locked`; an `open` that meets another process's lock
   retries for `busy_timeout`, then fails with `QueryError` `SQLITE_BUSY`.
   POSIX drops a process's locks on a file when *any* descriptor of it is
-  closed, so the VFS hands closed main-database descriptors to the main
-  thread, which closes them after releasing the guard. No guard for
+  closed, and Node closes a worker thread's descriptors when the thread
+  exits: while a guard is held the VFS keeps a closed connection's
+  main-database descriptor (the thread's next open reuses it) and the main
+  thread keeps a retired executor thread for the next connection. No guard for
   `immutable`, a WAL-mode file, or `DBLAYER_NODEWORKER_GUARD=0` (which
   reproduces the hazard: a Node worker writing beside a live native writer
   takes its journal for a hot journal, rolls it back and corrupts the
