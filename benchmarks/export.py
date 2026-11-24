@@ -75,13 +75,13 @@ select x as id,
        'This is a longer description for row ' || x || ', with "quotes", commas, and enough words to be realistic.' as description,
        case when x % 5 = 0 then null when x % 5 = 1 then '' else 'note ' || (x % 13) end as note,
        timestamp '2023-11-14 22:13:20' + x * interval '61 seconds' as created
-from generate_series(1, {n}) x
+from generate_series(1::bigint, {n}) x
 """
 NARROW = {
     "sqlite": "with recursive c(x) as (select 1 union all select x + 1 from c where x < {n}) "
               "select x as a, x * 2 as b, x % 1000 as c, -x as d from c",
     "duckdb": "select range as a, range * 2 as b, range % 1000 as c, -range as d from range({n})",
-    "postgres": "select x::bigint as a, x * 2::bigint as b, x % 1000 as c, -x::bigint as d from generate_series(1, {n}) x",
+    "postgres": "select x::bigint as a, x * 2::bigint as b, x % 1000 as c, -x::bigint as d from generate_series(1::bigint, {n}) x",
 }
 
 
