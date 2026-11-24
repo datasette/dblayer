@@ -35,7 +35,9 @@ SRC=/data/src
 export OUT SRC
 rm -rf "$OUT" /data/tmp
 mkdir -p "$OUT/logs" /data/tmp /data/cache
-export MAKEFLAGS="-j$(nproc)"
+# No MAKEFLAGS=-j: cworker/Makefile and duckdb-cpp-worker/Makefile race
+# under -j (two unzips of the amalgamation; objects compiled before the
+# fetched duckdb.h exists), seen in the second trial.
 # Compile site-packages to .pyc at install, so no benchmark pays for it.
 export UV_COMPILE_BYTECODE=1
 export TMPDIR=/data/tmp
