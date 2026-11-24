@@ -152,11 +152,18 @@ class Registry:
 
     # -- membership ----------------------------------------------------------
 
-    def add(self, name: str, db: Database) -> Database:
+    def add(self, name: str, db: Database, *, cold: bool = False) -> Database:
         """Register ``db`` under ``name`` and return it. The database must
         not be in another registry, and must have nothing open (it joins
-        this registry's accounting asleep). Sets ``db.name`` if unset."""
+        this registry's accounting asleep). Sets ``db.name`` if unset.
+
+        ``cold=True`` registers it cold: not on local disk yet, so its first
+        call wakes it through ``on_wake``, which must fetch (or build) it.
+        That is how a fleet starts without touching storage per database.
+        Needs an ``on_wake`` hook."""
         self._check_open()
+        if cold and self._hub.on_wake is None:
+            raise ValueError("add(cold=True) needs an on_wake hook to fetch the database")
         if name in self._dbs:
             raise ValueError(f"a database named {name!r} is already registered")
         if db._hub is not None:
@@ -172,6 +179,9 @@ class Registry:
             backend.executor = self.executor
         if db.name is None:
             db.name = name
+        if cold and not db._cold:
+            db._cold = True
+            self._hub.cold += 1
         self._dbs[name] = db
         return db
 

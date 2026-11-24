@@ -181,3 +181,44 @@ async def test_disk_quota(setup, seed):
     for i, d in enumerate(dbs):
         assert (await d.execute("select count(*) from t")).rows == [(writes[i],)]
         await d.sleep()
+
+
+async def test_add_cold_is_fetched_by_on_wake_on_first_call(tmp_path):
+    # A fleet can be registered without touching storage: each database
+    # starts cold, and on_wake builds its file on first use.
+    woken: list[str] = []
+
+    async def on_wake(db):
+        if db.state == "cold":
+            woken.append(db.name)
+            seed = Database(SqliteInProcess(tmp_path / f"{db.name}.db"))
+            await seed.execute_write("create table t (name text)")
+            await seed.execute_write("insert into t values (:n)", {"n": db.name})
+            await seed.close()
+
+    registry = Registry(on_wake=on_wake)
+    try:
+        dbs = [
+            registry.add(f"db{i}", Database(SqliteInProcess(tmp_path / f"db{i}.db")), cold=True)
+            for i in range(3)
+        ]
+        assert [d.state for d in dbs] == ["cold"] * 3
+        assert registry.stats().cold == 3
+        assert not list(tmp_path.iterdir())
+        assert (await dbs[1].execute("select name from t")).rows == [("db1",)]
+        assert woken == ["db1"]
+        assert dbs[1].state == "awake"
+        s = registry.stats()
+        assert (s.cold, s.awake, s.wakes) == (2, 1, 1)
+    finally:
+        await registry.close()
+
+
+async def test_add_cold_needs_on_wake(tmp_path):
+    registry = Registry()
+    try:
+        with pytest.raises(ValueError, match="on_wake"):
+            registry.add("x", Database(SqliteInProcess(tmp_path / "x.db")), cold=True)
+        assert "x" not in registry
+    finally:
+        await registry.close()
