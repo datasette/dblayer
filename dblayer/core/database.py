@@ -16,7 +16,7 @@ from .api import IntrospectionMixin, OperationsMixin
 from .common import DEFAULT, Opt, map_errors, pick, spawn
 from .operations import OperationResult
 from .params import Params, rewrite
-from .hub import Hub, default_hub
+from .hub import Hub, LifecycleHook, default_hub
 from .pool import DEFAULT_MAX_READ_CONNECTIONS, Pool, PoolStats
 from .results import Results, Row, WriteResult, make_index
 from .schema import Schema, SchemaCache
@@ -93,6 +93,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         "_transition",
         "idle_timeout",
         "_hub",
+        "_cold",
     )
 
     def __init__(
@@ -137,6 +138,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         (registry's) setting, 30 s unless configured; ``None`` never closes
         idle connections."""
         self._hub: Hub | None = None
+        self._cold = False
         self._transition: tuple[str, asyncio.Future[Any]] | None = None
         """A wake or sleep in progress: ``(kind, future)``."""
 
@@ -156,10 +158,15 @@ class Database(IntrospectionMixin, OperationsMixin):
     @property
     def state(self) -> str:
         """``"awake"`` (connections open or opening), ``"asleep"`` (none;
-        the next call wakes it) or ``"closed"`` (for good)."""
+        the next call wakes it), ``"cold"`` (asleep, and evicted from local
+        disk by the registry's ``on_evict`` hook; the next call wakes it
+        through ``on_wake``, which must fetch it back) or ``"closed"`` (for
+        good)."""
         if self._closed:
             return "closed"
-        return "awake" if self._awake else "asleep"
+        if self._awake:
+            return "awake"
+        return "cold" if self._cold else "asleep"
 
     def stats(self) -> PoolStats:
         """Connection counts for this database. Never opens anything."""
@@ -270,6 +277,11 @@ class Database(IntrospectionMixin, OperationsMixin):
             self._check_open()
             hub = self._get_hub()
             if hub.on_wake is None:
+                if self._cold:
+                    raise RuntimeError(
+                        f"database {self.name!r} is cold (evicted from local disk) "
+                        "and there is no on_wake hook to fetch it back"
+                    )
                 self._mark_awake(hub)
                 return
             fut = asyncio.get_running_loop().create_future()
@@ -295,6 +307,35 @@ class Database(IntrospectionMixin, OperationsMixin):
         self._awake = True
         hub.wakes += 1
         hub.awake += 1
+        if self._cold:
+            self._cold = False
+            hub.cold -= 1
+
+    async def _evict(self, hub: Hub, on_evict: LifecycleHook) -> bool:
+        """Asleep -> cold through ``on_evict``, holding the transition so
+        that a request arriving meanwhile waits and then wakes (through
+        ``on_wake``). Only an asleep database is evicted: returns False if
+        it is awake or changing state, or if the hook returns False."""
+        self._check_open()
+        if self._cold:
+            return True
+        pool = self._pool
+        if self._awake or self._transition is not None or (pool is not None and not pool.empty):
+            return False
+        fut = asyncio.get_running_loop().create_future()
+        transition = ("evict", fut)
+        self._transition = transition
+        try:
+            if await on_evict(self) is False:
+                return False
+            self._cold = True
+            hub.evictions += 1
+            hub.cold += 1
+            return True
+        finally:
+            if self._transition is transition:
+                self._transition = None
+            fut.set_result(None)
 
     def _pool_empty(self, pool: Pool) -> None:
         """The pool has no connections and no users: go to sleep."""

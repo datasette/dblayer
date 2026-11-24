@@ -78,6 +78,10 @@ class Hub:
         self.sleeps = 0
         self.awake = 0
         """Databases awake now."""
+        self.evictions = 0
+        """Databases moved to cold by ``Registry.evict``."""
+        self.cold = 0
+        """Databases cold now."""
         """Default for databases that do not set their own."""
         self._idle: dict[float | None, OrderedDict[_Entry, None]] = {}
         self._timer: asyncio.TimerHandle | None = None

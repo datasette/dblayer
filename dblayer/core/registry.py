@@ -42,6 +42,11 @@ class Registry:
       allows the backend itself, has closed (idle timeout, cap eviction,
       ``db.sleep()``, ``db.close()``). A wake waits for it to finish.
       Exceptions are logged to the ``dblayer`` logger, not raised.
+    * ``on_evict`` is called by ``evict(name)`` for an asleep database, and
+      makes it cold (nothing local). While it runs, a request for that
+      database waits; it then wakes through ``on_wake``, which must fetch
+      the file back. The registry never decides on its own to evict:
+      callers (a disk-quota policy) call ``evict()``.
 
     ``resolver`` (async, ``name -> Database | None``) is called by ``get()``
     for a name the registry does not know; a returned database is added
@@ -58,6 +63,7 @@ class Registry:
         resolver: Resolver | None = None,
         on_wake: LifecycleHook | None = None,
         on_sleep: LifecycleHook | None = None,
+        on_evict: LifecycleHook | None = None,
     ) -> None:
         if max_threads < 1:
             raise ValueError("max_threads must be at least 1")
@@ -71,6 +77,10 @@ class Registry:
         self._hub = Hub(idle_timeout=idle_timeout, max_open_connections=max_open_connections)
         self._hub.on_wake = on_wake
         self._hub.on_sleep = on_sleep
+        self.on_evict = on_evict
+        """Async ``(db) -> bool | None``: remove an asleep database's local
+        file (after copying it out, if it was written). Return ``False`` to
+        refuse; raise to report a failure. Called by ``evict()`` only."""
         self.resolver = resolver
         self._dbs: dict[str, Database] = {}
         self._resolving: dict[str, asyncio.Future[Database | None]] = {}
@@ -208,6 +218,23 @@ class Registry:
             return db
         finally:
             del self._resolving[name]
+
+    # -- eviction --------------------------------------------------------------
+
+    async def evict(self, name: str) -> bool:
+        """Make the asleep database ``name`` cold through ``on_evict``.
+        Returns True if it is now cold, False if it is awake, changing
+        state, or ``on_evict`` refused. Never waits for a database to fall
+        asleep (so it is safe to call from inside a hook); call
+        ``db.sleep()`` first to release idle connections."""
+        db = self._dbs.get(name)
+        if db is None:
+            raise UnknownDatabase(f"no database named {name!r}")
+        if self.on_evict is None:
+            raise RuntimeError("evict() needs an on_evict hook")
+        if self._hub.on_wake is None:
+            raise RuntimeError("evict() needs an on_wake hook to bring databases back")
+        return await db._evict(self._hub, self.on_evict)
 
     # -- shutdown ------------------------------------------------------------
 
