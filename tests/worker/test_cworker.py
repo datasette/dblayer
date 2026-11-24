@@ -41,9 +41,10 @@ CODECS = ["json"] + (["msgpack"] if "msgpack" in available_codecs() else [])
 
 
 def test_binary_lookup_order(tmp_path, monkeypatch):
-    real = find_binary()
+    real = find_binary()  # from $DBLAYER_CWORKER if set, else the default
     monkeypatch.delenv(ENV_VAR, raising=False)
-    assert find_binary() == real  # default location
+    if binary_unavailable() is None:
+        assert find_binary().endswith("cworker/build/dblayer-cworker")  # default location
     fake = tmp_path / "nope"
     monkeypatch.setenv(ENV_VAR, str(fake))
     with pytest.raises(NotSupported) as e:
@@ -355,3 +356,127 @@ def test_no_python_in_the_worker(tmp_path):
     head = exe.read_bytes()[:4]
     assert head in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
     assert os.access(exe, os.X_OK)
+
+
+# -- malformed input ---------------------------------------------------------------
+
+MALFORMED_MSGPACK = [
+    b"",  # empty payload
+    b"\xc1",  # never-used byte
+    b"\x81",  # map of one pair, nothing after
+    b"\xdf\xff\xff\xff\xff",  # map32 claiming 4 billion pairs
+    b"\xdd\x7f\xff\xff\xff",  # array32 claiming 2 billion items
+    b"\x81\xa4type\xdb\xff\xff\xff\xff",  # str32 longer than the frame
+    b"\x81\xa4type\xc7\x05\x02abc",  # ext declared longer than the frame
+    b"\x81\xa4type\xd4\x05x",  # unknown ext type
+    b"\x91" * 5000 + b"\xc0",  # 5000 nested arrays
+    b"\x81\xa2id\xcf\xff\xff\xff\xff\xff\xff\xff\xff",  # id: uint64 max, no type
+    b"\x80\x80",  # extra data after the message
+    b"\x2a",  # not a map
+]
+MALFORMED_JSON = [
+    b"",
+    b"{",
+    b'{"type": "execute", "sql": "select 1"',
+    b'{"type": "x\\u12"}',
+    b'{"type": "\\uD800\\uD800"}',
+    b"[" * 5000 + b"]" * 5000,
+    b'{"a": 1e999999}',
+    b'{"a": -}',
+    b'{"$b": 5}',
+    b'{"$d": [1]}',
+    b'{"$x": ["date", "2020-01-01"]}',
+    b'{"a": "unterminated}',
+    b"null",
+    b'{"a": 1} x',
+]
+
+
+def _raw_session(codec: str, payloads: list[bytes]) -> tuple[int, bytes]:
+    """Start the binary, agree `codec`, then send raw payloads and close
+    stdin. Returns the exit code and stderr."""
+    import json
+    import struct
+
+    p = subprocess.Popen([find_binary()], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    hello = json.dumps({"type": "hello", "protocol": 1, "codecs": [codec], "id": 1}).encode()
+    data = struct.pack(">I", len(hello)) + hello
+    for payload in payloads:
+        data += struct.pack(">I", len(payload)) + payload
+    try:
+        _out, err = p.communicate(data, timeout=20)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        raise
+    return p.returncode, err
+
+
+@pytest.mark.parametrize("payload", MALFORMED_MSGPACK, ids=[str(i) for i in range(len(MALFORMED_MSGPACK))])
+def test_malformed_msgpack_drops_the_connection_cleanly(payload):
+    if "msgpack" not in available_codecs():
+        pytest.skip("msgpack is not installed")
+    code, err = _raw_session("msgpack", [payload])
+    assert code == 0, err.decode(errors="replace")[-2000:]
+
+
+@pytest.mark.parametrize("payload", MALFORMED_JSON, ids=[str(i) for i in range(len(MALFORMED_JSON))])
+def test_malformed_json_drops_the_connection_cleanly(payload):
+    code, err = _raw_session("json", [payload])
+    assert code == 0, err.decode(errors="replace")[-2000:]
+
+
+@pytest.mark.parametrize("codec", ["json", "msgpack"])
+def test_random_payloads_never_crash_the_worker(codec, tmp_path):
+    """A small seeded fuzz of the decoders and request handlers: mutated
+    valid requests, a few per process. Exit code 0 means the worker
+    answered or dropped the connection; a crash (or a sanitizer report,
+    with the ASan build) is a non-zero exit."""
+    import json
+    import random
+
+    if codec == "msgpack":
+        if "msgpack" not in available_codecs():
+            pytest.skip("msgpack is not installed")
+        import msgpack
+
+        def enc(m: dict[str, Any]) -> bytes:
+            return msgpack.packb(m, use_bin_type=True)
+    else:
+
+        def enc(m: dict[str, Any]) -> bytes:
+            return json.dumps(m).encode()
+
+    rng = random.Random(1234)
+    seeds: list[dict[str, Any]] = [
+        {"type": "open", "path": str(tmp_path / "f.db"), "mode": "write", "id": 2},
+        {"type": "execute", "sql": "select ?, :a", "params": [1, "x", 2.5], "id": 3},
+        {"type": "execute", "sql": "select ?", "params": {"a": [1, {"b": None}]}, "id": 3},
+        {"type": "execute_many", "sql": "select ?", "params_seq": [[1], [2]], "id": 4},
+        {"type": "batch", "statements": [["select 1", None], ["select 2", [1]]], "id": 5},
+        {"type": "stream", "sql": "select 1", "chunk_rows": 1, "credit": 2, "id": 6},
+        {"type": "begin", "mode": "read", "deadline_ms": 10, "id": 7},
+        {"type": "schema", "tx": "t1", "id": 8},
+        {"type": "rollback", "tx": "t99999999999", "id": 9},
+        {"type": "cancel", "target": 3},
+        {"type": "more", "stream": 6, "credit": 1},
+    ]
+    failures = []
+    for i in range(int(os.environ.get("DBLAYER_CWORKER_FUZZ", "60"))):
+        payloads = [enc(seeds[0])]
+        for _ in range(3):
+            b = bytearray(enc(rng.choice(seeds[1:])))
+            for _ in range(rng.randint(1, 4)):
+                op = rng.random()
+                pos = rng.randrange(len(b))
+                if op < 0.5:
+                    b[pos] = rng.randrange(256)
+                elif op < 0.75:
+                    del b[pos : pos + rng.randint(1, 4)]
+                else:
+                    b[pos:pos] = bytes(rng.randrange(256) for _ in range(rng.randint(1, 4)))
+            payloads.append(bytes(b))
+        code, err = _raw_session(codec, payloads)
+        if code != 0:
+            failures.append((i, code, err.decode(errors="replace")[-1500:]))
+    assert not failures, failures[:3]
