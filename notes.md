@@ -688,3 +688,13 @@ Simon chose these from the proposals above, each built by its own subagent in it
 6. In-process SQLite on apsw (`sqlite-apsw`), including an experiment in removing the executor thread hop.
 
 Known risks set out in the briefs: WASI has no file locks or shared memory, so both WebAssembly backends must show how concurrent access to one file is made safe; a multi-tenant worker shares its blast radius on a kill; native DuckDB workers must reproduce the Python backend's read-only enforcement and aborted-COMMIT guard. With seven subagents running at once, every benchmark from this round is provisional until re-run alone.
+
+### Decision: experiment with backend-side serialisation of CSV, TSV and JSON (2026-11-24)
+
+Simon's idea: today the Python server must turn rows into CSV, TSV or JSON itself, which is expensive for large results. Add an optional capability where the backend produces the bytes and Python only forwards them. One subagent is trying it on three backends, chosen to cover three different places the work can happen:
+
+- **C SQLite worker** (required by Simon): serialise in C in the worker process, straight from SQLite's column values; also try a separate data pipe so bytes bypass the message codec.
+- **DuckDB in-process:** the engine's own vectorised CSV and JSON writers, with no process boundary.
+- **PostgreSQL on psycopg 3:** `COPY (query) TO STDOUT`, so the server serialises and the bytes pass through two hops.
+
+The core gets a Python fallback so `export()` works on every backend and serves as the baseline. The hard part is parity: three engines format floats, timestamps and NULLs differently, so the experiment must say, per format and backend, whether native output is byte-identical to the fallback, equal after parsing, or has to fall back. The numbers that matter are CPU time in the Python process and event-loop lag during a large export, not wall time alone.
