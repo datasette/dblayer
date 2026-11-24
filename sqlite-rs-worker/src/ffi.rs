@@ -594,3 +594,138 @@ pub fn set_rlimit_as(mb: i64) -> bool {
 pub fn set_rlimit_as(_mb: i64) -> bool {
     false
 }
+
+/// The safe wrappers against the real SQLite: run under ASan and TSan
+/// (`make asan`, `make tsan`); Miri cannot call C, so they are ignored there.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::time::{Duration, Instant};
+
+    const FLAGS: i32 = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI;
+    const UNBOUNDED: &[u8] = b"with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c";
+
+    /// Once per test process, before any connection: sqlite3_config is not
+    /// thread-safe (TSan reported the race when each test called it).
+    fn setup() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| assert!(configure(true, true)));
+    }
+
+    fn mem() -> Db {
+        setup();
+        Db::open("file::memory:", FLAGS).ok().unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn prepare_bind_step_columns() {
+        let db = mem();
+        assert_eq!(db.exec("create table t (a, b, c)"), SQLITE_OK);
+        let (st, tail) = db.prepare(b"insert into t values (?, ?, ?); select 1").unwrap();
+        assert_eq!(tail, b"insert into t values (?, ?, ?);".len());
+        let mut st = st.unwrap();
+        assert_eq!(st.param_count(), 3);
+        {
+            // Bound values are copied: the buffers can go before the step.
+            let text = "héllo".to_string().into_bytes();
+            let blob = vec![0u8, 1, 255];
+            assert_eq!(st.bind_text(1, &text), SQLITE_OK);
+            assert_eq!(st.bind_blob(2, &blob), SQLITE_OK);
+            assert_eq!(st.bind_blob(3, b""), SQLITE_OK);
+        }
+        assert_eq!(st.step(), SQLITE_DONE);
+        assert_eq!(db.changes(), 1);
+        drop(st);
+        let mut st = db.prepare(b"select a, b, length(c), 1.5, null from t").unwrap().0.unwrap();
+        assert_eq!(st.step(), SQLITE_ROW);
+        assert_eq!(st.column_count(), 5);
+        assert_eq!(st.column_name(0), b"a");
+        assert_eq!(st.column_text(0), "héllo".as_bytes());
+        assert_eq!(st.column_blob(1), &[0, 1, 255]);
+        assert_eq!(st.column_int(2), 0);
+        assert_eq!(st.column_double(3), 1.5);
+        assert_eq!(st.column_type(4), 5);
+        assert!(st.readonly());
+        assert_eq!(st.step(), SQLITE_DONE);
+        assert!(db.prepare(b"selec").is_err());
+        assert!(db.errmsg().contains("syntax error"));
+        assert!(db.prepare(b"  ").unwrap().0.is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn progress_handler_interrupts_and_is_removed() {
+        let db = mem();
+        let calls = std::cell::Cell::new(0);
+        let check = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 50
+        };
+        {
+            let _g = db.progress(100, &check);
+            let mut st = db.prepare(UNBOUNDED).unwrap().0.unwrap();
+            assert_eq!(st.step(), SQLITE_INTERRUPT);
+        }
+        // The guard is gone: neither the handler nor its closure is called.
+        let n = calls.get();
+        let sql = b"with recursive c(x) as (select 1 union all select x + 1 from c where x < 10000) select count(*) from c";
+        let mut st = db.prepare(sql).unwrap().0.unwrap();
+        assert_eq!(st.step(), SQLITE_ROW);
+        assert_eq!(calls.get(), n);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn interrupt_from_another_thread_and_after_close() {
+        let db = mem();
+        let intr = db.interrupter();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (i2, s2) = (intr.clone(), stop.clone());
+        let t = std::thread::spawn(move || {
+            while !s2.load(SeqCst) {
+                i2.interrupt();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        // prepare is interruptible too (SQLITE_INTERRUPT while parsing)
+        let mut st = loop {
+            if let Ok((Some(st), _)) = db.prepare(UNBOUNDED) {
+                break st;
+            }
+        };
+        assert_eq!(st.step(), SQLITE_INTERRUPT);
+        drop(st);
+        drop(db); // closed while the other thread keeps interrupting
+        std::thread::sleep(Duration::from_millis(20));
+        stop.store(true, SeqCst);
+        t.join().unwrap();
+        intr.interrupt(); // a no-op now, never a use after free
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn busy_handler_gives_up_when_interrupted() {
+        let dir = std::env::temp_dir().join(format!("rsw-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let uri = format!("file://{}/b.db?mode=rwc", dir.display());
+        setup();
+        let a = Db::open(&uri, FLAGS).ok().unwrap();
+        let mut b = Db::open(&uri, FLAGS).ok().unwrap();
+        b.set_busy_handler(5000);
+        assert_eq!(a.exec("begin immediate"), SQLITE_OK);
+        let intr = b.interrupter();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            intr.interrupt();
+        });
+        let t0 = Instant::now();
+        let rc = b.exec("begin immediate");
+        t.join().unwrap();
+        assert_eq!(rc & 0xff, SQLITE_BUSY);
+        assert!(t0.elapsed() < Duration::from_secs(2), "waited {:?}", t0.elapsed());
+        drop((a, b));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

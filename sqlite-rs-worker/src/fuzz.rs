@@ -157,7 +157,8 @@ fn not_echoed(v: &Value) -> bool {
 #[test]
 fn decoders_are_linear() {
     let n: usize = std::env::var("DBLAYER_RS_FUZZ_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
-    let shapes: Vec<(&str, fn(usize) -> Value)> = vec![
+    type Make = fn(usize) -> Value;
+    let shapes: Vec<(&str, Make)> = vec![
         ("map", |n| Value::Map((0..n).map(|i| (Value::Str(format!("k{i}").into_bytes()), Value::Int(i as i64))).collect())),
         ("dup keys", |n| Value::Map((0..n).map(|_| (s("k"), Value::Int(1))).collect())),
         ("array", |n| Value::Arr((0..n * 10).map(|i| Value::Int(i as i64)).collect())),

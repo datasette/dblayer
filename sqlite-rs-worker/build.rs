@@ -122,6 +122,11 @@ fn main() {
     for (name, flag) in [("thread", "-fsanitize=thread"), ("address", "-fsanitize=address")] {
         if sanitize.split(',').any(|s| s == name) || rustflags.contains(&format!("-Zsanitizer={name}")) {
             cmd.arg(flag).arg("-fno-omit-frame-pointer");
+            if name == "address" {
+                // Apple clang's ASan instrumentation checks for its own
+                // runtime's version; the runtime here is rustc's (LLVM's).
+                cmd.args(["-mllvm", "-asan-guard-against-version-mismatch=0"]);
+            }
             println!("cargo:warning=SQLite compiled with {flag}");
         }
     }
