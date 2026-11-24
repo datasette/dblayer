@@ -180,3 +180,45 @@ async def test_instances_start_fast_and_the_module_is_compiled_once(tmp_path):
     )
     assert runtime_stats()["instances_created"] >= stats["instances_created"] + 20
     assert times[10] < 1.0
+
+
+async def test_inline_reads(tmp_path):
+    """``inline_reads``: a short read runs on the event loop's thread; one
+    over the budget is interrupted there and runs again on the executor;
+    one that ignores the interrupt (one long C call) traps its instance
+    within a few milliseconds, gets a new one and runs on the executor,
+    where its own time limit applies as usual."""
+    from dblayer import QueryInterrupted
+
+    from .faults.test_worker_time import EVADING
+
+    db = Database(_wasm(tmp_path / "i.db", inline_reads=True), name="i")
+    try:
+        await db.execute_write("create table t (id integer primary key, v text)")
+        await db.execute_write("insert into t values (1, 'x')")
+        for _ in range(20):
+            assert (await db.execute("select v from t where id = 1")).rows == [("x",)]
+        long = "with r(i) as (select 1 union all select i + 1 from r where i < 3000000) select count(*) from r"
+        t0 = time.perf_counter()
+        assert (await db.execute(long)).rows == [(3000000,)]
+        print(f"\n[wasm inline] 3M-row CTE (re-run on the executor) {(time.perf_counter() - t0) * 1000:.0f} ms")
+        procs = [e.conn._proc for e in db._pool._idle_read]
+        assert sum(p.inline_runs for p in procs) >= 20
+        assert sum(p.inline_reruns for p in procs) >= 1
+        stalls: list[float] = []
+
+        async def ticker() -> None:
+            while True:
+                t = time.perf_counter()
+                await asyncio.sleep(0)
+                stalls.append(time.perf_counter() - t)
+
+        tick = asyncio.create_task(ticker())
+        with pytest.raises(QueryInterrupted):
+            await db.execute(EVADING["instr_quadratic"], time_limit_ms=200)
+        tick.cancel()
+        print(f"[wasm inline] evading query: longest event-loop stall {max(stalls) * 1000:.1f} ms")
+        assert max(stalls) < 0.5  # a few ms when unloaded; generous
+        assert (await db.execute("select 3")).rows == [(3,)]
+    finally:
+        await db.close()

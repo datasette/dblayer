@@ -107,6 +107,12 @@ DEFAULT_MODULE = (
     Path(__file__).resolve().parent.parent.parent / "cworker" / "build-wasm" / "dblayer-sqlite.wasm"
 )
 DEFAULT_KILL_GRACE_MS = 50
+INLINE_S = 0.002
+"""``inline_reads``: a read runs on the event loop's thread for at most
+about this long (plus up to one epoch tick) before it is interrupted and
+re-run on the executor."""
+INLINE_GRACE_S = 0.004
+"""...and one that ignores the interrupt is trapped this much later."""
 EPOCH_TICK_S = 0.002
 """How often the engine's epoch advances while any call runs. Each tick
 runs a small Python callback per running instance (deadline and kill
@@ -1211,6 +1217,9 @@ class WasmConfig:
     deadline_slack_ms: int = 50
     max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES
     debug: bool = False
+    inline_reads: bool = False
+    """Run reads on read connections on the event loop's thread first
+    (``SqliteWasm(inline_reads=True)``)."""
     recycle_memory_mb: int | None = 64
     """Linear memory never shrinks: an instance that once grew to hold a
     big result keeps that memory. Past this size (and outside a
@@ -1263,6 +1272,8 @@ class WasmProcess:
         self._open_msg: dict[str, Any] | None = None
         self._needs_recycle = False
         self.recycled = 0
+        self.inline_runs = 0
+        self.inline_reruns = 0
 
     def __repr__(self) -> str:
         return f"<WasmProcess {'dead' if self.dead else 'alive'} {self.db_path}>"
@@ -1367,8 +1378,9 @@ class WasmProcess:
 
     # -- calls ----------------------------------------------------------------------------
 
-    def _invoke(self, payload: bytes, call: _Call) -> bytes:
-        """Executor thread."""
+    def _invoke(self, payload: bytes, call: _Call, inline_s: float | None = None) -> bytes:
+        """Executor thread (or the event loop's, for an inline read: then
+        ``inline_s`` is its budget, enforced by the epoch ticker)."""
         inst = self._inst
         if inst is None or self.dead is not None:
             raise _Trapped("closed", "instance was closed")
@@ -1377,7 +1389,10 @@ class WasmProcess:
             call.active = True
         limit = call.limit_ms
         now = time.monotonic()
-        if limit is not None:
+        if inline_s is not None:
+            inst.soft_deadline = now + inline_s
+            inst.hard_deadline = now + inline_s + INLINE_GRACE_S
+        elif limit is not None:
             inst.soft_deadline = now + max(limit, 0) / 1000 + 0.005
             inst.hard_deadline = now + (max(limit, 0) + self.config.kill_grace_ms) / 1000
         else:
@@ -1475,20 +1490,31 @@ class WasmProcess:
         if on_sent is not None:
             on_sent(mid)
         call = _Call(mid, limit_ms)
-        self._current = call
-        self.inflight = (mid, owner)
-        try:
-            out = await run_blocking(
-                self._executor(), self._invoke, payload, call, on_cancel=lambda: self._on_cancel(call)
-            )
-        except _Trapped as t:
-            raise self._trapped(t, call) from None
-        finally:
-            self.inflight = None
-            self._current = None
-        if self.dead is not None:
-            raise self._kill_for.get(mid, self.dead)
-        frames = self._frames(out)
+        frames: list[dict[str, Any]] | None = None
+        if (
+            self.config.inline_reads
+            and expect_frames is None
+            and msg.get("type") == "execute"
+            and self._open_msg is not None
+            and self._open_msg.get("mode") == "read"
+            and (limit_ms is None or limit_ms > 2 * INLINE_S * 1000)
+        ):
+            frames = await self._try_inline(payload, call)
+        if frames is None:
+            self._current = call
+            self.inflight = (mid, owner)
+            try:
+                out = await run_blocking(
+                    self._executor(), self._invoke, payload, call, on_cancel=lambda: self._on_cancel(call)
+                )
+            except _Trapped as t:
+                raise self._trapped(t, call) from None
+            finally:
+                self.inflight = None
+                self._current = None
+            if self.dead is not None:
+                raise self._kill_for.get(mid, self.dead)
+            frames = self._frames(out)
         if msg.get("type") == "begin" and msg.get("deadline_ms") is not None:
             self._arm_tick(msg["deadline_ms"])
         mine = [f for f in frames if f.get("id") == mid]
@@ -1497,6 +1523,38 @@ class WasmProcess:
                 raise WorkerCrashed(f"WebAssembly instance sent no reply to request {mid}")
             return _unwrap(mine[-1], self)  # type: ignore[arg-type]
         return mine
+
+    async def _try_inline(self, payload: bytes, call: _Call) -> list[dict[str, Any]] | None:
+        """[self.lock held] Run a read on the event loop's thread, with no
+        executor hop, under a budget of ``INLINE_S``: the epoch ticker
+        interrupts it there (or traps it ``INLINE_GRACE_S`` later), and
+        then it runs again from the start on the executor, as an
+        ``SqliteApsw(inline_reads=True)`` read does. Returns the frames, or
+        ``None`` to run it on the executor."""
+        t0 = time.monotonic()
+        try:
+            out = self._invoke(payload, call, INLINE_S)
+        except _Trapped:
+            # Over budget in one C call: the instance is gone. A new one
+            # (as after recycling) and the read runs on the executor.
+            self.inline_reruns += 1
+            self.dead = None
+            self._inst = None
+            await self._recycle()
+            self.recycled -= 1
+            return None
+        frames = self._frames(out)  # notices are handled either way
+        mine = [f for f in frames if f.get("id") == call.mid]
+        if (
+            mine
+            and isinstance(mine[-1].get("error"), dict)
+            and mine[-1]["error"].get("type") == "QueryInterrupted"
+            and time.monotonic() - t0 >= INLINE_S
+        ):
+            self.inline_reruns += 1
+            return None
+        self.inline_runs += 1
+        return frames
 
     def _trapped(self, t: _Trapped, call: _Call) -> BaseException:
         """The exception a call gets when its instance trapped."""
@@ -1605,6 +1663,11 @@ class SqliteWasm(SqliteWorker):
     * ``recycle_memory_mb`` (default 64): replace an instance whose linear
       memory has grown past this, between requests and outside a
       transaction (linear memory never shrinks). ``None``: never.
+    * ``inline_reads`` (default off): reads on read connections run on the
+      event loop's thread first, with no executor hop, for at most about
+      ``INLINE_S`` plus an epoch tick (a statement that ignores the
+      interrupt: plus ``INLINE_GRACE_S``, then its instance is replaced);
+      a read over budget runs again on the executor.
     * ``module``: path to ``dblayer-sqlite.wasm`` (see ``find_module``).
     * ``sql_limits``, ``immutable``, ``create``, ``busy_timeout``: as
       ``SqliteWorker``.
@@ -1625,6 +1688,7 @@ class SqliteWasm(SqliteWorker):
         memory_limit_mb: int | None = None,
         kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
         recycle_memory_mb: int | None = 64,
+        inline_reads: bool = False,
         codec: str | None = None,
         executor: Any = None,
         max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
@@ -1652,6 +1716,7 @@ class SqliteWasm(SqliteWorker):
             max_frame_bytes=max_frame_bytes,
             debug=debug,
             recycle_memory_mb=recycle_memory_mb,
+            inline_reads=inline_reads,
         )
         self.capabilities = _wasm_capabilities(self._local.capabilities)
 

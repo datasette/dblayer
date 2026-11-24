@@ -176,6 +176,21 @@ memory: the cap bounds it, it does not hide it.
   (`<module>.<wasmtime version>.<flavour>.<size>.<mtime>.cwasm`): compiling
   takes about 150 ms, loading the cache about 10 ms, once per process.
 
+## Inline reads
+
+`SqliteWasm(path, inline_reads=True)` (off by default; the suite runs with it
+under `DBLAYER_WASM_INLINE=1`) runs a read on a read connection on the
+event loop's thread, with no executor hop, as `SqliteApsw(inline_reads=True)`
+does. The epoch ticker bounds it: past `INLINE_S` (2 ms) the progress
+handler is told to stop and the read runs again from the start on the
+executor, where its own time limit applies; a statement that ignores the
+interrupt (one long C call) is trapped `INLINE_GRACE_S` (4 ms) later, the
+instance replaced and the read run on the executor. The longest event-loop
+stall measured for an evading query was about 5 ms. A one-row read drops
+from about 110-185 us to about 25 us (`wasm-inline` in the benchmark), close
+to apsw inline's 10-15 us; the instance call itself is about 19 us, of
+which the six host calls are about 9.
+
 ## Costs
 
 `benchmarks/wasm_overhead.py`; see the notes for measured figures. Broadly:

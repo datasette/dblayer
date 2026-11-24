@@ -153,7 +153,11 @@ def _sqlite_wasm(tmp_path: Path) -> Backend:
 
     global _counter
     _counter += 1
-    return SqliteWasm(tmp_path / f"db{_counter}.db")  # type: ignore[return-value]
+    import os
+
+    # DBLAYER_WASM_INLINE=1 runs the suite with inline_reads on.
+    inline = os.environ.get("DBLAYER_WASM_INLINE") == "1"
+    return SqliteWasm(tmp_path / f"db{_counter}.db", inline_reads=inline)  # type: ignore[return-value]
 
 
 def _wasm_available() -> str | None:

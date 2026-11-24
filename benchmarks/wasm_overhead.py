@@ -48,7 +48,7 @@ from duckdb_memory import mem_of  # noqa: E402
 from dblayer import Database  # noqa: E402
 from dblayer.backends.sqlite import SqliteInProcess  # noqa: E402
 
-VARIANTS = ["in-process", "apsw", "apsw-inline", "worker-msgpack", "cworker-msgpack", "cpool-msgpack", "wasm"]
+VARIANTS = ["in-process", "apsw", "apsw-inline", "worker-msgpack", "cworker-msgpack", "cpool-msgpack", "wasm", "wasm-inline"]
 """``cpool-msgpack`` is the multi-tenant C worker pool (``SqliteCPool``), as
 in ``worker_overhead.py``; apsw variants are measured when apsw is installed."""
 
@@ -63,10 +63,10 @@ _base_make = wo.make_backend
 
 
 def make_backend(variant: str, path: Path, **kw: Any) -> Any:
-    if variant == "wasm":
+    if variant in ("wasm", "wasm-inline"):
         from dblayer.backends.sqlite_wasm import SqliteWasm
 
-        return SqliteWasm(path, **kw)
+        return SqliteWasm(path, inline_reads=variant == "wasm-inline", **kw)
     return _base_make(variant, path, **kw)
 
 
@@ -355,7 +355,7 @@ async def run_all(quick: bool, only: list[str] | None = None) -> dict[str, Any]:
         v for v in VARIANTS
         if (not v.startswith(("cworker", "cpool")) or wo.cworker_available())
         and (not v.startswith("apsw") or wo.apsw_available())
-        and (v != "wasm" or wasm_available())
+        and (not v.startswith("wasm") or wasm_available())
         and (only is None or v in only)
     ]
     r: dict[str, Any] = {"load_start": load_average(), "variants": variants, "per": {}}
