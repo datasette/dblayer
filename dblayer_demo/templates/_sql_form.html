@@ -1,0 +1,9 @@
+<form action="/{{ demo.spec.slug }}/-/query" method="get">
+<p><textarea name="sql" rows="6" aria-label="SQL query">{{ sql or "select * from books limit 10" }}</textarea></p>
+{% for name, value in (params or {}).items() %}
+<p><label><code>:{{ name }}</code> <input type="text" name="{{ name }}" value="{{ value }}"></label></p>
+{% endfor %}
+<p><button type="submit">Run SQL</button>
+<span class="meta">Read-only. Time limit {{ time_limit_ms }} ms, at most {{ max_rows }} rows.
+Use <code>:name</code> for parameters.</span></p>
+</form>

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ demo.spec.title }}{% endblock %}
+{% block crumbs %} / <a href="/{{ demo.spec.slug }}">{{ demo.spec.title }}</a>{% endblock %}
+{% block content %}
+<h1>{{ demo.spec.title }}</h1>
+<p class="meta">Backend <code>{{ demo.spec.backend }}</code>, dialect <code>{{ demo.db.dialect.name }}</code>.</p>
+{% include "_sql_form.html" %}
+<h2>Tables</h2>
+{% for t in tables %}
+<div class="table-summary">
+<h3><a href="/{{ demo.spec.slug }}/{{ t.info.name | urlencode }}">{{ t.info.name }}</a>
+<span class="meta">{% if t.count is none %}many rows (count timed out){% else %}{{ "{:,}".format(t.count) }} row{{ "" if t.count == 1 else "s" }}{% endif %}</span></h3>
+<p class="meta">{% for c in t.info.columns %}{{ c.name }} <i>{{ c.type }}</i>{% if c.primary_key %} (pk){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+</div>
+{% else %}
+<p>No tables.</p>
+{% endfor %}
+<h2>Views</h2>
+{% for v in views %}
+<div class="table-summary">
+<h3><a href="/{{ demo.spec.slug }}/{{ v.info.name | urlencode }}">{{ v.info.name }}</a></h3>
+<p class="meta">{% for c in v.info.columns %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+</div>
+{% else %}
+<p>No views.</p>
+{% endfor %}
+{% endblock %}
