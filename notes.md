@@ -855,3 +855,16 @@ Uncommitted files were left in three worktrees (bug fixes, PGlite, ClickHouse).
 ### Decision: relaunch the eight stopped pieces of work (2026-11-24, about 07:45)
 
 With Simon's go-ahead, eight fresh subagents were started, one per stopped piece, each briefed with what is already pushed, the leftover uncommitted files to recover, and what is still owed. Two changes to how they are briefed, because of the stop: each must push after every commit, and each must send an interim summary as soon as it has test counts and first measurements, so a second stop loses less.
+
+### Found: the Node.js SQLite-WASM worker can corrupt a database shared with another process (interim, 2026-11-24)
+
+Interim report from the relaunched subagent; a fix is in progress.
+
+- **The official `@sqlite.org/sqlite-wasm` build under Node has no cross-process locking.** Node has no `fcntl`, so the worker's locks live in a SharedArrayBuffer table and are invisible to other processes. A Node-side write next to a live native writer rolls back the other writer's "hot" journal and corrupts the file. Until fixed, a `sqlite-nodeworker` database must not be opened by anything else at the same time. The demo's Node database is opened only by that worker.
+- Fix being built: the Node main thread holds a native `node:sqlite` `BEGIN EXCLUSIVE` on the file, so other processes get "database is locked". That makes the database single-process while awake, which is a real restriction compared with the native workers.
+- No WAL mode. After SIGKILL mid-transaction, native SQLite recovers and `integrity_check` is ok.
+- Design: one Node process per database, each connection on a `worker_thread` with its own WASM instance. Cancel and time limits use a progress handler reading an `Atomics` flag; a statement that never reaches a progress check is stopped by terminating its thread about 100 ms after the limit, which retires the process.
+- Tests on macOS: 531 passed, 18 skipped for this backend, nothing failed.
+- Provisional numbers at load 46 to 48: open to first result 75 ms (Python worker 77 ms); idle footprint 37 MB (Python worker 24 MB); one-row read 248 µs against 156 µs for the C worker. One-row update 19 to 20 ms against under 1 ms for the others, because libuv's fsync on macOS is `F_FULLFSYNC`, a full drive flush on every commit.
+- So far it is no better than the Python worker on start-up or memory, and worse on writes and on locking.
+- CI: one run's three Linux jobs appeared hung at about twice their normal time; cause unknown.
