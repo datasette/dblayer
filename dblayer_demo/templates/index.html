@@ -18,4 +18,9 @@ a time limit and a row cap.</p>
 {% endfor %}
 </tbody>
 </table>
+{% if fleet %}
+<h2><a href="/-/fleet">The fleet: {{ "{:,}".format(fleet.members | length) }} more databases behind one Registry</a></h2>
+<p>{% for k, n in fleet.mix.items() %}{{ n }} {{ k }}{% if not loop.last %}, {% endif %}{% endfor %};
+at most {{ fleet.registry.max_open_connections }} connections open across all of them.</p>
+{% endif %}
 {% endblock %}

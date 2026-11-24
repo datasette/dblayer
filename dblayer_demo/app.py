@@ -25,7 +25,8 @@ from dblayer.core.params import find_placeholders, leading_keyword
 from dblayer.core.schema import TableInfo
 
 from .config import DemoConfig
-from .fleet import Fleet
+from .fleet import BACKEND_CLASS, KINDS, Fleet
+from .stats import all_stats, state_counts
 from .databases import DemoDatabase, DemoSpec, close_all, open_all
 from .render import cell, describe_error, is_numeric
 
@@ -103,7 +104,9 @@ async def homepage(request: Request) -> Response:
             except DblayerError as e:
                 row["error"] = describe_error(e)
         rows.append(row)
-    return TEMPLATES.TemplateResponse(request, "index.html", {"rows": rows})
+    return TEMPLATES.TemplateResponse(
+        request, "index.html", {"rows": rows, "fleet": _fleet(request)}
+    )
 
 
 async def database_page(request: Request) -> Response:
@@ -248,6 +251,41 @@ async def query_page(request: Request) -> Response:
     )
 
 
+FLEET_STATES = ("awake", "asleep", "cold", "unavailable")
+
+
+async def fleet_page(request: Request) -> Response:
+    fleet = _fleet(request)
+    if fleet is None:
+        raise HTTPException(404, "This run has no fleet (fleet size 0)")
+    kind = request.query_params.get("backend") or None
+    state = request.query_params.get("state") or None
+    if kind is not None and kind not in KINDS:
+        raise HTTPException(400, f"backend must be one of {', '.join(KINDS)}")
+    if state is not None and state not in FLEET_STATES:
+        raise HTTPException(400, f"state must be one of {', '.join(FLEET_STATES)}")
+    members = [
+        m
+        for m in fleet.members.values()
+        if (kind is None or m.kind == kind) and (state is None or m.state == state)
+    ]
+    return TEMPLATES.TemplateResponse(
+        request,
+        "fleet.html",
+        {
+            "fleet": fleet,
+            "members": members,
+            "kind": kind,
+            "state": state,
+            "kinds": KINDS,
+            "states": FLEET_STATES,
+            "counts": state_counts(fleet),
+            "backend_class": BACKEND_CLASS,
+            "stats": await all_stats(fleet),
+        },
+    )
+
+
 async def http_error(request: Request, exc: Exception) -> Response:
     assert isinstance(exc, HTTPException)
     return TEMPLATES.TemplateResponse(
@@ -288,6 +326,7 @@ def create_app(
 
     routes = [
         Route("/", homepage, name="index"),
+        Route("/-/fleet", fleet_page, name="fleet"),
         Route("/{database}", database_page, name="database"),
         Route("/{database}/-/query", query_page, name="query"),
         Route("/{database}/{table:path}", table_page, name="table"),

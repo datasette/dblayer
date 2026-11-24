@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Fleet{% endblock %}
+{% block crumbs %} / <a href="/-/fleet">fleet</a>{% endblock %}
+{% block content %}
+<h1>Fleet: {{ "{:,}".format(fleet.members | length) }} databases, one Registry</h1>
+<p class="meta">Mix: {% for k in kinds %}{{ fleet.mix[k] }} <code>{{ backend_class[k] }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+Cap {{ fleet.registry.max_open_connections }} open connections across all of them,
+{{ fleet.registry.max_threads }} threads, idle timeout {{ fleet.registry.idle_timeout }} s.
+Databases start <b>cold</b> (not on local disk) and are built from a template on first use.</p>
+
+<table class="rows counts">
+<thead><tr><th>Backend</th>{% for s in states %}<th><a href="?state={{ s }}{% if kind %}&amp;backend={{ kind }}{% endif %}">{{ s }}</a></th>{% endfor %}<th>All</th></tr></thead>
+<tbody>
+{% for k in kinds %}
+<tr><td><a href="?backend={{ k }}{% if state %}&amp;state={{ state }}{% endif %}">{{ k }}</a></td>
+{% for s in states %}<td class="num"><a href="?backend={{ k }}&amp;state={{ s }}">{{ counts.get(k, {}).get(s, 0) }}</a></td>{% endfor %}
+<td class="num">{{ fleet.mix[k] }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+<p>Showing {{ members | length }}{% if kind or state %} ({{ kind or "any backend" }}, {{ state or "any state" }}) <a href="/-/fleet">show all</a>{% endif %}.
+<span class="legend"><span class="s-awake">awake</span> <span class="s-asleep">asleep</span> <span class="s-cold">cold</span> <span class="s-unavailable">unavailable</span></span></p>
+
+<div class="grid">
+{% for m in members %}<a class="s-{{ m.state }}" href="/{{ m.name }}" title="{{ m.demo.spec.title }}: {{ m.state }}{% if m.db %}, {{ m.db.stats().open_total }} open{% endif %}{% if m.demo.error %} ({{ m.demo.error }}){% endif %}">{{ m.name }}</a>{% endfor %}
+</div>
+{% endblock %}
