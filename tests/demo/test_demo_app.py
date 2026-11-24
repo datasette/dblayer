@@ -39,6 +39,7 @@ SLOW_SQL = {
     "duckdb": "select sum(a.range * b.range) from range(1000000) a, range(1000000) b",
 }
 SLOW_SQL["sqlite-worker"] = SLOW_SQL["sqlite"]
+SLOW_SQL["postgres-psycopg"] = SLOW_SQL["postgres"]
 
 
 @pytest.fixture(scope="session")
@@ -154,7 +155,7 @@ async def test_table_page_and_pagination(client: httpx.AsyncClient) -> None:
 
 async def test_table_definition(client: httpx.AsyncClient) -> None:
     r = await client.get(f"/{client.slug}/authors")  # type: ignore[attr-defined]
-    if client.slug == "postgres":  # type: ignore[attr-defined]
+    if client.slug in ("postgres", "postgres-psycopg"):  # type: ignore[attr-defined]
         assert "cannot supply CREATE statements" in r.text
     else:
         assert re.search(r'<pre class="sql">CREATE TABLE (&#34;)?authors', r.text, re.I)

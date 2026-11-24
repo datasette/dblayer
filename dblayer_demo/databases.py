@@ -36,6 +36,9 @@ class DemoSpec:
     """Build the backend from the run's settings. May raise."""
     check: Callable[[Database], Awaitable[None]] | None = None
     """Run after the first connection, before seeding: raise to refuse."""
+    after: str | None = None
+    """Open only once the spec with this slug is open (two backends sharing
+    one PostgreSQL schema must not seed it at the same time)."""
 
 
 @dataclass
@@ -126,6 +129,24 @@ async def _postgres_check(db: Database) -> None:
     await check_postgres_connection(db, POSTGRES_SCHEMA)
 
 
+def postgres_psycopg_backend(dsn: str, schema: str, application_name: str) -> Backend:
+    check_postgres_dsn(dsn)
+    try:
+        import psycopg  # noqa: F401
+    except ImportError as e:
+        raise Unavailable(f"psycopg is not installed (the psycopg extra): {e}") from e
+    from dblayer.backends.postgres_psycopg import PostgresPsycopg
+
+    return PostgresPsycopg(
+        dsn, schema=schema, application_name=application_name, connect_timeout=5.0
+    )
+
+
+def _postgres_psycopg(config: DemoConfig) -> Backend:
+    # The same schema as the asyncpg entry: one data set, two drivers.
+    return postgres_psycopg_backend(config.postgres_dsn, POSTGRES_SCHEMA, "dblayer-demo-psycopg")
+
+
 def _sqlite_worker(config: DemoConfig) -> Backend:
     # The worker backend (spec: "Backend: SQLite in a separate process") is
     # not written yet. This is the one place to change once it lands:
@@ -153,6 +174,14 @@ DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite-worker", "SQLite, in a worker process", "SqliteWorker", _sqlite_worker),
     DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),
     DemoSpec("duckdb", "DuckDB", "DuckDB", _duckdb),
+    DemoSpec(
+        "postgres-psycopg",
+        "PostgreSQL (psycopg 3)",
+        "PostgresPsycopg",
+        _postgres_psycopg,
+        check=_postgres_check,
+        after="postgres",
+    ),
 ]
 
 
@@ -189,7 +218,13 @@ async def open_one(spec: DemoSpec, config: DemoConfig) -> DemoDatabase:
 async def open_all(config: DemoConfig, specs: list[DemoSpec] | None = None) -> list[DemoDatabase]:
     config.data_dir.mkdir(parents=True, exist_ok=True)
     specs = DEMO_SPECS if specs is None else specs
-    return list(await asyncio.gather(*(open_one(s, config) for s in specs)))
+    slugs = {s.slug for s in specs}
+    first = [s for s in specs if s.after is None or s.after not in slugs]
+    later = [s for s in specs if s not in first]
+    opened = list(await asyncio.gather(*(open_one(s, config) for s in first)))
+    opened += await asyncio.gather(*(open_one(s, config) for s in later))
+    order = {s.slug: i for i, s in enumerate(specs)}
+    return sorted(opened, key=lambda d: order[d.spec.slug])
 
 
 async def close_all(demos: list[DemoDatabase]) -> None:
