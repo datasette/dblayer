@@ -1388,3 +1388,9 @@ Interim report from the subagent; load 7 to 10, still provisional.
 ### Found: restarting corespotlightd (2026-11-24, 09:40)
 
 At Simon's instruction I ran `killall corespotlightd`. The old process (up 10 days, 15.7 GB of memory by then, 173% CPU) was replaced by a new one holding 0.3 to 0.5 GB. Thirty-five seconds later the new one was at 150 to 190% CPU, and a sample showed index recovery, so it is rebuilding after the restart. Memory is fixed; whether its CPU settles was not confirmed at the time of writing and needs a later check before the benchmark run.
+
+### Decision: final performance tests run on Fly.io (2026-11-24)
+
+Simon chose a dedicated Fly.io machine over cleaning up this Mac. Org `datasette-cloud-dev`; one `performance-8x` machine (8 dedicated CPUs, 16 GB) in `sjc` with a volume and PostgreSQL inside it; everything destroyed after each run. The repository is now public (private-repo CI minutes were costing money), so a `fly/` folder holds all the configuration with no secrets, and the machine clones the repo without credentials. A subagent is building that folder and a single benchmark runner (`benchmarks/run_all.py`), then doing a quick trial run now to prove the mechanism before the final code lands. Safeguards asked for, because subagents have been stopped mid-task before: a hard maximum lifetime on the machine, no automatic restart, and an idempotent teardown script.
+
+The plan to move generated files under one Dropbox-ignored parent folder is dropped at Simon's request. The ignore attributes already set remain.
