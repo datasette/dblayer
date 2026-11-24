@@ -20,7 +20,7 @@ Each entry is tagged: **Found** (facts discovered), **Built** (what now exists),
 
 - All Python runs through `uv run python` / `uv run pytest`.
 - Opus 5.5 subagents write the code, one milestone each. Milestones 1 to 3 run in sequence because they share the core; 4 to 6 (worker, PostgreSQL, DuckDB) can run in parallel.
-- Commits are made early and often, in sensible chunks, on a `prototype` branch. I make the commits after reviewing each chunk; subagents do not run git.
+- Commits are made early and often, in sensible chunks, and pushed to `main` on GitHub (the repo is dedicated to this prototype). I make the commits after reviewing each chunk; subagents do not run git.
 
 ### Decision: departures from the spec so far
 
