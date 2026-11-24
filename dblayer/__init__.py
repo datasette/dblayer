@@ -1,6 +1,8 @@
 """dblayer: an asyncio database layer that never hands out a raw connection."""
 
 from .core.database import DEFAULT, Database
+from .core.operations import OperationResult
+from .core.transactions import Transaction
 from .core.results import Column, Results, Row, WriteResult
 from .errors import (
     DatabaseClosed,
@@ -14,6 +16,7 @@ from .errors import (
     ResourceLimitExceeded,
     SchemaChanged,
     TableNotFound,
+    TransactionClosed,
     TransactionExpired,
     WorkerCrashed,
     WriteConflict,
@@ -21,6 +24,8 @@ from .errors import (
 
 __all__ = [
     "Database",
+    "Transaction",
+    "OperationResult",
     "DEFAULT",
     "Results",
     "WriteResult",
@@ -33,6 +38,7 @@ __all__ = [
     "TableNotFound",
     "QueryInterrupted",
     "ResourceLimitExceeded",
+    "TransactionClosed",
     "TransactionExpired",
     "WriteConflict",
     "NestedWriteError",
