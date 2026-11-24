@@ -2091,7 +2091,14 @@ done:
         conn *wc2 = j->wc;
         pthread_mutex_unlock(&g_mu);
         send_error(j, &e, wc2);
-        if (streaming || (j->kind == J_REQ && val_is_str(field(j, "type"), "stream")))
+        /* A failed stream request or `more` ends the stream, including a
+         * `more` cancelled while queued (it fails before `streaming` is
+         * set): a stream left behind keeps its statement active, and SQLite
+         * clears an interrupt only once no statement is active, so every
+         * later statement on that connection would fail as interrupted. */
+        if (streaming || j->kind == J_MORE ||
+            (j->kind == J_REQ && (val_is_str(field(j, "type"), "stream") ||
+                                  val_is_str(field(j, "type"), "export"))))
             stream_drop_id(j->id);
         if (e.fatal && g_multi) {
             /* The whole process goes, as the parent expects after "fatal". */

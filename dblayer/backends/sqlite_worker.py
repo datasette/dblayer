@@ -1358,6 +1358,7 @@ class WorkerStream:
         self._buffer: collections.deque[list[tuple[Any, ...]]] = collections.deque()
         self._paused = False  # the worker holds an open cursor for us
         self._done = False
+        self._worker_ended = False  # an error or end frame came back
         self.columns: tuple[Column, ...] | None = None
 
     def __aiter__(self) -> "WorkerStream":
@@ -1372,8 +1373,28 @@ class WorkerStream:
             except BaseException:
                 self._done = True
                 self._paused = False
+                if not self._worker_ended:
+                    self._abandon()
                 raise
         return self._buffer.popleft()
+
+    def _abandon(self) -> None:
+        """The exchange failed in the parent (cancelled, killed) rather than
+        with an error or end frame: the worker may still hold the stream,
+        paused with its cursor open, for instance when its frames arrived
+        just as the task was cancelled. Ask it to close the stream, without
+        waiting: ``cancel`` of a stream that is gone is a no-op, and the
+        worker handles it before any later request on this connection. A
+        stream left open would keep its read snapshot and, on the C worker,
+        an active statement that makes every later statement on the
+        connection fail as interrupted."""
+        proc = self._conn._proc
+        if self._sid is None or self._conn._closed or not proc.alive:
+            return
+        try:
+            proc.send({"type": "cancel", "target": self._sid})
+        except Exception:
+            pass
 
     def _set_sid(self, mid: int) -> None:
         self._sid = mid
@@ -1416,12 +1437,12 @@ class WorkerStream:
                     Column(c, types[i] if i < len(types) else None) for i, c in enumerate(f["columns"])
                 )
             if "error" in f:
-                self._done = True
+                self._done = self._worker_ended = True
                 raise error_from_wire(f["error"])
             if "rows" in f:
                 self._buffer.append([tuple(r) for r in f["rows"]])
             if f.get("end"):
-                self._done = True
+                self._done = self._worker_ended = True
         if not self._done:
             self._paused = True
 

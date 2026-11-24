@@ -526,7 +526,10 @@ class _SqliteStream:
         start = time.perf_counter()
         ms = None if self._remaining_ms is None else max(int(self._remaining_ms), 0)
         try:
-            with _TimeLimit(raw, ms):
+            # ``_statement``: a cancel must interrupt the hop (repeatedly,
+            # since an interrupt sent before the step begins is dropped)
+            # and a hop must not start once cancelled.
+            with _TimeLimit(raw, ms), self._conn._statement():
                 if self._remaining_ms is not None and self._remaining_ms <= 0:
                     raise sqlite3.OperationalError("interrupted")
                 if self._cur is None:

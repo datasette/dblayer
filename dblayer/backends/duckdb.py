@@ -234,25 +234,6 @@ class _Interrupter:
 _interrupter = _Interrupter()
 
 
-class _TimeLimit:
-    """Interrupt ``cur`` if the block runs longer than ``ms``."""
-
-    __slots__ = ("cur", "ms", "token")
-
-    def __init__(self, cur: "_duckdb.DuckDBPyConnection", ms: float | None) -> None:
-        self.cur = cur
-        self.ms = ms
-        self.token: int | None = None
-
-    def __enter__(self) -> None:
-        if self.ms is not None:
-            self.token = _interrupter.schedule(max(self.ms, 0) / 1000, self.cur.interrupt)
-
-    def __exit__(self, *exc: object) -> None:
-        if self.token is not None:
-            _interrupter.cancel(self.token)
-
-
 # -- backend -----------------------------------------------------------------------
 
 _DML = frozenset({"INSERT", "UPDATE", "DELETE", "MERGE_INTO"})
@@ -476,7 +457,7 @@ class DuckDBConnection:
         _interrupter.schedule(_REINTERRUPT_S, lambda: self._interrupt_while_active(stmt))
 
     @contextlib.contextmanager
-    def _statement(self, time_limit_ms: int | None) -> Iterator[None]:
+    def _statement(self, time_limit_ms: float | None) -> Iterator[None]:
         """Worker-thread side of a statement: refuse to start if already
         cancelled, mark it active for ``_interrupt_while_active`` and arm
         its time limit."""
@@ -904,6 +885,8 @@ class _DuckDBStream:
         self._max_bytes = max_result_bytes
         self._bytes = 0
         self._started = False
+        self._executed = False
+        self._kind: str | None = None
         self._wrapped = False
         self._done = False
         self.columns: tuple[Column, ...] | None = None
@@ -931,14 +914,22 @@ class _DuckDBStream:
         try:
             if self._remaining_ms is not None and self._remaining_ms <= 0:
                 raise QueryInterrupted("query interrupted (time limit exceeded)")
-            with _TimeLimit(cur, self._remaining_ms):
-                if not self._started:
-                    kind = conn._check(self._sql)
-                    self._started = True
-                    if kind is None:
-                        self.columns = ()
-                        return None
-                    self._wrapped = conn._read_only_wrapper()
+            if not self._started:
+                self._kind = conn._check(self._sql)
+                self._started = True
+                if self._kind is None:
+                    self.columns = ()
+                    return None
+                # Outside the statement block: an interrupt must never
+                # land on the wrapper's BEGIN.
+                self._wrapped = conn._read_only_wrapper()
+            # ``_statement`` refuses to start once cancelled and repeats the
+            # interrupt (cancel or time limit) until the hop returns: one
+            # ``interrupt()`` sent before DuckDB has really started is lost.
+            with conn._statement(self._remaining_ms):
+                if not self._executed:
+                    self._executed = True
+                    kind = self._kind
                     cur.execute(self._sql, self._params)
                     desc = cur.description or ()
                     if kind not in _RESULT_TYPES and not (kind in _DML and cur.rowcount < 0):
