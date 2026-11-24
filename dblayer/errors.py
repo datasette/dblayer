@@ -22,6 +22,7 @@ __all__ = [
     "NotSupported",
     "DatabaseClosed",
     "SchemaChanged",
+    "UnknownDatabase",
 ]
 
 
@@ -100,3 +101,11 @@ class DatabaseClosed(DblayerError):
 class SchemaChanged(DblayerError):
     """A batch was sent with ``expect_schema_version`` and the schema had moved
     on. Nothing ran."""
+
+
+class UnknownDatabase(DblayerError, KeyError):
+    """``Registry.get()`` found no database of that name and the resolver
+    (if any) returned ``None``."""
+
+    def __str__(self) -> str:
+        return Exception.__str__(self)
