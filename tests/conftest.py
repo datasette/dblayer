@@ -8,6 +8,14 @@ fresh backend for an empty database each time it is called (a new file under
 ``tmp_path``, a new schema on a server, ...). Set ``available`` to a callable
 that returns ``None`` when the backend can run here, or a skip reason.
 
+Named operations, both paths
+----------------------------
+``ops_db`` is a Database parametrised over ``default`` (``native_operations
+=False``: always the core's default implementations) and ``override``
+(the backend's own ``run_operation`` overrides, or the test-only
+``OverrideBackend`` for backends without any). Operation tests use it and
+assert the same results on both.
+
 Skipping by capability
 ----------------------
 ``@pytest.mark.requires("returning", "implicit_rowid")`` skips a test unless
@@ -27,12 +35,18 @@ from dblayer import Database
 from dblayer.backends.base import Backend, Capabilities
 from dblayer.backends.sqlite import SqliteInProcess
 
+from .override_backend import OverrideBackend
+
 
 @dataclass(frozen=True)
 class BackendSpec:
     id: str
     make: Callable[[Path], Backend]
     available: Callable[[], str | None] = lambda: None
+    native_operations: bool = False
+    """True if the backend's connections implement ``run_operation``
+    overrides. If false, the "override" path of ``ops_db`` wraps the backend
+    in the test-only ``OverrideBackend``."""
 
 
 _counter = 0
@@ -117,3 +131,34 @@ async def make_db(make_backend: Callable[..., Backend]) -> AsyncIterator[Callabl
 @pytest.fixture
 async def db(make_db: Callable[..., Database]) -> Database:
     return make_db(name="test")
+
+
+@pytest.fixture(params=["default", "override"])
+async def make_ops_db(
+    request: pytest.FixtureRequest,
+    backend_spec: BackendSpec,
+    make_backend: Callable[[], Backend],
+) -> AsyncIterator[Callable[..., Database]]:
+    made: list[Database] = []
+    path = request.param
+
+    def make(**kwargs: object) -> Database:
+        backend = make_backend()
+        if path == "default":
+            db = Database(backend, native_operations=False, **kwargs)  # type: ignore[arg-type]
+        else:
+            if not backend_spec.native_operations:
+                backend = OverrideBackend(backend)  # type: ignore[assignment]
+            db = Database(backend, native_operations=True, **kwargs)  # type: ignore[arg-type]
+        db.op_path = path  # type: ignore[attr-defined]
+        made.append(db)
+        return db
+
+    yield make
+    for db in made:
+        await db.close()
+
+
+@pytest.fixture
+async def ops_db(make_ops_db: Callable[..., Database]) -> Database:
+    return make_ops_db(name="ops")
