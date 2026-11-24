@@ -152,6 +152,30 @@ async def test_max_rows_stops_an_unbounded_query(db):
     assert len(r) == 100 and r.truncated
 
 
+async def test_max_rows_on_an_unbounded_query_does_not_delay_the_next(db):
+    # DuckDB keeps producing an abandoned result into its streaming buffer,
+    # and the next statement on the cursor (the read wrapper's ROLLBACK)
+    # waited for that: 3 to 9 s in about one call in four for this query,
+    # which is how duckdb-worker overran a 5 s time limit in CI. Each pair
+    # takes about 10 ms once fixed; 2 s is a functional bound, not a
+    # latency figure. Repeating makes a miss of the slow case unlikely
+    # (about 0.75 ** 40 when broken).
+    sql = "with recursive c(x) as (select 1 union all select x + 1 from c) select x from c"
+    slow = []
+    worst = 0.0
+    for i in range(40):
+        start = time.perf_counter()
+        r = await db.execute(sql, max_rows=100, time_limit_ms=8000)
+        assert len(r) == 100 and r.truncated
+        assert (await db.execute("select 1 as one")).rows == [(1,)]
+        took = time.perf_counter() - start
+        worst = max(worst, took)
+        if took > 2:
+            slow.append((i, round(took, 2)))
+    print(f"[max_rows abandon] worst pair {worst * 1000:.0f} ms")
+    assert not slow, f"slow (iteration, seconds): {slow}"
+
+
 # -- time limit ----------------------------------------------------------------
 
 

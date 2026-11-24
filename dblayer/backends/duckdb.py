@@ -528,6 +528,20 @@ class DuckDBConnection:
         self._cur.execute("BEGIN TRANSACTION READ ONLY")
         return True
 
+    def _abandon_result(self) -> None:
+        """Stop the unfinished result of the cursor's last statement before
+        the next statement runs. DuckDB's executor keeps producing into the
+        cursor's streaming buffer (10 MB by default) after the caller stops
+        fetching, and the next statement on the cursor (the wrapper's
+        ROLLBACK, or the caller's) first waits for that to stop: seconds for
+        an unbounded recursive CTE, which yields one row per iteration
+        (measured 3.2 to 9.1 s in 14 of 60 trials). Interrupting the
+        pending result first makes that wait about a millisecond, and does
+        not abort an open transaction. The buffer size itself cannot be
+        lowered here: it is a per-connection setting, cursors do not inherit
+        it, and ``lock_configuration`` forbids setting it on a cursor."""
+        self._cur.interrupt()
+
     def _end_wrapper(self, ok: bool) -> None:
         try:
             self._cur.execute("COMMIT" if ok else "ROLLBACK")
@@ -611,6 +625,8 @@ class DuckDBConnection:
                 # RETURNING: count every returned row, as SQLite reports.
                 while more := cur.fetchmany(_FETCH_BATCH):
                     total += len(more)
+            else:
+                self._abandon_result()
             del rows[max_rows:]
         if kind in _DML:
             rowcount = total
@@ -886,6 +902,7 @@ class _DuckDBStream:
         self._bytes = 0
         self._started = False
         self._executed = False
+        self._exhausted = False
         self._kind: str | None = None
         self._wrapped = False
         self._done = False
@@ -936,12 +953,14 @@ class _DuckDBStream:
                         desc = ()
                     self.columns = tuple(Column(d[0], str(d[1])) for d in desc)
                     if not desc:
+                        self._exhausted = True
                         return None
                 chunk = cur.fetchmany(self._chunk_rows)
         finally:
             if self._remaining_ms is not None:
                 self._remaining_ms -= (time.perf_counter() - start) * 1000
         if not chunk:
+            self._exhausted = True
             return None
         if self._max_bytes is not None:
             for r in chunk:
@@ -955,11 +974,22 @@ class _DuckDBStream:
             return
         self._done = True
         conn = self._conn
-        if self._wrapped and not conn._closed:
-            self._wrapped = False
-            # Ends the read-only transaction, which also discards the
-            # rest of an unfinished result.
-            await run_blocking(conn._backend.executor, conn._end_wrapper, ok)
+        if conn._closed:
+            return
+        abandon = self._executed and not self._exhausted
+        wrapped, self._wrapped = self._wrapped, False
+        if not (abandon or wrapped):
+            return
+
+        def close() -> None:
+            if abandon:
+                conn._abandon_result()
+            if wrapped:
+                # Ends the read-only transaction, which also discards the
+                # rest of an unfinished result.
+                conn._end_wrapper(ok)
+
+        await run_blocking(conn._backend.executor, close)
 
 
 # -- introspection -------------------------------------------------------------
