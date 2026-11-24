@@ -446,15 +446,20 @@ _SAFE_TABLE_FUNCTIONS = frozenset(
         "mergeTreeAnalyzeIndexesUUID", "mergeTreeCodecBlockCounts", "mergeTreeTextIndex",
     }
 )
+# The Linux chDB build has more than the macOS one (Delta Lake, HDFS):
+# test_host_function_lists_cover_this_clickhouse fails on any name in
+# neither list.
 _HOST_TABLE_FUNCTIONS = frozenset(
     {
         "arrowstream", "azureBlobStorage", "azureBlobStorageCluster", "bigquery", "cluster",
-        "clusterAllReplicas", "cosn", "dictionary", "elasticsearch", "eval", "executable", "file",
-        "fileCluster", "filesystem", "gcs", "hudi", "hudiCluster", "iceberg", "icebergAzure",
-        "icebergAzureCluster", "icebergCluster", "icebergLocal", "icebergLocalCluster",
-        "icebergS3", "icebergS3Cluster", "jdbc", "mongodb", "mysql", "odbc", "oss", "paimon",
-        "paimonAzure", "paimonAzureCluster", "paimonCluster", "paimonLocal", "paimonS3",
-        "paimonS3Cluster", "postgresql", "prometheusQuery", "prometheusQueryRange", "python",
+        "clusterAllReplicas", "cosn", "deltaLake", "deltaLakeAzure", "deltaLakeAzureCluster",
+        "deltaLakeCluster", "deltaLakeLocal", "deltaLakeS3", "deltaLakeS3Cluster", "dictionary",
+        "elasticsearch", "eval", "executable", "file", "fileCluster", "filesystem", "gcs", "hdfs",
+        "hdfsCluster", "hudi", "hudiCluster", "iceberg", "icebergAzure", "icebergAzureCluster",
+        "icebergCluster", "icebergHDFS", "icebergHDFSCluster", "icebergLocal",
+        "icebergLocalCluster", "icebergS3", "icebergS3Cluster", "jdbc", "mongodb", "mysql", "odbc",
+        "oss", "paimon", "paimonAzure", "paimonAzureCluster", "paimonCluster", "paimonHDFS",
+        "paimonHDFSCluster", "paimonLocal", "paimonS3", "paimonS3Cluster", "postgresql", "prometheusQuery", "prometheusQueryRange", "python",
         "redis", "remote", "remoteSecure", "s3", "s3Cluster", "sqlite", "timeSeriesData",
         "timeSeriesMetricFamilies", "timeSeriesMetrics", "timeSeriesSamples",
         "timeSeriesSelector", "timeSeriesTags", "timeSeriesTimeRanges", "traceView", "url",

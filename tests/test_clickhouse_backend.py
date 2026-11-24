@@ -129,6 +129,10 @@ async def test_unsupported_parameter_type(db):
         "select `fi\\x6Ce`('/etc/hosts')",
         "select \"fi\\x6Ce\"('/etc/hosts')",
         "select * from python('x')",
+        # In the Linux chDB build only, and not refused until found by
+        # test_host_function_lists_cover_this_clickhouse on Linux CI.
+        "select * from deltaLakeLocal('/etc')",
+        "select * from hdfs('hdfs://127.0.0.1:9/x', 'LineAsString')",
         # Lexer agreement: ClickHouse's '# ' comments and backslash escapes
         # in quoted names hid INTO OUTFILE from the scanner, and the engine
         # wrote the file (found and fixed here).
