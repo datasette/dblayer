@@ -343,18 +343,32 @@ SHAPES = {
 async def overhead(template: Path, root: Path) -> dict[str, Any]:
     from dblayer import Database
     from dblayer.backends.duckdb import DuckDB
-    from dblayer.backends.duckdb_worker import DuckDBWorker
+    from dblayer.backends.duckdb_worker import DuckDBWorker, DuckDBWorkerPool, SpareWorkers
     from dblayer.worker.protocol import available_codecs
+
+    spares = SpareWorkers(1)
+    pool = DuckDBWorkerPool(databases_per_process=8)
 
     variants: dict[str, Any] = {"in-process": lambda p: DuckDB(p)}
     variants["worker-json"] = lambda p: DuckDBWorker(p, codec="json")
     if "msgpack" in available_codecs():
         variants["worker-msgpack"] = lambda p: DuckDBWorker(p, codec="msgpack")
+    # Wake time only matters for these two: a pre-started spare process,
+    # and a pool process that stays up because another database keeps it.
+    variants["worker+spare"] = lambda p: DuckDBWorker(p, spares=spares)
+    variants["worker-pool (process already up)"] = lambda p: DuckDBWorker(p, pool=pool)
     out: dict[str, Any] = {}
     for name, make in variants.items():
         path = root / f"overhead-{name}.duckdb"
         shutil.copyfile(template, path)
         db = Database(make(path), idle_timeout=None)
+        keeper = None
+        if name.startswith("worker-pool"):
+            # Another awake database keeps the pool's process alive.
+            kpath = root / "overhead-keeper.duckdb"
+            shutil.copyfile(template, kpath)
+            keeper = Database(DuckDBWorker(kpath, pool=pool), idle_timeout=None)
+            await keeper.execute("select 1")
         r: dict[str, Any] = {}
         try:
             await db.execute("select 1")
@@ -376,6 +390,9 @@ async def overhead(template: Path, root: Path) -> dict[str, Any]:
             wakes = []
             for _ in range(15):
                 await db.sleep()
+                if name == "worker+spare":
+                    while spares.ready < 1:  # replaced in the background
+                        await asyncio.sleep(0.01)
                 t0 = time.perf_counter()
                 await db.execute(POINT, {"id": 1})
                 wakes.append(time.perf_counter() - t0)
@@ -383,7 +400,11 @@ async def overhead(template: Path, root: Path) -> dict[str, Any]:
             r["wake_p90_ms"] = round(sorted(wakes)[int(len(wakes) * 0.9)] * 1000, 1)
         finally:
             await db.close()
+            if keeper is not None:
+                await keeper.close()
         out[name] = r
+    spares.close()
+    pool.close()
     base = out["in-process"]
     for name, r in out.items():
         if name == "in-process":

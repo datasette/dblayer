@@ -186,6 +186,9 @@ class WorkerConfig:
     start_timeout: float = 30.0
     debug: bool = False
     """Enables the worker's test-only ``_debug`` messages."""
+    preload: tuple[str, ...] = ()
+    """Modules the worker imports at start-up, before ``hello`` (an
+    engine's driver), so a pre-started spare has already paid for them."""
 
     def argv(self) -> list[str]:
         args = [self.python, "-m", "dblayer.worker"]
@@ -193,6 +196,8 @@ class WorkerConfig:
             args += ["--memory-limit-mb", str(int(self.memory_limit_mb))]
         if self.debug:
             args.append("--debug")
+        for module in self.preload:
+            args += ["--preload", module]
         return args
 
 

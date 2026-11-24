@@ -809,6 +809,10 @@ def _set_rlimit_as(memory_limit_mb: int) -> bool:
 
 
 async def _main(args: argparse.Namespace, in_fd: int, out_fd: int) -> None:
+    import importlib
+
+    for module in args.preload:
+        importlib.import_module(module)
     server = Server(in_fd, out_fd, memory_limit_mb=args.memory_limit_mb, debug=args.debug)
     # Start the executor thread before RLIMIT_AS, so its stack is mapped.
     server.executor.submit(lambda: None).result()
@@ -821,6 +825,10 @@ def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="python -m dblayer.worker")
     p.add_argument("--memory-limit-mb", type=int, default=None)
     p.add_argument("--debug", action="store_true", help="enable test-only _debug messages")
+    p.add_argument(
+        "--preload", action="append", default=[],
+        help="import this module at start-up (an engine's driver), before serving",
+    )
     args = p.parse_args(argv)
     # The parent's Ctrl-C is not ours: we exit when our stdin closes.
     signal.signal(signal.SIGINT, signal.SIG_IGN)

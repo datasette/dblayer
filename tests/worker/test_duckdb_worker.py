@@ -191,3 +191,31 @@ async def test_pool_recycles_a_process_after_its_wake_budget(tmp_path):
         for db in (a, b, c):
             await db.close()
         pool.close()
+
+
+async def test_spare_worker_is_taken_on_wake_and_replaced(tmp_path):
+    from dblayer.backends.duckdb_worker import SpareWorkers
+
+    spares = SpareWorkers(1)
+    b = DuckDBWorker(tmp_path / "s.duckdb", spares=spares)
+    db = Database(b)
+    try:
+        spares.fill(b.placement_group.config)
+        deadline = asyncio.get_running_loop().time() + 30
+        while spares.ready < 1:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+        spare_pid = spares._spares[0].pid
+        assert (await db.execute("select 42")).rows == [(42,)]
+        assert b.pid == spare_pid  # the wake took the pre-started process
+        assert spares.taken == 1
+        await db.sleep()
+        while spares.ready < 1:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+        assert (await db.execute("select 43")).rows == [(43,)]
+        assert spares.taken == 2 and b.pid != spare_pid
+        print(f"\n[duckdb-worker] wake on a spare: {b.placement_group.last_start_ms:.1f} ms to take it")
+    finally:
+        await db.close()
+        spares.close()

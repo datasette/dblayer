@@ -60,9 +60,94 @@ from .sqlite_worker import (
     WorkerProcess,
 )
 
-__all__ = ["DuckDBWorker", "DatabaseWorker", "DuckDBWorkerPool", "DUCKDB_ENGINE"]
+__all__ = ["DuckDBWorker", "DatabaseWorker", "DuckDBWorkerPool", "SpareWorkers", "DUCKDB_ENGINE"]
 
 DUCKDB_ENGINE = "dblayer.backends.duckdb:DuckDB"
+DUCKDB_PRELOAD = ("duckdb", "dblayer.backends.duckdb")
+"""Imported by every DuckDB worker at start-up (``WorkerConfig.preload``)."""
+
+
+class SpareWorkers:
+    """Experimental: keep ``size`` worker processes started (interpreter
+    up, ``preload`` modules imported, ``hello`` done) so a waking database
+    takes one instead of paying the ~100 ms start. Each spare is a process
+    that costs memory while it waits (~45 MB footprint for DuckDB), and a
+    taken spare is replaced in the background. Only processes started with
+    the same ``WorkerConfig`` are handed out. Belongs to one event loop at
+    a time; ``close()`` stops the spares."""
+
+    def __init__(self, size: int = 1) -> None:
+        if size < 0:
+            raise ValueError("size must be at least 0")
+        self.size = size
+        self._spares: list[WorkerProcess] = []
+        self._filling: dict[WorkerConfig, int] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
+        self.taken = 0
+        self.missed = 0
+
+    def __repr__(self) -> str:
+        return f"<SpareWorkers size={self.size} ready={len(self._spares)}>"
+
+    def _check_loop(self) -> asyncio.AbstractEventLoop:
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self.close()
+            self._loop = loop
+        return loop
+
+    def take(self, config: WorkerConfig) -> WorkerProcess | None:
+        """A ready spare for ``config`` (and a replacement starting), or
+        None (and spares starting for next time)."""
+        self._check_loop()
+        self._spares = [p for p in self._spares if p.alive]
+        proc = next((p for p in self._spares if p.config == config), None)
+        if proc is not None:
+            self._spares.remove(proc)
+            self.taken += 1
+        else:
+            self.missed += 1
+        self.fill(config)
+        return proc
+
+    def fill(self, config: WorkerConfig) -> None:
+        """Start spares for ``config`` in the background, up to ``size``."""
+        loop = self._check_loop()
+        ready = sum(1 for p in self._spares if p.config == config and p.alive)
+        for _ in range(self.size - ready - self._filling.get(config, 0)):
+            self._filling[config] = self._filling.get(config, 0) + 1
+            task = loop.create_task(self._start(config))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def _start(self, config: WorkerConfig) -> None:
+        try:
+            proc = WorkerProcess(config)
+            await proc.start()
+        except Exception:
+            return
+        finally:
+            self._filling[config] -= 1
+        if self._loop is asyncio.get_running_loop():
+            self._spares.append(proc)
+        else:
+            proc.close()
+
+    @property
+    def ready(self) -> int:
+        return sum(1 for p in self._spares if p.alive)
+
+    def close(self) -> None:
+        for t in self._tasks:
+            t.cancel()
+        spares, self._spares = self._spares, []
+        for p in spares:
+            p.close()
+
+    async def aclose(self) -> None:
+        self.close()
+        await asyncio.sleep(0)
 
 
 class DatabaseWorker(SharedWorkers):
@@ -83,6 +168,8 @@ class DatabaseWorker(SharedWorkers):
         max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
         exit_timeout: float = 10.0,
         debug: bool = False,
+        preload: tuple[str, ...] = (),
+        spares: SpareWorkers | None = None,
     ) -> None:
         super().__init__(
             1,
@@ -93,6 +180,11 @@ class DatabaseWorker(SharedWorkers):
             linger=0.0,
             debug=debug,
         )
+        if preload:
+            from dataclasses import replace
+
+            self.config = replace(self.config, preload=tuple(preload))
+        self.spares = spares
         self.exit_timeout = exit_timeout
         self._starting_proc: asyncio.Future[WorkerProcess] | None = None
         self._exiting: list[WorkerProcess] = []
@@ -127,9 +219,13 @@ class DatabaseWorker(SharedWorkers):
             self._starting_proc = fut
             try:
                 await self.wait_exited()
-                proc = WorkerProcess(self.config)
                 t0 = time.perf_counter()
-                await proc.start()
+                spare = self.spares.take(self.config) if self.spares is not None else None
+                if spare is not None:
+                    proc = spare
+                else:
+                    proc = WorkerProcess(self.config)
+                    await proc.start()
                 self.last_start_ms = (time.perf_counter() - t0) * 1000
             except BaseException:
                 fut.cancel()
@@ -230,6 +326,7 @@ class DuckDBWorkerPool:
             kill_grace_ms=kill_grace_ms,
             max_frame_bytes=max_frame_bytes,
             debug=debug,
+            preload=DUCKDB_PRELOAD,
         )
         self.hosts: list[_Host] = []
         self._where: dict[str, _Host] = {}
@@ -372,6 +469,9 @@ class DuckDBWorker(WorkerBackend):
     ``kill_grace_ms``, ``max_frame_bytes``. Or ``pool=DuckDBWorkerPool(...)``
     (experimental): share processes with other databases, a few awake
     databases per process; the pool's process options then apply.
+    ``spares=SpareWorkers(n)`` (experimental): take a pre-started process
+    on wake instead of starting one; share one ``SpareWorkers`` between
+    databases with the same process options.
 
     Capability flags: as in-process DuckDB, plus ``hard_kill``."""
 
@@ -393,6 +493,7 @@ class DuckDBWorker(WorkerBackend):
         max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
         debug: bool = False,
         pool: DuckDBWorkerPool | None = None,
+        spares: SpareWorkers | None = None,
     ) -> None:
         engine_config: dict[str, Any] = {"memory_limit": memory_limit, "threads": threads}
         if read_only:
@@ -414,6 +515,8 @@ class DuckDBWorker(WorkerBackend):
                 kill_grace_ms=kill_grace_ms,
                 max_frame_bytes=max_frame_bytes,
                 debug=debug,
+                preload=DUCKDB_PRELOAD,
+                spares=spares,
             )
         super().__init__(
             path,
