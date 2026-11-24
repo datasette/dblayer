@@ -579,6 +579,15 @@ def _load_json(result: dict[str, Any]) -> dict[str, Any]:
 
 class PGliteStream(WorkerStream):
     async def _exchange(self) -> None:
+        # The worker keeps no time budget for a stream: the parent's kill at
+        # the remaining budget plus the grace stops one long chunk, but
+        # chunks each quicker than the grace would go on for ever. Once the
+        # budget is spent, close the stream here instead of asking for more.
+        if self._sid is not None and self._time_limit_ms is not None and self._spent_ms >= self._time_limit_ms:
+            await self.aclose()
+            raise QueryInterrupted(
+                f"query interrupted (time limit exceeded): the stream used its {self._time_limit_ms} ms"
+            )
         before = len(self._buffer)
         await super()._exchange()
         cols = _json_columns([c.type for c in self.columns] if self.columns else None)
