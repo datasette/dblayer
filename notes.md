@@ -1147,3 +1147,7 @@ Subagent-reported. Measurements at load 19 to 25; provisional. CI not confirmed.
 
 - None credible for sqlite-utils or Datasette. The general lesson (filtering SQL needs the engine's own lexer) applies to any regex-based read-only check; not tested against Datasette.
 - **chDB (not Datasette or sqlite-utils):** `file()` is not stopped by `readonly=1` and is not confined by `user_files_path`. Reproduced on 4.5.1.
+
+### Built: a proposed revision of the API (2026-11-24)
+
+`dblayer-api-revision-proposal.md`, written by me at Simon's request from the findings in these notes. It proposes four contract changes (errors end a transaction, with explicit savepoints; atomicity declared per operation; containment as a declared level with `untrusted=True`; no security by scanning SQL text), a set of smaller API additions, changes to the backend interface (interrupt contract, operations as data, capabilities in `hello`, execution strategy), registry changes (weighted places, bounded wakes) and nine decisions for Simon. Nothing in it is implemented, and it rests on the subagents' reports, not yet on a line-by-line code review.
