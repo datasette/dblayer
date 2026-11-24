@@ -169,26 +169,33 @@ async def test_read_only_database_and_create_false(tmp_path):
 
 async def test_session_state_does_not_reach_a_later_connection(tmp_path):
     """The worker reuses DuckDB connections it configured before locking
-    the settings; one that holds session state (a temporary table, a
-    variable) is closed instead, so a new connection starts clean, as a new
-    cursor does in-process."""
+    the settings (a small streaming_buffer_size); one that holds session
+    state (a temporary table, a variable) is closed instead, so a new
+    connection starts clean, as a new cursor does in-process. A connection
+    kept open throughout keeps the database (and its spares) open."""
     b = DuckDBRustWorker(tmp_path / "s.duckdb")
-    w = await b.open(write=True)
+    keeper = await b.open(write=False)
     try:
-        await w.execute("create temp table tt as select 1 x", (), time_limit_ms=None, max_rows=None)
-        await w.execute("set variable v = 42", (), time_limit_ms=None, max_rows=None)
-    finally:
-        await w.close()
-    for _ in range(10):  # every spare connection in turn
-        c = await b.open(write=True)
+        w = await b.open(write=True)
         try:
-            with pytest.raises(QueryError, match="tt"):
-                await c.execute("select * from tt", (), time_limit_ms=None, max_rows=None)
-            r = await c.execute("select getvariable('v')", (), time_limit_ms=None, max_rows=None)
-            assert r.rows[0][0] is None
+            await w.execute("create temp table tt as select 1 x", (), time_limit_ms=None, max_rows=None)
+            await w.execute("set variable v = 42", (), time_limit_ms=None, max_rows=None)
         finally:
-            await c.close()
-    await b.close()
+            await w.close()
+        for _ in range(10):  # every spare connection in turn
+            c = await b.open(write=True)
+            try:
+                with pytest.raises(QueryError, match="tt"):
+                    await c.execute("select * from tt", (), time_limit_ms=None, max_rows=None)
+                r = await c.execute("select getvariable('v'), current_setting('streaming_buffer_size')", (),
+                                    time_limit_ms=None, max_rows=None)
+                assert r.rows[0][0] is None
+                assert r.rows[0][1] == "15.6 KiB", r.rows  # 16KB (16,000 bytes), not the 10 MB default
+            finally:
+                await c.close()
+    finally:
+        await keeper.close()
+        await b.close()
 
 
 # -- concurrency -------------------------------------------------------------------------
