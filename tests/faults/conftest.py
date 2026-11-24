@@ -27,21 +27,35 @@ def no_orphan_workers():
     assert live_worker_pids() == []
 
 
-@pytest.fixture(params=["python", "c"], ids=["py-worker", "c-worker"])
-def make_worker(request: pytest.FixtureRequest) -> Callable[..., SqliteWorker]:
-    """``SqliteWorker`` or the C worker (``SqliteCWorker``, skipped when
-    the binary is not built): the fault tests run against both."""
+@pytest.fixture(params=["python", "c", "cpool"], ids=["py-worker", "c-worker", "c-pool"])
+def make_worker(request: pytest.FixtureRequest):
+    """``SqliteWorker``, the C worker (``SqliteCWorker``) or the
+    multi-tenant C pool (``SqliteCPool``, one process per test); the C ones
+    are skipped when the binary is not built."""
     if request.param == "python":
-        return SqliteWorker
+        yield SqliteWorker
+        return
     from dblayer.backends.sqlite_cworker import SqliteCWorker, binary_unavailable
 
     reason = binary_unavailable()
     if reason:
         pytest.skip(reason)
+    pools: list[Any] = []
 
     def make(path: Any, **kwargs: Any) -> SqliteWorker:
         if kwargs.get("init"):
             pytest.skip("init hooks need the Python worker")
-        return SqliteCWorker(path, **kwargs)
+        if request.param == "c":
+            return SqliteCWorker(path, **kwargs)
+        from dblayer.backends.sqlite_cpool import CPool, SqliteCPool
 
-    return make
+        process_options = {k: kwargs.pop(k) for k in ("kill_grace_ms", "memory_limit_mb", "debug", "max_frame_bytes")
+                           if k in kwargs}
+        if process_options.get("memory_limit_mb"):  # the per-database heap limit is per process here
+            process_options["heap_limit_mb"] = process_options["memory_limit_mb"]
+        pools.append(pool := CPool(1, linger=0, **process_options))
+        return SqliteCPool(path, pool=pool, **kwargs)  # type: ignore[return-value]
+
+    yield make
+    for pool in pools:
+        pool.close()
