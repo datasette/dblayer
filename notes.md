@@ -355,3 +355,32 @@ Subagent-reported; combined suite not yet re-run by me while milestone 3 is stil
 - **A waiting timeout on the cap.** A task that holds one connection and asks for another can deadlock silently when the cap is full.
 - **Quota-driven eviction in the registry** (`evict_lru(bytes)`); today the test helper owns that policy.
 - **`Registry.close()` shuts the thread pool down on the event loop thread,** which would block behind a query that ignores interrupts.
+
+## 2026-11-23: demo app at 1,000 databases
+
+### Built
+
+- The demo now serves a fleet of 1,000 databases through one `Registry`: 800 in-process SQLite, 150 DuckDB, 30 PostgreSQL schemas (`dblayer_demo_fleet_NNN` in `dblayer_test`) and 20 SQLite-worker, which show as unavailable until milestone 4. Cap of 40 open connections, 8 threads, 12 s idle timeout.
+- Every database starts Cold and is built in `on_wake` by copying a seeded template (or creating the schema on PostgreSQL), then personalised.
+- Pages: `/-/fleet` (grid of all 1,000 coloured by state, with filter links), a live stats panel fed by `/-/stats.json`, and `/-/fanout?n=N` (up to 500 concurrent skewed reads, or evictions).
+- New library method: `Registry.add(name, db, cold=True)`.
+- Eleven commits, `499e60c` to `708f985`.
+
+### Found
+
+- **My own run, fresh server, one 500-way fan-out from the browser:** 500 of 500 reads succeeded in 0.87 s across 175 distinct databases, all of them cold beforehand. Open connections peaked at exactly the cap of 40. Threads went from 3 to 12 and stayed there; file descriptors 12 to 52; resident memory 86 MB to 185 MB. Latency p50 138 ms, p95 723 ms (most of it building cold databases).
+- **Subagent-reported:** registering the fleet takes about 20 ms; after 12 s idle everything is asleep again with descriptors back to about 10, but resident memory stays near 180 to 200 MB (not returned to the OS, DuckDB being the likely main cost).
+- **The cap limits connections, not wakes.** `on_wake` runs before a database has a place under the cap, so wake work (fetching from object storage) is unbounded: before the app added its own limit of 8, one fan-out built about 150 cold databases at once and peaked at 388 MB.
+- **A hook cannot write to its own database:** `db.execute_write` inside `on_wake` deadlocks on the wake lock, so setup goes through a separate temporary `Database`, which the cap does not count.
+- **`asyncio.to_thread` in a hook adds threads** beyond the registry's fixed pool (17 extra); hooks should use `registry.executor`.
+- **A registry had no way to start a database Cold**; only `evict()` set that state. Fixed with `add(cold=True)`.
+- **Possible bug, read in code and not tested:** the hub's cold count is not decremented when a cold database is closed or removed.
+- **Startup wall time is 6 to 14 s, almost all Python imports from this Dropbox folder** (0.37 s of CPU). Not a library cost.
+
+### Idea: to discuss
+
+- **Bound concurrent wakes in the registry** (`max_concurrent_wakes`), or take the cap place before running `on_wake`. Object-storage fetches are exactly the work that needs bounding.
+- **A hook context that allows setup writes during the first wake.**
+- **Pass the reason to hooks:** `on_sleep(db, reason="idle" | "cap" | "explicit")`.
+- **Counts by state and per-database open counts in `RegistryStats`,** so a status page need not read 1,000 properties.
+- **`Registry.add_many()`.**
