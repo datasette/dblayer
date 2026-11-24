@@ -68,7 +68,8 @@ def test_fleet_mix_adds_up() -> None:
     for size in [0, 1, 9, 10, 30, 1000, 1234]:
         assert sum(fleet_mix(size).values()) == max(size, 0)
     assert fleet_mix(1000) == {
-        "sqlite": 800, "duckdb": 100, "duckdb-worker": 50, "postgres": 30, "sqlite-worker": 20,
+        "sqlite": 600, "sqlite-cworker": 200, "duckdb": 100, "duckdb-worker": 50,
+        "postgres": 30, "sqlite-worker": 20,
     }
 
 

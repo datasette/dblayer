@@ -165,6 +165,12 @@ def sqlite_worker_backend(path: Path) -> Backend:
 
 def _sqlite_cworker(config: DemoConfig) -> Backend:
     # Experimental: the same worker protocol, served by a C program.
+    return sqlite_cworker_backend(config.data_dir / "sqlite-cworker.db")
+
+
+def sqlite_cworker_backend(path: Path) -> Backend:
+    """Shared by the featured C worker database and the fleet's. Raises
+    ``Unavailable`` naming the build command until the binary is built."""
     try:
         from dblayer.backends.sqlite_cworker import SqliteCWorker, binary_unavailable
     except ImportError as e:
@@ -172,7 +178,7 @@ def _sqlite_cworker(config: DemoConfig) -> Backend:
     reason = binary_unavailable()
     if reason:
         raise Unavailable(reason)
-    return SqliteCWorker(config.data_dir / "sqlite-cworker.db")
+    return SqliteCWorker(path)
 
 
 def _duckdb(config: DemoConfig) -> Backend:

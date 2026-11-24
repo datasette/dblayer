@@ -106,7 +106,8 @@ def _mb(n: int | None) -> float | None:
 
 
 def worker_stats() -> dict[str, Any]:
-    """The worker processes this app started (SQLite and DuckDB workers):
+    """The worker processes this app started (SQLite in Python and C
+    workers, DuckDB workers):
     how many are alive and their memory, summed."""
     from dblayer.backends.sqlite_worker import live_worker_pids
 

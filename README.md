@@ -84,8 +84,10 @@ backend that cannot run here is listed as unavailable, with the reason.
 ### The fleet: 1,000 databases behind one Registry
 
 `/-/fleet` (linked from the homepage) lists a further 1,000 databases served
-through one `Registry`: 800 in-process SQLite, 150 DuckDB, 30 PostgreSQL
-schemas and 20 SQLite-worker (unavailable until that backend exists). They
+through one `Registry`: 600 in-process SQLite, 200 SQLite in a C worker
+process, 100 in-process DuckDB, 50 DuckDB in a worker process, 30 PostgreSQL
+schemas and 20 SQLite in a Python worker process. The C worker members show
+as unavailable, with the build command, until `make -C cworker` has run. They
 share a global cap of 40 open connections, 8 threads and a 12 s idle timeout.
 Every database starts cold and is built in `on_wake` on first use (a copy
 of a seeded template file, or a newly seeded schema, each with its own

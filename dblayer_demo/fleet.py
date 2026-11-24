@@ -30,6 +30,7 @@ from .databases import (
     check_postgres_connection,
     duckdb_worker_backend,
     postgres_backend,
+    sqlite_cworker_backend,
     sqlite_worker_backend,
 )
 from .seed import VIEW_NAME, seed
@@ -52,9 +53,10 @@ MAX_CONCURRENT_MATERIALISE = 8
 class FanoutBusy(Exception):
     pass
 
-KINDS = ("sqlite", "duckdb", "duckdb-worker", "postgres", "sqlite-worker")
+KINDS = ("sqlite", "sqlite-cworker", "duckdb", "duckdb-worker", "postgres", "sqlite-worker")
 BACKEND_CLASS = {
     "sqlite": "SqliteInProcess",
+    "sqlite-cworker": "SqliteCWorker",
     "duckdb": "DuckDB",
     "duckdb-worker": "DuckDBWorker",
     "postgres": "Postgres",
@@ -63,6 +65,7 @@ BACKEND_CLASS = {
 TEMPLATE_KIND = {
     "sqlite": "sqlite",
     "sqlite-worker": "sqlite",
+    "sqlite-cworker": "sqlite",
     "duckdb": "duckdb",
     "duckdb-worker": "duckdb",
 }
@@ -78,6 +81,7 @@ _TOWNS = (
 ).split()
 _KIND_LABEL = {
     "sqlite": "SQLite",
+    "sqlite-cworker": "SQLite C worker",
     "duckdb": "DuckDB",
     "duckdb-worker": "DuckDB worker",
     "postgres": "PostgreSQL",
@@ -87,18 +91,24 @@ _KIND_LABEL = {
 
 def fleet_mix(size: int) -> dict[str, int]:
     """How many of each backend: mostly in-process SQLite (cheapest asleep
-    and awake), 10% in-process DuckDB (about 5 MB per awake instance, not
-    all of it returned on sleep), 5% DuckDB in a worker process (a process
-    per awake database, gone on sleep), 3% PostgreSQL schemas (each awake
-    one holds server connections) and 2% worker SQLite."""
+    and awake), 20% SQLite in a C worker process (about 3 ms and 3 MB per
+    awake database, so a process each is affordable), 10% in-process DuckDB
+    (about 5 MB per awake instance, not all of it returned on sleep), 5%
+    DuckDB in a worker process (a process per awake database, gone on
+    sleep), 3% PostgreSQL schemas (each awake one holds server connections)
+    and 2% SQLite in a Python worker (about 60 ms and 38 MB per process).
+    1,000 gives 600 / 200 / 100 / 50 / 30 / 20."""
     if size <= 0:
         return {k: 0 for k in KINDS}
     duckdb = round(size * 0.10)
-    duckdb_worker = max(1, round(size * 0.05)) if size >= 10 else 0
-    postgres = max(1, round(size * 0.03)) if size >= 10 else 0
-    worker = max(1, round(size * 0.02)) if size >= 10 else 0
+    small = size >= 10
+    cworker = max(1, round(size * 0.20)) if small else 0
+    duckdb_worker = max(1, round(size * 0.05)) if small else 0
+    postgres = max(1, round(size * 0.03)) if small else 0
+    worker = max(1, round(size * 0.02)) if small else 0
     return {
-        "sqlite": size - duckdb - duckdb_worker - postgres - worker,
+        "sqlite": size - cworker - duckdb - duckdb_worker - postgres - worker,
+        "sqlite-cworker": cworker,
         "duckdb": duckdb,
         "duckdb-worker": duckdb_worker,
         "postgres": postgres,
@@ -202,7 +212,7 @@ class Fleet:
                     path = self.dir / f"{name}.db"
                 elif kind in ("duckdb", "duckdb-worker"):
                     path = self.dir / f"{name}.duckdb"
-                elif kind == "sqlite-worker":
+                elif kind in ("sqlite-worker", "sqlite-cworker"):
                     path = self.dir / f"{name}.db"
                 spec = DemoSpec(
                     slug=name,
@@ -251,6 +261,10 @@ class Fleet:
         if member.kind == "sqlite-worker":
             assert member.path is not None
             return sqlite_worker_backend(member.path)
+        if member.kind == "sqlite-cworker":
+            assert member.path is not None
+            # Raises Unavailable (the build command) until the binary exists.
+            return sqlite_cworker_backend(member.path)
         if member.kind == "duckdb-worker":
             assert member.path is not None
             # The same small settings as in-process members; the worker
@@ -272,7 +286,7 @@ class Fleet:
         kinds that cannot run here (DuckDB not installed)."""
         errors: dict[str, str] = {}
         kinds = []
-        if self.mix.get("sqlite") or self.mix.get("sqlite-worker"):
+        if self.mix.get("sqlite") or self.mix.get("sqlite-worker") or self.mix.get("sqlite-cworker"):
             kinds.append("sqlite")
         if self.mix.get("duckdb") or self.mix.get("duckdb-worker"):
             kinds.append("duckdb")

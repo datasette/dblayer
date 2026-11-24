@@ -16,7 +16,7 @@
 <span>threads <b data-k="process.threads">{{ p.threads }}</b></span>
 <span>open fds <b data-k="process.open_fds">{{ p.open_fds }}</b></span>
 <span title="This process. Footprint is what it really costs (macOS phys_footprint, Linux PSS); RSS also counts memory already freed but not yet reclaimed by the OS.">this process: footprint <b data-k="process.footprint_mb">{{ p.footprint_mb }}</b> MB, RSS <b data-k="process.rss_mb">{{ p.rss_mb }}</b> MB (peak <b data-k="process.peak_rss_mb">{{ p.peak_rss_mb }}</b>)</span>
-<span title="Worker processes (SQLite and DuckDB in a worker), summed. Each exits when its database sleeps.">worker processes <b data-k="workers.processes">{{ w.processes }}</b>: footprint <b data-k="workers.footprint_mb">{{ w.footprint_mb }}</b> MB, RSS <b data-k="workers.rss_mb">{{ w.rss_mb }}</b> MB</span>
+<span title="Worker processes (SQLite in a Python or C worker, DuckDB in a worker), summed. Each exits when its database sleeps.">worker processes <b data-k="workers.processes">{{ w.processes }}</b>: footprint <b data-k="workers.footprint_mb">{{ w.footprint_mb }}</b> MB, RSS <b data-k="workers.rss_mb">{{ w.rss_mb }}</b> MB</span>
 <span>total footprint <b data-k="total.footprint_mb">{{ t.footprint_mb }}</b> MB, RSS <b data-k="total.rss_mb">{{ t.rss_mb }}</b> MB</span>
 <span class="meta">live, from <a href="/-/stats.json">/-/stats.json</a></span>
 </div>
