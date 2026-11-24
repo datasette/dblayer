@@ -530,3 +530,36 @@ async def test_inline_read_never_waits_for_a_lock_on_the_loop(tmp_path):
     other.close()
     assert (await db.execute("select count(*) from t")).rows == [(0,)]
     await db.close()
+
+
+# -- stream prefetch: fewer hops for small chunks ---------------------------------
+
+
+@pytest.mark.parametrize("prefetch, hops", [(None, 101), (250, 5)])
+async def test_stream_prefetch_rows(tmp_path, monkeypatch, prefetch, hops):
+    from dblayer.backends import sqlite_apsw
+
+    backend = SqliteApsw(tmp_path / "p.db", stream_prefetch_rows=prefetch)
+    db = Database(backend)
+    await db.execute_write("create table t (id integer primary key)")
+    await db.execute_write(
+        "with recursive c(i) as (select 1 union all select i + 1 from c where i < 1000) "
+        "insert into t select i from c"
+    )
+    fills = 0
+    real_fill = sqlite_apsw._ApswStream._fill
+
+    def counting_fill(self):
+        nonlocal fills
+        fills += 1
+        return real_fill(self)
+
+    monkeypatch.setattr(sqlite_apsw._ApswStream, "_fill", counting_fill)
+    sizes, ids = [], []
+    async with db.stream("select id from t order by id", chunk_rows=10) as chunks:
+        async for chunk in chunks:
+            sizes.append(len(chunk))
+            ids.extend(r[0] for r in chunk)
+    assert ids == list(range(1, 1001)) and set(sizes) == {10}
+    assert fills == hops  # executor hops; the last one finds the end
+    await db.close()
