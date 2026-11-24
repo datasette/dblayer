@@ -12,7 +12,7 @@ import asyncio
 import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dblayer import Database
@@ -20,7 +20,7 @@ from dblayer.backends.base import Backend
 
 from .seed import seed
 
-__all__ = ["DemoSpec", "DemoDatabase", "DEMO_SPECS", "open_all", "close_all"]
+__all__ = ["DemoSpec", "DemoDatabase", "Unavailable", "DEMO_SPECS", "open_all", "close_all"]
 
 SEED_TIMEOUT_S = 60.0
 
@@ -45,12 +45,16 @@ class DemoDatabase:
     error: str | None = None
     """Why the database is unavailable, or ``None``."""
     seeded: bool = False
-    table_count: int | None = None
-    extra: dict[str, str] = field(default_factory=dict)
+    """True if this run wrote the demo data (it was not there yet)."""
 
     @property
     def available(self) -> bool:
         return self.db is not None
+
+
+class Unavailable(Exception):
+    """Raised by a spec's ``make`` or ``check``: the message is the whole
+    reason shown on the homepage."""
 
 
 # -- the backends ------------------------------------------------------------------
@@ -86,7 +90,7 @@ def _postgres(data_dir: Path) -> Backend:
     dsn = postgres_dsn()
     # Refuse before connecting: the server may hold other, real databases.
     if _dsn_database(dsn) != POSTGRES_DATABASE:
-        raise ValueError(
+        raise Unavailable(
             f"${POSTGRES_DSN_ENV} must name the {POSTGRES_DATABASE!r} database; refusing to connect"
         )
     from dblayer.backends.postgres import Postgres
@@ -100,8 +104,19 @@ async def _postgres_check(db: Database) -> None:
     r = await db.execute("select current_database(), current_schema()")
     database, schema = r.rows[0]
     if database != POSTGRES_DATABASE or schema != POSTGRES_SCHEMA:
-        raise RuntimeError(f"connected to {database}.{schema}, expected "
+        raise Unavailable(f"connected to {database}.{schema}, expected "
                            f"{POSTGRES_DATABASE}.{POSTGRES_SCHEMA}; refusing to seed")
+
+
+def _sqlite_worker(data_dir: Path) -> Backend:
+    # The worker backend (spec: "Backend: SQLite in a separate process") is
+    # not written yet. This is the one place to change once it lands:
+    # confirm the module path and constructor below.
+    try:
+        from dblayer.backends.sqlite_worker import SqliteWorker  # type: ignore[import-not-found]
+    except ImportError as e:
+        raise Unavailable(f"the SqliteWorker backend is not available yet ({e})") from e
+    return SqliteWorker(data_dir / "sqlite-worker.db")
 
 
 def _duckdb(data_dir: Path) -> Backend:
@@ -112,6 +127,7 @@ def _duckdb(data_dir: Path) -> Backend:
 
 DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite", "SQLite, in process", "SqliteInProcess", _sqlite),
+    DemoSpec("sqlite-worker", "SQLite, in a worker process", "SqliteWorker", _sqlite_worker),
     DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),
     DemoSpec("duckdb", "DuckDB", "DuckDB", _duckdb),
 ]
@@ -122,6 +138,8 @@ DEMO_SPECS: list[DemoSpec] = [
 
 def _reason(e: BaseException) -> str:
     msg = str(e).strip()
+    if isinstance(e, Unavailable):
+        return msg
     return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
 
