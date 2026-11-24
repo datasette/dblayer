@@ -70,6 +70,20 @@ are `sqlite-cpool`, `c-pool`, `tests/worker/test_cworker_multi.py`,
 `make -C cworker SANITIZE=thread` builds a ThreadSanitizer binary in
 `cworker/build-tsan/`.
 
+### Exports: `db.export()` (experimental)
+
+`db.export(sql, format="csv"|"tsv"|"json"|"ndjson")` streams a result as
+bytes in the formats of [docs/export-formats.md](docs/export-formats.md).
+The C worker, in-process DuckDB and PostgreSQL on psycopg serialise
+natively; every other backend uses the Python fallback. Tests:
+`tests/conformance/test_export.py` (every backend, native and fallback),
+`tests/test_export_parity.py` (native against fallback, byte for byte),
+`tests/worker/test_cworker_export.py` and `tests/worker/test_cworker_handoff.py`
+(the C worker's transports, including the socket handoff). Their timing
+checks are hang guards (10 s or more) and counts, never tight bounds.
+Benchmark: `uv run --all-extras python -m benchmarks.export` (`--http` for
+curl against the handoff server and the demo app).
+
 ### The DuckDB C++ worker (experimental)
 
 `duckdb-cpp-worker/` is a DuckDB worker process in C++ on the official
