@@ -824,3 +824,7 @@ Subagent-reported. All timings taken at load 14 to 44; provisional. No Linux mem
 
 - None for sqlite-utils or Datasette.
 - **DuckDB itself:** the C API does not stream a recursive CTE's first rows the way the Python package's internal path does. Moderately verified by the subagent with minimal C programs on both APIs.
+
+### Decision: register backends through pluggy (queued; 2026-11-24)
+
+Simon asked that, once every running subagent has finished, dblayer use pluggy and every backend register itself through a pluggy hook. It waits until then because it touches every backend module, `tests/conftest.py` and the demo's database list, which ten subagents are editing now. Consequences to settle when it is built: pluggy becomes the core's first runtime dependency (the core is standard-library only today, and CI has a job that proves it); the worker processes must not import pluggy at start-up, since their import time is what the C worker was built to avoid; and the hook should let a backend report itself unavailable with a reason, as the demo's import guards do now.
