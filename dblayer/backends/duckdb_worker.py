@@ -55,11 +55,12 @@ from .sqlite_worker import (
     DEFAULT_KILL_GRACE_MS,
     SharedWorkers,
     WorkerBackend,
+    WorkerConfig,
     WorkerConnection,
     WorkerProcess,
 )
 
-__all__ = ["DuckDBWorker", "DatabaseWorker", "DUCKDB_ENGINE"]
+__all__ = ["DuckDBWorker", "DatabaseWorker", "DuckDBWorkerPool", "DUCKDB_ENGINE"]
 
 DUCKDB_ENGINE = "dblayer.backends.duckdb:DuckDB"
 
@@ -177,6 +178,186 @@ class DatabaseWorker(SharedWorkers):
         await self.wait_exited()
 
 
+class _Host:
+    """One process of a ``DuckDBWorkerPool`` and the databases on it."""
+
+    __slots__ = ("proc", "dbs", "wakes", "accepting")
+
+    def __init__(self, proc: WorkerProcess) -> None:
+        self.proc = proc
+        self.dbs: dict[str, int] = {}
+        """Database path -> connections open on this process."""
+        self.wakes = 0
+        self.accepting = True
+
+
+class DuckDBWorkerPool:
+    """Experimental placement shared by many ``DuckDBWorker`` backends: one
+    process hosts up to ``databases_per_process`` awake databases (every
+    connection of each, as DuckDB's file lock needs), so the ~45 MB a
+    worker costs before it opens anything (interpreter, imports, the duckdb
+    library) is paid once per group, not once per database.
+
+    Memory is still returned: a process exits when its last database
+    sleeps, and stops taking new databases after ``wakes_per_process``
+    wakes, so one that never empties is replaced once its databases sleep
+    (whatever DuckDB kept after earlier sleeps goes with it). A database
+    reopened on another process is safe: a connection's close is
+    acknowledged by the worker only after the DuckDB instance has closed.
+
+    The cost: a kill (time limit overrun, memory) takes every database on
+    that process down, and their requests share one worker, one at a
+    time."""
+
+    def __init__(
+        self,
+        *,
+        databases_per_process: int = 8,
+        wakes_per_process: int = 64,
+        codec: str = "json",
+        memory_limit_mb: int | None = None,
+        kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
+        max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
+        debug: bool = False,
+    ) -> None:
+        if databases_per_process < 1 or wakes_per_process < 1:
+            raise ValueError("databases_per_process and wakes_per_process must be at least 1")
+        self.databases_per_process = databases_per_process
+        self.wakes_per_process = wakes_per_process
+        self.config = WorkerConfig(
+            codec=codec,
+            memory_limit_mb=memory_limit_mb,
+            kill_grace_ms=kill_grace_ms,
+            max_frame_bytes=max_frame_bytes,
+            debug=debug,
+        )
+        self.hosts: list[_Host] = []
+        self._where: dict[str, _Host] = {}
+        self._placing: dict[str, asyncio.Future[_Host]] = {}
+        self._starting = 0
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self.started = 0
+
+    def __repr__(self) -> str:
+        return f"<DuckDBWorkerPool processes={self.processes} databases={len(self._where)}>"
+
+    def slot(self, path: str) -> "_PoolSlot":
+        return _PoolSlot(self, path)
+
+    def _host_of(self, proc: WorkerProcess) -> _Host | None:
+        for h in self.hosts:
+            if h.proc is proc:
+                return h
+        return None
+
+    async def acquire(self, path: str) -> WorkerProcess:
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self.close()
+            self._loop = loop
+        while True:
+            host = self._where.get(path)
+            if host is not None and host.proc.alive:
+                break
+            pending = self._placing.get(path)
+            if pending is not None:
+                await asyncio.wait([pending])
+                continue
+            fut: asyncio.Future[_Host] = loop.create_future()
+            self._placing[path] = fut
+            try:
+                host = await self._place(path)
+            except BaseException:
+                fut.cancel()
+                raise
+            finally:
+                del self._placing[path]
+            fut.set_result(host)
+            break
+        host.dbs[path] = host.dbs.get(path, 0) + 1
+        host.proc.handles += 1
+        return host.proc
+
+    async def _place(self, path: str) -> _Host:
+        self.hosts = [h for h in self.hosts if h.proc.alive]
+        room = [h for h in self.hosts if h.accepting and len(h.dbs) < self.databases_per_process]
+        if room:
+            host = max(room, key=lambda h: len(h.dbs))  # pack: fewer processes
+        else:
+            proc = WorkerProcess(self.config)
+            await proc.start()
+            self.started += 1
+            host = _Host(proc)
+            self.hosts.append(host)
+        host.wakes += 1
+        if host.wakes >= self.wakes_per_process:
+            host.accepting = False
+        self._where[path] = host
+        host.dbs.setdefault(path, 0)
+        return host
+
+    def release(self, path: str, proc: WorkerProcess) -> None:
+        proc.handles -= 1
+        host = self._host_of(proc)
+        if host is None:
+            return
+        n = host.dbs.get(path, 0) - 1
+        if n > 0:
+            host.dbs[path] = n
+            return
+        host.dbs.pop(path, None)
+        if self._where.get(path) is host:
+            del self._where[path]
+        if not host.dbs:
+            # The last database on this process slept: exit, returning
+            # everything (the next wake starts or picks another process).
+            self.hosts.remove(host)
+            host.proc.close()
+
+    def close(self) -> None:
+        hosts, self.hosts = self.hosts, []
+        self._where.clear()
+        for h in hosts:
+            h.proc.close()
+
+    @property
+    def processes(self) -> int:
+        return sum(1 for h in self.hosts if h.proc.alive)
+
+
+class _PoolSlot:
+    """A ``DuckDBWorkerPool`` seen from one database: the placement
+    interface ``WorkerBackend`` uses (``acquire``, ``release``,
+    ``config``)."""
+
+    __slots__ = ("pool", "path")
+
+    def __init__(self, pool: DuckDBWorkerPool, path: str) -> None:
+        self.pool = pool
+        self.path = path
+
+    @property
+    def config(self) -> WorkerConfig:
+        return self.pool.config
+
+    @property
+    def process(self) -> WorkerProcess | None:
+        host = self.pool._where.get(self.path)
+        return host.proc if host is not None and host.proc.alive else None
+
+    async def acquire(self) -> WorkerProcess:
+        return await self.pool.acquire(self.path)
+
+    def release(self, proc: WorkerProcess) -> None:
+        self.pool.release(self.path, proc)
+
+    def close(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
+
 class DuckDBWorker(WorkerBackend):
     """DuckDB in a worker process that the database owns: started on wake,
     exited on sleep. See the module docstring.
@@ -188,7 +369,9 @@ class DuckDBWorker(WorkerBackend):
 
     Process options: ``codec`` (``"json"`` or ``"msgpack"``),
     ``memory_limit_mb`` (``RLIMIT_AS`` for the whole worker, Linux only),
-    ``kill_grace_ms``, ``max_frame_bytes``.
+    ``kill_grace_ms``, ``max_frame_bytes``. Or ``pool=DuckDBWorkerPool(...)``
+    (experimental): share processes with other databases, a few awake
+    databases per process; the pool's process options then apply.
 
     Capability flags: as in-process DuckDB, plus ``hard_kill``."""
 
@@ -209,6 +392,7 @@ class DuckDBWorker(WorkerBackend):
         kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
         max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
         debug: bool = False,
+        pool: DuckDBWorkerPool | None = None,
     ) -> None:
         engine_config: dict[str, Any] = {"memory_limit": memory_limit, "threads": threads}
         if read_only:
@@ -219,13 +403,18 @@ class DuckDBWorker(WorkerBackend):
             engine_config["config"] = dict(config)
         if not create:
             engine_config["create"] = False
-        workers = DatabaseWorker(
-            codec=codec,
-            memory_limit_mb=memory_limit_mb,
-            kill_grace_ms=kill_grace_ms,
-            max_frame_bytes=max_frame_bytes,
-            debug=debug,
-        )
+        workers: Any
+        if pool is not None:
+            workers = pool.slot(os.path.abspath(os.fspath(path)))
+            codec = pool.config.codec
+        else:
+            workers = DatabaseWorker(
+                codec=codec,
+                memory_limit_mb=memory_limit_mb,
+                kill_grace_ms=kill_grace_ms,
+                max_frame_bytes=max_frame_bytes,
+                debug=debug,
+            )
         super().__init__(
             path,
             engine=DUCKDB_ENGINE,
@@ -237,17 +426,17 @@ class DuckDBWorker(WorkerBackend):
             max_frame_bytes=max_frame_bytes,
             debug=debug,
         )
-        self.placement = "database"  # type: ignore[assignment]
+        self.placement = "pool" if pool is not None else "database"  # type: ignore[assignment]
 
     @property
-    def placement_group(self) -> DatabaseWorker:
-        assert isinstance(self.workers, DatabaseWorker)
+    def placement_group(self) -> Any:
+        """The ``DatabaseWorker`` (or pool slot) this database uses."""
         return self.workers
 
     @property
     def pid(self) -> int | None:
         """Pid of the running worker process, or None while asleep."""
-        p = self.placement_group.process
+        p = self.workers.process  # type: ignore[union-attr]
         return p.pid if p is not None else None
 
     async def open(self, *, write: bool) -> WorkerConnection:

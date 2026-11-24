@@ -135,3 +135,59 @@ async def test_memory_limit_and_threads_apply_inside_the_worker(tmp_path):
         assert threads == 1
     finally:
         await db.close()
+
+
+# -- experimental: several databases per process ---------------------------------
+
+
+async def test_pool_packs_databases_and_exits_when_all_sleep(tmp_path):
+    from dblayer.backends.duckdb_worker import DuckDBWorkerPool
+
+    pool = DuckDBWorkerPool(databases_per_process=2)
+    backends = [DuckDBWorker(tmp_path / f"p{i}.duckdb", pool=pool) for i in range(5)]
+    dbs = [Database(b) for b in backends]
+    try:
+        for i, db in enumerate(dbs):
+            await db.execute_write(f"create table t as select {i} v")
+        # All five awake: three processes (2 + 2 + 1).
+        assert pool.processes == 3
+        results = await asyncio.gather(*[db.execute("select v from t") for db in dbs])
+        assert [r.rows[0][0] for r in results] == list(range(5))
+        pids = [b.pid for b in backends]
+        assert len(set(pids)) == 3
+        for db in dbs:
+            await db.sleep()
+        assert pool.processes == 0
+        await asyncio.sleep(0)
+        from dblayer.backends.sqlite_worker import reap_workers
+
+        assert reap_workers(timeout=5.0) == []
+        # Wake one again: it may land on any process; its data is intact.
+        assert (await dbs[3].execute("select v from t")).rows == [(3,)]
+    finally:
+        for db in dbs:
+            await db.close()
+        pool.close()
+
+
+async def test_pool_recycles_a_process_after_its_wake_budget(tmp_path):
+    from dblayer.backends.duckdb_worker import DuckDBWorkerPool
+
+    pool = DuckDBWorkerPool(databases_per_process=4, wakes_per_process=2)
+    a, b, c = (Database(DuckDBWorker(tmp_path / f"{n}.duckdb", pool=pool)) for n in "abc")
+    try:
+        await a.execute("select 1")
+        first = a._backend.pid  # type: ignore[attr-defined]
+        await b.execute("select 1")
+        assert b._backend.pid == first  # type: ignore[attr-defined]
+        await b.sleep()
+        # The first process has used its two wakes: c goes to a new one,
+        # and the first exits once a sleeps.
+        await c.execute("select 1")
+        assert c._backend.pid != first  # type: ignore[attr-defined]
+        await a.sleep()
+        assert pool.processes == 1
+    finally:
+        for db in (a, b, c):
+            await db.close()
+        pool.close()
