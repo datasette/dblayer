@@ -36,6 +36,8 @@ export OUT SRC
 rm -rf "$OUT" /data/tmp
 mkdir -p "$OUT/logs" /data/tmp /data/cache
 export MAKEFLAGS="-j$(nproc)"
+# Compile site-packages to .pyc at install, so no benchmark pays for it.
+export UV_COMPILE_BYTECODE=1
 export TMPDIR=/data/tmp
 export UV_CACHE_DIR=/data/cache/uv
 export npm_config_cache=/data/cache/npm

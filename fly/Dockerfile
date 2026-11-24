@@ -55,6 +55,11 @@ RUN set -eux; \
         | tar -xz -C /usr/local/bin --strip-components=1; \
     uv --version; \
     uv python install 3.12 3.13 3.14; \
+    # The standard library ships without .pyc files, and the unprivileged
+    # user cannot write them, so without this every Python process start
+    # compiles the stdlib it imports from source (first trial: `python -c
+    # pass` 138 ms, Python worker start-up 620 ms).
+    for py in /opt/uv-python/cpython-*/bin/python3.1?; do "$py" -m compileall -q -j0 "$(dirname "$py")/../lib" >/dev/null || true; done; \
     chmod -R a+rX /opt/uv-python
 
 # The unprivileged user the benchmarks and PostgreSQL run as (some tests
