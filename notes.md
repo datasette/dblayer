@@ -1264,3 +1264,45 @@ Subagent-reported. Full suite after the fixes: 6,295 passed, 3,339 skipped, 4 ex
 ### Decision: build a Rust version of the multi-tenant SQLite worker (2026-11-24)
 
 Simon asked for it, to compare with the C one. One subagent is building `sqlite-rs-worker/`, a drop-in for `dblayer-cworker --multi`, linked against the same pinned SQLite amalgamation with the same compile options so the comparison is fair. Deliverables: a side-by-side table (speed, memory, size, build time, lines, `unsafe`, dependencies) and a bug-by-bug table saying whether Rust would have prevented each bug the C worker has had. Known limit: ThreadSanitizer and Miri need a nightly Rust toolchain, which is not installed and will not be.
+
+## 2026-11-24: SQLite-WASM in a Node.js worker, final report
+
+Subagent-reported. Timings at load 20 to 48; provisional. No completed CI run includes this backend. The interim section above describes the corruption risk; this records the fix and the measurements.
+
+### Found
+
+- **The corruption risk is fixed by a guard.** On first open, the Node main thread opens the file with Node's built-in native SQLite and holds `BEGIN EXCLUSIVE` until the last connection closes. Every other SQLite process then gets "database is locked" instead of corrupting the file. A Node-worker database is therefore single-process while awake.
+- **Two traps met while building it, both general:** closing any descriptor of a file drops all of the process's locks on it (the same hazard found in the wasmtime backend), and Node closes a worker thread's descriptors when the thread exits, which silently drops those locks. The first version of the guard missed the second and failed about one run in three.
+
+| Measure | In-process | Python worker | C worker | Node worker |
+| --- | --- | --- | --- | --- |
+| Open to first result, new database | 0.59 ms | 95 ms | 6.2 ms | 83 ms |
+| Idle memory, footprint | n/a | 24 MB | 1.6 MB | 37 MB |
+| One-row read (MessagePack) | 142 µs | 192 µs | 156 µs | 248 µs |
+| One-row update | 581 µs | 945 µs | 659 µs | 19,073 µs |
+| 1,000-database scale test | n/a | 142 requests/s | 431 requests/s (heavier load) | 168 requests/s |
+
+- **Node's start-up is no better than Python's.** Of about 78 ms: Node itself about 27 ms, WASM compile to about 24 ms, the connection thread running at about 42 ms, SQLite ready at about 55 ms. V8's code cache saves 2 to 3 ms.
+- **One-row updates take about 20 ms on macOS** because Node's `fsync` is a full drive flush (`F_FULLFSYNC`). Native SQLite with `PRAGMA fullfsync=1` takes 12 ms, so this is flush policy, not WebAssembly. It makes this backend the most durable and the slowest to commit.
+- **It stops evading queries itself, sooner than a kill:** by terminating the connection's thread 100 ms after the limit, at 304 to 310 ms against the C worker's 451 to 482 ms. The cost is that the whole process exits, taking that database's other connections.
+- A four-connection Node worker is about 113 MB of footprint. No WAL. No FTS3/4 and no extension loading in this build.
+- 64-bit integers round-trip exactly in both codecs.
+- Tests: 536 passed, 18 skipped for this backend. 3,513 lines of JavaScript.
+- **A stray pytest summary line from another test's subprocess appeared in the middle of a full-suite output file.** Some test writes into the parent's output. Not investigated.
+
+### Decision
+
+- **Recommendation from the subagent: keep it as an experimental containment option, not a replacement for the C worker,** which starts about 13 times faster and uses about a tenth of the memory.
+- The guard runs native SQLite code inside the worker, but only to hold the lock and roll back a leftover crash journal, never to read table data.
+
+### Idea: to discuss
+
+- **Of the three non-Python SQLite workers, this is the weakest.** WebAssembly under wasmtime gives the sandbox without a process and with real locks; the C worker gives the process with native speed. The Node worker pays for both a process and a sandbox and gets neither's advantage. Its value was as a third protocol implementation, and as the host for PGlite.
+- Replace only the affected connection after a thread is terminated, not the whole process.
+- `PRAGMA synchronous=NORMAL` as an option for macOS commit latency.
+
+### Upstream suggestions
+
+- None for sqlite-utils or Datasette.
+- **Node.js (not sqlite-utils or Datasette):** a worker thread's exit closes its descriptors, which drops the process's POSIX locks on those files. Reproduced by the subagent; deserves a note in Node's documentation.
+- **SQLite-WASM (not sqlite-utils or Datasette):** a Node file system with real locking would remove the need for the guard.
