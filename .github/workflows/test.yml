@@ -227,3 +227,42 @@ jobs:
         env:
           DBLAYER_CWORKER: ${{ github.workspace }}/cworker/build-system/dblayer-cworker
         run: uv run --all-extras pytest -ra -k "cworker or c-worker" tests/worker tests/faults tests/conformance
+
+  pglite-worker:
+    # The experimental PGlite backend (pglite-worker/, PostgreSQL in
+    # WebAssembly in a Node.js process): the pinned npm package, no build.
+    # Other jobs do not install it, so the pglite tests skip there. The
+    # server is only for the differential test against psycopg.
+    name: PGlite worker (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dblayer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DBLAYER_TEST_POSTGRES: postgresql://postgres:postgres@localhost:5432/dblayer_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - name: Install the PGlite worker's npm packages
+        run: npm ci --prefix pglite-worker && node pglite-worker/src/main.mjs --version
+      - name: Run the PGlite backend's tests
+        run: >-
+          uv run --all-extras --group demo pytest -ra -k pglite
+          tests/conformance tests/worker tests/faults tests/scale tests/demo
