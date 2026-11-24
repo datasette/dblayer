@@ -851,3 +851,7 @@ State of each at the stop, from what is pushed (their own commit messages; no fi
 | ClickHouse | Backend, "whole conformance suite passes", tests | Demo entry, benchmark, capability table, report |
 
 Uncommitted files were left in three worktrees (bug fixes, PGlite, ClickHouse).
+
+### Decision: relaunch the eight stopped pieces of work (2026-11-24, about 07:45)
+
+With Simon's go-ahead, eight fresh subagents were started, one per stopped piece, each briefed with what is already pushed, the leftover uncommitted files to recover, and what is still owed. Two changes to how they are briefed, because of the stop: each must push after every commit, and each must send an interim summary as soon as it has test counts and first measurements, so a second stop loses less.
