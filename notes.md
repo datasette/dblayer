@@ -527,3 +527,56 @@ Subagent-reported unless marked. I have used the backend through the demo (featu
 ### Decision: add an experimental SQLite worker written in C (beyond the spec)
 
 Simon asked for this on 2026-11-23 in response to the 85 ms Python worker start-up. A C program that speaks the same wire protocol and links SQLite directly, registered as a `sqlite-cworker` backend. It cannot run named operations as one message (they are Python functions; it falls back to round trips) or Python init hooks. Besides start-up time, it is the first second implementation of the protocol, so it tests whether `docs/worker-protocol.md` is really a specification. It must be run under AddressSanitizer: a memory-unsafe worker handling results of untrusted SQL would defeat its purpose.
+
+## 2026-11-23: DuckDB in a worker process
+
+Subagent-reported. Timings were taken at load 9.5 to 14 (Spotlight was indexing) and are provisional; memory figures are less sensitive to load. macOS only: no Linux memory figures yet.
+
+### Found: the premise was partly wrong
+
+- **Correction to earlier notes.** The "DuckDB does not return memory after sleep" finding (resident memory staying near 180 to 200 MB in the demo, "sleeping returned only 114 MB of 498 MB") was measured with RSS. On macOS, RSS keeps counting freed pages until the OS reclaims them under pressure. Measured by physical footprint (`ri_phys_footprint`, Activity Monitor's "Memory" column), in-process DuckDB gives most of it back: 150 databases peak at about 406 to 471 MB and settle at about 100 to 175 MB after sleep, against a 48 MB start.
+- **What remains in-process:** footprint after sleep creeps slowly over cycles (154 to 174 MB over cycles 3 to 8).
+- **No in-process trim helped:** `gc.collect()`, `malloc_zone_pressure_relief` (released 0 bytes) and DuckDB's allocator flush settings made no material difference. On macOS the DuckDB wheel uses the system malloc. On Linux it bundles jemalloc, so this must be re-measured there.
+
+| Mode, 150 databases | Peak footprint | After sleep | Wake, median | Processes at peak |
+| --- | --- | --- | --- | --- |
+| In-process | 406 to 471 MB | 86 to 175 MB | 12 to 25 ms | 1 |
+| Worker, one process per database | 2,594 MB | parent 39 to 45 MB, children 0 | 185 to 190 ms | 40 |
+| Worker pool, 8 databases per process | 842 MB | parent 31 to 32 MB, children 0 | 30 to 43 ms | 8 |
+
+- **A one-process-per-database worker returns everything but costs about 5 times the peak memory and 15 times the wake time.** Its floor is 45 MB of footprint before opening anything: 9 MB bare Python, 14 MB dblayer's own worker imports, 23 MB the duckdb import.
+- **Overhead per query:** one-row read 418 to 473 µs in-process against 603 to 808 µs in a worker. 100,000 plain rows: 43 ms in-process, 95 ms MessagePack, 139 ms JSON. 100,000 rows of dates, timestamps and decimals: 40 ms in-process against 300 to 350 ms, about 3 µs per row, and MessagePack is slower than JSON there.
+- **Asleep to first result:** 8.5 ms in-process, 160 ms worker, 15 ms with a pre-started spare, 9 ms on a pool process that is already up.
+- **Bugs found in the worker layer along the way, all fixed:** result column types were dropped on the wire; MessagePack extension payloads did not handle nested values; JSON turned DuckDB MAP keys into strings; the worker's time-limit backstop raced DuckDB's own interrupt and lost the driver cause; `SharedWorkers` could start two processes for concurrent first opens, which is fatal with DuckDB's per-process file lock.
+
+### Built
+
+- `dblayer/backends/duckdb_worker.py`: `DuckDBWorker`, one process owning all of a database's connections and exiting on sleep. Conformance: 366 passed, 12 skipped (in-process DuckDB's 8 plus 4 executor tests that do not apply).
+- Value types across the wire in both codecs: datetime with zone, date, time, Decimal, UUID, timedelta, and markers for MAP, STRUCT and arrays.
+- Two experimental designs beyond the brief: `DuckDBWorkerPool` (several awake databases per process; a process exits when its last database sleeps) and `SpareWorkers` (pre-started workers, with a `--preload` option).
+- `benchmarks/duckdb_memory.py`.
+- Demo: a sixth featured database, the fleet's DuckDB members split 100 in-process and 50 worker, and a stats panel that shows this process and the worker processes separately, by footprint and RSS.
+- Twelve commits, `8310b3a` to `5b2e4b4`.
+
+### Decision
+
+- **Recommendation: do not run DuckDB one-process-per-database by default.** Use a worker for untrusted SQL, where the hard kill and `RLIMIT_AS` are the point. For fleets, pool plus spares is the version worth making the default, after a Linux measurement and a decision on its cost: killing a pool process takes down every database on it.
+- The parent process no longer imports `duckdb` when using the worker.
+
+### Idea: to discuss
+
+- **Report footprint, not RSS, everywhere memory is quoted** (the scale test and the earlier demo numbers used RSS). Earlier memory figures in these notes should be read with that in mind.
+- **Trim the worker's own 14 MB of imports,** which also bears on the 85 ms start-up.
+- **A faster wire form for typed values** (epoch integers for dates and timestamps); the per-value `packb` call is what makes MessagePack slower than JSON for typed rows.
+- **One worker serves requests one at a time,** so a long analytical query delays every other query on that database, or on that pool process. In-process DuckDB runs cursors concurrently. This is a real functional cost of the worker for DuckDB.
+- **Spares shared across engines** with lazy preload.
+
+### Upstream suggestions
+
+- None for sqlite-utils.
+- **Datasette, documentation note:** on macOS, memory that looks "not returned" is often RSS counting freed pages; footprint is the honest figure. Verified here for DuckDB only.
+
+### Unverified or fragile
+
+- The DuckDB worker's `RLIMIT_AS` test had not finished on Linux CI when the subagent stopped; DuckDB under an address-space limit may fail at import.
+- Pool bookkeeping when a pooled process is killed mid-placement is only exercised indirectly.
