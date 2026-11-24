@@ -334,24 +334,42 @@ async def bench_apsw_extras(variant: str, d: Path, repeat: int) -> dict[str, flo
     out = {"open_us": med_us(opens), "execute_many_100k_ms": statistics.median(many) * 1e3}
     if variant.startswith("cworker"):
         return out
+    # In a fresh process per variant: memory freed by an earlier variant's
+    # closed connections would otherwise be reused and hide the cost.
+    import subprocess
+
+    probe = subprocess.run(
+        [sys.executable, __file__, "--memory-probe", variant, str(d)],
+        capture_output=True, text=True, check=True,
+    )
+    out.update(json.loads(probe.stdout.strip().splitlines()[-1]))
+    return out
+
+
+async def memory_probe(variant: str, d: Path, n: int = 200) -> dict[str, float]:
+    """RSS growth of this (fresh) process per open connection, each with a
+    table created and read; plus SQLite's own figure where the backend
+    reports one (``memory_status``)."""
     import gc
     import os
 
     gc.collect()
     before = _rss_kb(os.getpid())
-    backends = [make_backend(variant, d / f"mem-{variant}-{i}.db") for i in range(200)]
+    backends = [make_backend(variant, d / f"mem-{variant}-{i}.db") for i in range(n)]
     conns = []
-    for i, b in enumerate(backends):
+    for b in backends:
         c = await b.open(write=True)
         await c.execute("create table t (id integer primary key, v text)", {}, time_limit_ms=None, max_rows=None)
         await c.execute("select * from t", {}, time_limit_ms=None, max_rows=None)
         conns.append(c)
     gc.collect()
     after = _rss_kb(os.getpid())
-    out["rss_per_conn_kb"] = (after - before) / len(conns)
+    out: dict[str, float] = {"rss_per_conn_kb": (after - before) / n}
     if hasattr(backends[0], "memory_status"):
         s = [b.memory_status() for b in backends]
-        out["sqlite_bytes_per_conn"] = statistics.median(x["cache_used"] + x["schema_used"] + x["stmt_used"] for x in s)
+        out["sqlite_bytes_per_conn"] = statistics.median(
+            x["cache_used"] + x["schema_used"] + x["stmt_used"] for x in s
+        )
     for c in conns:
         await c.close()
     for b in backends:
@@ -455,7 +473,11 @@ def main() -> None:
     p.add_argument("--quick", action="store_true")
     p.add_argument("--json", type=Path)
     p.add_argument("--variants", help="comma-separated subset of " + ",".join(VARIANTS))
+    p.add_argument("--memory-probe", nargs=2, metavar=("VARIANT", "DIR"), help=argparse.SUPPRESS)
     args = p.parse_args()
+    if args.memory_probe:
+        print(json.dumps(asyncio.run(memory_probe(args.memory_probe[0], Path(args.memory_probe[1])))))
+        return
     r = asyncio.run(run_all(args.quick, args.variants.split(",") if args.variants else None))
     print_table(r)
     if args.json:
