@@ -28,6 +28,9 @@ Modes:
   knobs), plus gc and trim.
 * ``worker``: ``DuckDBWorker`` (one process per awake database, exiting on
   sleep), JSON codec.
+* ``worker-pool``: ``DuckDBWorker`` with the experimental
+  ``DuckDBWorkerPool(databases_per_process=8)``: up to 8 awake databases
+  share a process, which exits when its last database sleeps.
 
 How memory is measured (``mem_of``): on macOS, ``proc_pid_rusage``
 (``RUSAGE_INFO_V2``) through ctypes gives ``ri_resident_size`` (RSS, what
@@ -69,7 +72,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-MODES = ["in-process", "in-process+gc", "in-process+trim", "in-process+settings", "worker"]
+MODES = ["in-process", "in-process+gc", "in-process+trim", "in-process+settings", "worker", "worker-pool"]
 
 ANALYTICAL = (
     "select grp, count(*) n, avg(val) a, max(s) m, sum(length(s)) l "
@@ -252,6 +255,13 @@ async def memory_child(mode: str, paths: list[Path], cap: int, cycles: int, conc
 
         def make(p: Path) -> Any:
             return DuckDB(p, config=cfg)
+    elif mode == "worker-pool":
+        from dblayer.backends.duckdb_worker import DuckDBWorker, DuckDBWorkerPool
+
+        pool = DuckDBWorkerPool(databases_per_process=8)
+
+        def make(p: Path) -> Any:
+            return DuckDBWorker(p, pool=pool)
     else:
         from dblayer.backends.duckdb_worker import DuckDBWorker
 
@@ -293,8 +303,12 @@ async def memory_child(mode: str, paths: list[Path], cap: int, cycles: int, conc
         awake_before_sleep = registry.stats().awake
         for db in dbs:
             await db.sleep()
+        from dblayer.backends.sqlite_worker import reap_workers
+
+        await asyncio.sleep(0.05)
+        reap_workers(timeout=5.0)  # pooled workers exit on their own: wait for them
         trim = None
-        if mode != "in-process" and mode != "worker":
+        if mode.startswith("in-process+"):
             gc.collect()
         if mode in ("in-process+trim", "in-process+settings"):
             trim = trim_allocator()
