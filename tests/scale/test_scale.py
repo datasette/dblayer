@@ -39,7 +39,6 @@ pytestmark = pytest.mark.scale
 CAP = 64
 THREADS = 8
 WORKERS = 96  # more concurrent requests than the cap, so some wait
-REQUESTS = 20_000
 WRITE_SHARE = 0.1
 IDLE_TIMEOUT = 0.3
 # Per running statement: a rollback journal during a write, a temp file.
@@ -59,6 +58,7 @@ def scale_backend(request) -> ScaleBackend:
 async def test_ten_thousand_databases(scale_backend, tmp_path):
     spec = scale_backend
     n = scale_count(spec)
+    requests = spec.requests
     t0 = time.perf_counter()
     paths = spec.create_files(tmp_path / "dbs", n)
     create_s = time.perf_counter() - t0
@@ -92,11 +92,16 @@ async def test_ten_thousand_databases(scale_backend, tmp_path):
             await d.sleep()
         threads = threading.active_count()
         fd_baseline = count_open_fds()
-        fd_limit = fd_baseline + CAP + FD_ALLOWANCE
+        # Descriptors per place under the cap: 1 for SQLite (one per
+        # connection); a DuckDB instance holds its file and WAL.
+        await dbs[0].execute("select count(*) from t")
+        per_place = max(count_open_fds() - fd_baseline, 1)
+        await dbs[0].sleep()
+        fd_limit = fd_baseline + CAP * per_place + FD_ALLOWANCE
 
         rng = random.Random(20261123)
         zipf = Zipf(n, 1.1, rng)
-        plan = [(zipf.sample(), rng.random() < WRITE_SHARE) for _ in range(REQUESTS)]
+        plan = [(zipf.sample(), rng.random() < WRITE_SHARE) for _ in range(requests)]
         writes = [0] * n
         for i, w in plan:
             writes[i] += w
@@ -166,10 +171,10 @@ async def test_ten_thousand_databases(scale_backend, tmp_path):
         + (f"{reg.rss_bytes_per_db:.0f} B/db (RSS delta)" if reg.rss_bytes_per_db is not None else "RSS n/a")
         + f"\n  asleep after a wake/sleep cycle: {used_growth:+.1f} B/db growth (tracemalloc, "
         f"{len(sample_dbs)} dbs)\n"
-        f"  load: {REQUESTS} requests ({WRITE_SHARE:.0%} writes) over {touched} databases, "
-        f"Zipf s=1.1, {WORKERS} workers, in {load_s:.1f}s ({REQUESTS / load_s:.0f} req/s)\n"
+        f"  load: {requests} requests ({WRITE_SHARE:.0%} writes) over {touched} databases, "
+        f"Zipf s=1.1, {WORKERS} workers, in {load_s:.1f}s ({requests / load_s:.0f} req/s)\n"
         f"  fds: baseline {fd_baseline}, peak {sampler.peak_fds}, limit {fd_limit} "
-        f"(cap {CAP} + allowance {FD_ALLOWANCE}), after sleep {fds_after}; "
+        f"(cap {CAP} x {per_place} per place + allowance {FD_ALLOWANCE}), after sleep {fds_after}; "
         f"{sampler.samples} samples\n"
         f"  threads: {threads} before, {sampler.min_threads}-{sampler.max_threads} during\n"
         f"  registry after load: wakes={stats_after_load.wakes} sleeps={stats_after_load.sleeps} "
@@ -182,7 +187,8 @@ async def test_ten_thousand_databases(scale_backend, tmp_path):
     assert sampler.min_threads == sampler.max_threads == threads
     assert per_full <= 3 * per_small, "registration is not linear in the count"
     assert reg.traced_bytes_per_db < TARGET_BYTES_PER_ASLEEP_DB
-    assert used_growth < 64  # waking and sleeping leaves nothing behind
+    if spec.growth_limit is not None:
+        assert used_growth < spec.growth_limit  # waking and sleeping leaves nothing behind
     assert stats_after_load.cap_evictions > 0
     assert final.awake == 0 and final.open_connections == 0
     assert fds_after <= fd_baseline

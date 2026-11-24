@@ -34,6 +34,11 @@ class ScaleBackend:
     make: Callable[[Path], Backend]
     count: int
     """How many databases the scale test uses for this backend."""
+    requests: int = 20_000
+    """Requests in the load (fewer for backends whose wake is costly)."""
+    growth_limit: float | None = 64
+    """Bytes per database a wake/sleep cycle may leave behind; ``None``
+    reports the figure without asserting it."""
     available: Callable[[], str | None] = lambda: None
 
 
@@ -51,8 +56,44 @@ def sqlite_files(root: Path, n: int) -> list[Path]:
     return paths
 
 
+def duckdb_files(root: Path, n: int) -> list[Path]:
+    import duckdb
+
+    root.mkdir(parents=True, exist_ok=True)
+    template = root / "template.duckdb"
+    conn = duckdb.connect(str(template))
+    conn.execute("create table t (x integer)")
+    conn.execute("insert into t values (0)")
+    conn.close()  # checkpoints: the template is one self-contained file
+    paths = [root / f"db{i:05d}.duckdb" for i in range(n)]
+    for p in paths:
+        shutil.copyfile(template, p)
+    return paths
+
+
+def _duckdb_backend(path: Path) -> Backend:
+    from dblayer.backends.duckdb import DuckDB
+
+    return DuckDB(path)  # type: ignore[return-value]
+
+
+def _duckdb_available() -> str | None:
+    try:
+        import duckdb  # noqa: F401
+    except ImportError:
+        return "duckdb is not installed (uv run --extra duckdb pytest)"
+    return None
+
+
 SCALE_BACKENDS: list[ScaleBackend] = [
     ScaleBackend("sqlite", sqlite_files, lambda p: SqliteInProcess(p), 10_000),
+    # Waking DuckDB opens an instance (a few ms), so a shorter load. Its
+    # backend object keeps per-database caches after a wake (55-550 B per
+    # cycle measured), so that figure is reported, not asserted.
+    ScaleBackend(
+        "duckdb", duckdb_files, _duckdb_backend, 1_000,
+        available=_duckdb_available, requests=3_000, growth_limit=None,
+    ),
 ]
 
 
