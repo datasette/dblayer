@@ -269,3 +269,44 @@ Subagent-reported; combined suite not yet re-run by me while milestone 3 is stil
 ### Upstream suggestions
 
 - None for sqlite-utils or Datasette. Note for any future PostgreSQL support in Datasette: `select :a` with an int fails without parameter casts.
+
+## 2026-11-23: demo app, first version
+
+### Built
+
+- `dblayer_demo/`: a Starlette app using only dblayer's public API. Homepage, database page, paginated table page and a linkable SQL page. Thirteen commits, `66a5e41` to `965498e`.
+- Run with `uv run --all-extras --group demo python -m dblayer_demo --port 8765`.
+- I ran it and checked in-process SQLite, PostgreSQL and DuckDB myself: browsing, paging, a count query, a write being rejected by the read path (`SQLITE_READONLY`, PostgreSQL `25006`, DuckDB `READ_ONLY`) and a slow query cut off at the 1,000 ms limit. The worker database is listed as unavailable until milestone 4.
+- Being extended now to a fleet of 1,000 databases through the `Registry`.
+
+### Found: what a Datasette-like app runs into
+
+- **`Database` had no `dialect`,** so code outside a transaction could not quote identifiers. Added.
+- **String parameters from a URL give different answers per backend.** `where reviews >= :n` with `n="5"` against a computed column returns 0 rows on SQLite (text never compares less than an integer there) and 35 rows on PostgreSQL and DuckDB, which infer the parameter type.
+- **A failed connection escapes as a raw OS error** (`FileNotFoundError` for a missing PostgreSQL socket), not a dblayer exception.
+- **No portable row count or keyset paging.** The app uses `count(*)` under a 200 ms limit and LIMIT/OFFSET, using `truncated` to know whether a next page exists.
+- **Result column types are inconsistent:** `None` for SQLite expressions, `int8` on PostgreSQL (while introspection says `BIGINT`), `BIGINT` on DuckDB.
+- **The default PostgreSQL DSN relies on the process user name.** Launched from a GUI process it tried role `root` and failed.
+- **`pyproject.toml`'s package pattern `dblayer*` would have shipped the demo** inside the library. Narrowed.
+
+### Idea: library additions the demo suggests
+
+- `ConnectionFailed` exception for unreachable servers and missing files.
+- `db.count(table, time_limit_ms=...)` with an estimate option (PostgreSQL `reltuples`).
+- A keyset paging helper that converts string cursor values using column types.
+- A typed-parameter policy for string inputs, so URL values compare the same on every backend.
+- A normalised portable type on result columns.
+- Export `TableInfo`, `ColumnInfo`, `find_placeholders` and `leading_keyword` from the top-level package.
+- `definition()` on PostgreSQL built from the catalog, at least `pg_get_viewdef` for views.
+- A named operation for creating a view; the demo had to use raw `execute_write`.
+
+### Upstream suggestions
+
+- **Datasette:** a `:param` from the query string is always text, so comparing it with a computed (untyped) expression silently gives wrong results on SQLite, for example `where count >= :n`. Seen in SQLite through dblayer; not re-tested in Datasette itself. A "cast numeric-looking parameters" option or a documentation note would be credible.
+
+### Unverified or fragile: flaky tests seen in CI
+
+- `test_postgres_specific.py::test_schema_change_by_another_client_seen_after_refresh_and_ttl` failed on Linux 3.12.
+- `test_duckdb_backend.py::test_long_analytical_query_interrupted_within_100ms` failed on the macOS runner.
+- `test_lifecycle_fds.py::test_idle_timeout_releases_every_descriptor[postgres]` failed once locally and passes alone.
+- All three are timing-dependent. Tight wall-clock bounds from the spec (50 ms, 100 ms) do not hold on shared CI machines; they need either looser bounds in CI or a measurement that does not depend on the scheduler.
