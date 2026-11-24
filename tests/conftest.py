@@ -67,6 +67,20 @@ def _sqlite_memory(tmp_path: Path) -> Backend:
     return SqliteInProcess.memory()
 
 
+def _sqlite_apsw(tmp_path: Path) -> Backend:
+    from dblayer.backends.sqlite_apsw import SqliteApsw
+
+    global _counter
+    _counter += 1
+    return SqliteApsw(tmp_path / f"db{_counter}.db")  # type: ignore[return-value]
+
+
+def _apsw_available() -> str | None:
+    from dblayer.backends.sqlite_apsw import apsw_unavailable
+
+    return apsw_unavailable()
+
+
 def _sqlite_worker(codec: str) -> Callable[[Path], Backend]:
     def make(tmp_path: Path) -> Backend:
         from dblayer.backends.sqlite_worker import SqliteWorker
@@ -188,6 +202,8 @@ async def _postgres_cleanup(backend: Backend) -> None:
 BACKENDS: list[BackendSpec] = [
     BackendSpec("sqlite", _sqlite_file),
     BackendSpec("sqlite-memory", _sqlite_memory),
+    # In-process SQLite on apsw (experimental, extra "apsw").
+    BackendSpec("sqlite-apsw", _sqlite_apsw, available=_apsw_available),
     # The worker backend runs the default named operations inside the
     # worker ("op" message): native_operations=True.
     BackendSpec("sqlite-worker", _sqlite_worker("json"), native_operations=True, cleanup=_reap_workers),

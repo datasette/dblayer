@@ -116,3 +116,17 @@ async def test_memory_database_survives_sleep():
 
 async def test_bundled_sqlite_version():
     assert SqliteApsw.sqlite_version() == apsw.sqlite_lib_version()
+
+
+async def test_memdb_readers_wait_for_an_open_write_transaction():
+    """The known limitation of memory databases here (memdb's RESERVED lock
+    shuts readers out), pinned so a change in SQLite shows up."""
+    db = Database(SqliteApsw.memory(busy_timeout=0.05))
+    await db.execute_write("create table t (x)")
+    async with db.transaction() as tx:
+        await tx.execute("insert into t values (1)")
+        with pytest.raises(QueryError) as e:
+            await db.execute("select count(*) from t")
+        assert e.value.code == "SQLITE_BUSY"
+    assert (await db.execute("select count(*) from t")).rows == [(1,)]
+    await db.close()

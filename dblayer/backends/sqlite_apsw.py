@@ -14,10 +14,16 @@ the docstrings below say why apsw does better.
 * **Named in-memory databases** use the ``memdb`` VFS
   (``file:/name?vfs=memdb``): apsw's SQLite is built with
   ``SQLITE_OMIT_SHARED_CACHE``, so the shared-cache URIs ``SqliteInProcess``
-  uses do not share anything. memdb gives real file-style locking, so
-  readers are opened read-only, need no ``read_uncommitted`` and get
-  snapshot reads (``snapshot_reads`` is true here, unlike shared cache).
-  An anchor connection keeps the database alive, as on ``SqliteInProcess``.
+  uses do not share anything. memdb has real locks, but coarse ones: a
+  write transaction (RESERVED) shuts readers out and an open read
+  transaction makes the writer wait, each up to ``busy_timeout``. Readers
+  therefore never see uncommitted data (no ``read_uncommitted``), but a
+  read issued while a write transaction is open waits for its commit, and
+  fails with ``SQLITE_BUSY`` after ``busy_timeout``. That breaks the
+  core's contract that reads proceed alongside a write transaction, so
+  memory databases here are for single-task use, and the conformance suite
+  runs the file variant only. An anchor connection keeps the database
+  alive, as on ``SqliteInProcess``.
 * **One statement per call,** as the standard module enforces: apsw would
   run every ``;``-separated statement; the backend refuses before running
   any.
@@ -139,12 +145,6 @@ def _capabilities(is_memory: bool, memory_limit: bool) -> Capabilities:
         version=_version(),
         memory_limit=memory_limit,
     )
-    if is_memory:
-        # memdb locks like a rollback-journal file: a read transaction keeps
-        # its snapshot (the writer's COMMIT waits for it), unlike shared cache.
-        from dataclasses import replace
-
-        caps = replace(caps, snapshot_reads=True)
     return caps
 
 
@@ -204,9 +204,8 @@ class SqliteApsw(SqliteTarget):
     * ``trace_sql``: keep ``sqlite3_expanded_sql`` of the last statement on
       each connection (``last_expanded_sql``), for debugging.
 
-    Capability rounding as ``SqliteInProcess``, except ``snapshot_reads``
-    (true for memory databases: memdb, not shared cache) and
-    ``memory_limit`` (above).
+    Capability rounding as ``SqliteInProcess``, except ``memory_limit``
+    (above).
     """
 
     __slots__ = (
