@@ -81,6 +81,21 @@ if (memoryLimitMb) {
   WebAssembly.Memory = Capped;
 }
 
+// Start-up timings, reported in the first `open` reply: process start to
+// here (Node and module loading), compiling PostgreSQL's WebAssembly (started
+// now, so it overlaps `hello`), PGlite's start (instantiate, PostgreSQL
+// start-up and WAL recovery, initdb on a new directory), the first query.
+const timings = { boot_ms: performance.now() };
+const WASM_PATH = new URL('pglite.wasm', `file://${require.resolve('@electric-sql/pglite')}`);
+const compiled = (async () => {
+  const t0 = performance.now();
+  const bytes = fs.readFileSync(WASM_PATH);
+  const m = await WebAssembly.compile(bytes);
+  timings.compile_ms = performance.now() - t0;
+  return m;
+})();
+compiled.catch(() => {});
+
 let maxFrame = DEFAULT_MAX_FRAME;
 let codec = 'json';
 let exiting = false;
@@ -506,18 +521,25 @@ async function doOpen(m) {
       fs.cpSync(template, path, { recursive: true, errorOnExist: false });
     }
     const t0 = performance.now();
-    await session.open(path, { startParams: startParams(config) });
-    const openMs = performance.now() - t0;
+    const wasmModule = await compiled;
+    const t1 = performance.now();
+    await session.open(path, { startParams: startParams(config), wasmModule });
+    const t2 = performance.now();
+    timings.wait_compile_ms = t1 - t0;
+    timings.open_ms = t2 - t1;
     const r = await session.execute("select current_setting('server_version'), current_setting('TimeZone')", []);
     session.version = r.rows[0][0];
     setSessionZone(r.rows[0][1]);
-    opened = { path, openMs };
+    timings.first_query_ms = performance.now() - t2;
+    opened = { path };
   } else if (opened.path !== path) {
     throw new WireError('NotSupported', `this worker serves ${opened.path}; one PGlite instance per process`);
   }
   const wc = { id: ++connSeq, write: m.mode === 'write', tx: null, rawTx: false, expiredId: null };
   conns.set(wc.id, wc);
-  return { ok: true, conn: wc.id, open_ms: Math.round(opened.openMs * 10) / 10 };
+  const t = {};
+  for (const [k, v] of Object.entries(timings)) t[k] = Math.round(v * 100) / 100;
+  return { ok: true, conn: wc.id, timings: t };
 }
 
 async function closeConn(wc) {

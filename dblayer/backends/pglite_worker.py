@@ -276,6 +276,11 @@ class PGliteProcess(WorkerProcess):
         self._released = asyncio.Event()
         self._released.set()
         self._cancel_timers: dict[int, asyncio.TimerHandle] = {}
+        self.timings: dict[str, float] = {}
+        """The worker's start-up breakdown (ms), from its first ``open``:
+        ``boot_ms`` (Node and modules), ``compile_ms`` (WebAssembly),
+        ``open_ms`` (PGlite start, recovery, initdb when new),
+        ``first_query_ms``."""
         self.waited_ms = 0.0
         """Total time requests spent waiting for another connection's hold."""
 
@@ -403,6 +408,36 @@ class PGliteProcess(WorkerProcess):
         if msg.get("fatal") and self.dead is None:
             self.kill(WorkerCrashed(f"worker {self.pid} exited after a fatal error: {msg['error'].get('message')}"))
 
+    async def _wait(self, fut: asyncio.Future[Any], mid: int) -> Any:
+        """As ``WorkerProcess._wait``, except that a cancelled request still
+        running ``kill_grace_ms`` after the ``cancel`` was sent is stopped by
+        SIGKILL before the cancellation propagates (the worker cannot hear
+        the ``cancel``; ``WorkerProcess._wait`` gives up waiting at the grace
+        without killing, which would leave the query running and the next
+        request queued behind it)."""
+        try:
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            if fut.done() or self.dead is not None:
+                raise
+            try:
+                self.send({"type": "cancel", "target": mid})
+            except Exception:
+                raise asyncio.CancelledError() from None
+            end = time.monotonic() + self.config.kill_grace_ms / 1000
+            while not fut.done() and self.dead is None:
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    self.kill(WorkerCrashed(f"worker {self.pid} was killed to stop a cancelled query"))
+                    break
+                try:
+                    await asyncio.wait({fut}, timeout=remaining)
+                except asyncio.CancelledError:
+                    continue
+            if fut.done() and not fut.cancelled():
+                fut.exception()
+            raise
+
     def cancel(self, owner: object) -> None:
         """``interrupt()``: the worker cannot read a ``cancel`` while a query
         runs (it blocks the event loop), so a request still in flight
@@ -492,6 +527,13 @@ class PGliteConnection(WorkerConnection):
     """A dblayer connection: a name for the database's one PGlite session,
     with a mode. ``schema()`` and ``schema_version()`` run the shared
     catalog queries through the worker."""
+
+    async def _open(self) -> None:
+        reply = await self._proc.call(self._backend._open_message(self.write), owner=self)
+        self._conn_id = reply["conn"]
+        self._proc.notice_handlers[self._conn_id] = self._on_notice
+        if isinstance(self._proc, PGliteProcess) and "timings" in reply:
+            self._proc.timings = dict(reply["timings"])
 
     async def execute(
         self,

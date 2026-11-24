@@ -331,7 +331,7 @@ export class Session {
       convs: fields.map((f) => this.convOf(f.dataTypeID)),
       columns: fields.map((f) => f.name),
       types: fields.map((f) => TYPE_NAMES.get(f.dataTypeID) ?? null),
-      done: !desc, // no rows to fetch (a statement without results)
+      done: false, // even a statement without results is executed by the first fetch
       noData: !desc,
     };
   }
