@@ -92,7 +92,7 @@ class _RusageInfoV2(ctypes.Structure):
             "ri_child_pageins", "ri_child_elapsed_abstime", "ri_diskio_bytesread",
             "ri_diskio_byteswritten",
         )
-    ]
+    ] + [("_spare", ctypes.c_uint8 * 512)]  # the kernel writes the whole V2 struct: never short
 
 
 _libproc: Any = None

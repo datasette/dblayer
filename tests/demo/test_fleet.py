@@ -212,3 +212,29 @@ async def test_one_member_of_every_backend_kind_browses(
     except ImportError:
         return
     assert {"duckdb", "duckdb-worker"} <= seen
+
+
+async def test_stats_count_worker_processes_and_their_memory(
+    fleet_client: tuple[Fleet, httpx.AsyncClient],
+) -> None:
+    """The stats panel reports this process and the worker processes
+    separately; a DuckDB-worker member's process is counted while it is
+    awake and gone once it has slept."""
+    pytest.importorskip("duckdb")
+    fleet, client = fleet_client
+    s = await _stats(client)
+    assert {"processes", "rss_mb", "footprint_mb"} <= set(s["workers"])
+    assert s["process"]["rss_mb"] and s["total"]["rss_mb"] >= s["process"]["rss_mb"]
+    member = next(m for m in fleet.members.values() if m.kind == "duckdb-worker")
+    r = await client.get(f"/{member.name}/-/query", params={"sql": "select name from branch"})
+    assert r.status_code == 200 and member.branch in r.text
+    s = await _stats(client)
+    assert s["workers"]["processes"] >= 1
+    assert s["workers"]["rss_mb"] > 0
+    await _wait_asleep(client)
+    deadline = asyncio.get_running_loop().time() + 10
+    while (await _stats(client))["workers"]["processes"]:
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0.1)
+    r = await client.get("/-/fleet")
+    assert r.status_code == 200 and "worker processes" in r.text

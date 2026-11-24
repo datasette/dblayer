@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import os
 import resource
 import sys
@@ -13,7 +14,7 @@ from typing import Any
 
 from .fleet import Fleet
 
-__all__ = ["process_stats", "fleet_stats", "state_counts"]
+__all__ = ["process_stats", "worker_stats", "process_memory", "fleet_stats", "state_counts"]
 
 
 def open_fds() -> int | None:
@@ -51,12 +52,80 @@ def peak_rss() -> int:
 _STARTED = time.time()
 
 
+class _RusageInfoV2(ctypes.Structure):
+    _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [
+        (n, ctypes.c_uint64)
+        for n in (
+            "ri_user_time", "ri_system_time", "ri_pkg_idle_wkups", "ri_interrupt_wkups",
+            "ri_pageins", "ri_wired_size", "ri_resident_size", "ri_phys_footprint",
+            "ri_proc_start_abstime", "ri_proc_exit_abstime", "ri_child_user_time",
+            "ri_child_system_time", "ri_child_pkg_idle_wkups", "ri_child_interrupt_wkups",
+            "ri_child_pageins", "ri_child_elapsed_abstime", "ri_diskio_bytesread",
+            "ri_diskio_byteswritten",
+        )
+    ] + [("_spare", ctypes.c_uint8 * 512)]  # the kernel writes the whole V2 struct: never short
+
+
+_libproc: Any = None
+if sys.platform == "darwin":
+    try:
+        _libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+        _libproc.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+    except OSError:
+        _libproc = None
+
+
+def process_memory(pid: int) -> tuple[int, int] | None:
+    """``(resident, footprint)`` bytes of a process, or None if it is gone.
+
+    Footprint is what the process really costs: on macOS
+    ``phys_footprint`` (Activity Monitor's "Memory": dirty private pages,
+    compressed and swapped included; RSS there also counts freed pages the
+    allocator has marked reusable, so it stays high after memory is
+    returned), on Linux PSS from ``smaps_rollup``."""
+    if _libproc is not None:
+        info = _RusageInfoV2()
+        if _libproc.proc_pid_rusage(pid, 2, ctypes.byref(info)) != 0:
+            return None
+        return int(info.ri_resident_size), int(info.ri_phys_footprint)
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            rss = next(int(line.split()[1]) * 1024 for line in f if line.startswith("VmRSS:"))
+    except (OSError, StopIteration):
+        return None
+    try:
+        with open(f"/proc/{pid}/smaps_rollup") as f:
+            pss = next(int(line.split()[1]) * 1024 for line in f if line.startswith("Pss:"))
+    except (OSError, StopIteration):
+        pss = rss
+    return rss, pss
+
+
+def _mb(n: int | None) -> float | None:
+    return None if n is None else round(n / 2**20, 1)
+
+
+def worker_stats() -> dict[str, Any]:
+    """The worker processes this app started (SQLite and DuckDB workers):
+    how many are alive and their memory, summed."""
+    from dblayer.backends.sqlite_worker import live_worker_pids
+
+    mems = [m for m in (process_memory(p) for p in live_worker_pids()) if m is not None]
+    return {
+        "processes": len(mems),
+        "rss_mb": _mb(sum(m[0] for m in mems)),
+        "footprint_mb": _mb(sum(m[1] for m in mems)),
+    }
+
+
 async def process_stats() -> dict[str, Any]:
-    rss = await current_rss()
+    mem = process_memory(os.getpid())
+    rss = mem[0] if mem is not None else await current_rss()
     return {
         "threads": threading.active_count(),
         "open_fds": open_fds(),
-        "rss_mb": None if rss is None else round(rss / 2**20, 1),
+        "rss_mb": _mb(rss),
+        "footprint_mb": _mb(mem[1]) if mem is not None else None,
         "peak_rss_mb": round(peak_rss() / 2**20, 1),
         "uptime_s": round(time.time() - _STARTED),
     }
@@ -98,4 +167,10 @@ def fleet_stats(fleet: Fleet | None) -> dict[str, Any]:
 
 
 async def all_stats(fleet: Fleet | None) -> dict[str, Any]:
-    return {"fleet": fleet_stats(fleet), "process": await process_stats()}
+    process = await process_stats()
+    workers = worker_stats()
+    total = {
+        k: None if process[k] is None or workers[k] is None else round(process[k] + workers[k], 1)
+        for k in ("rss_mb", "footprint_mb")
+    }
+    return {"fleet": fleet_stats(fleet), "process": process, "workers": workers, "total": total}
