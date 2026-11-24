@@ -16,6 +16,11 @@ at the end is regenerated from a real worker and compared.
   quoted when a worker dies). Inside the worker, file descriptor 1 is
   pointed at stderr, so a stray `print()` (from an init hook, say) cannot
   corrupt the protocol stream.
+- The worker's command line is `python -m dblayer.worker [--memory-limit-mb
+  N] [--debug] [--preload MODULE ...]`. `--preload` imports a module before
+  serving (a DuckDB worker preloads `duckdb` and `dblayer.backends.duckdb`),
+  so a pre-started spare process (`SpareWorkers`) has already paid for its
+  imports when a database takes it.
 - Each frame is a 4-byte big-endian unsigned length followed by that many
   bytes of payload.
 - Both readers refuse a frame whose declared length is over
