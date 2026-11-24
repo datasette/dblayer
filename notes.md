@@ -1306,3 +1306,53 @@ Subagent-reported. Timings at load 20 to 48; provisional. No completed CI run in
 - None for sqlite-utils or Datasette.
 - **Node.js (not sqlite-utils or Datasette):** a worker thread's exit closes its descriptors, which drops the process's POSIX locks on those files. Reproduced by the subagent; deserves a note in Node's documentation.
 - **SQLite-WASM (not sqlite-utils or Datasette):** a Node file system with real locking would remove the need for the guard.
+
+## 2026-11-24: PGlite in a Node worker, final report
+
+Subagent-reported. Timings at load 18 to 22 for the main run (up to 80 at times); provisional; the psycopg insert figures swung 3 times between runs. The Linux CI job for this backend is unconfirmed. The interim section above covers the first findings.
+
+### Found
+
+| Measure | PGlite (from template) | psycopg on the local server | SQLite C worker |
+| --- | --- | --- | --- |
+| Create a new database to first result | 368 ms | 9.5 ms | 55 ms |
+| Asleep to first result | 170 ms | 6.6 ms | 20 ms |
+| One-row read | 0.22 ms | 0.17 ms | 0.14 ms |
+| Read 100,000 rows | 247 ms | 159 ms (52 ms in a quieter run) | 59 ms |
+| Small transaction | 1.1 ms | 2.4 ms | 8.9 ms |
+| Sleep | 34 ms | 0.2 ms | 2.1 ms |
+| Idle awake process | 115 MB | n/a | 1.7 MB |
+| 20 awake databases | 2,321 MB | n/a | 68 MB |
+| Empty database on disk | 40 MB | n/a | 0 |
+
+- **A PostgreSQL per database with no server works,** with full PostgreSQL 18 semantics, and its values match psycopg's in direct comparison tests. It is expensive per awake database: about 115 MB to start, growing with the largest query and never shrinking, and 40 MB on disk when empty.
+- **One session per database.** Every pooled connection is a name for the same session. While one holds a transaction or a paused stream, the others wait in the parent. A read transaction's snapshot is exactly the last committed state, because nothing else can run while it is open.
+- **Nothing short of a kill can stop a query.** `statement_timeout` never fires, because timers cannot run while a query blocks Node's only thread. A 300 ms limit raises at 723 ms, and the database needs a wake of about 150 ms afterwards.
+- **Durability:** PGlite runs with fsync off and its Node file layer never syncs. A commit survives a process kill (it is in the OS page cache) but not a power loss. Recovery after a kill mid-bulk-insert took 337 ms.
+- **initdb inside the worker left 830 MB resident** for as long as the database stayed awake, because WebAssembly memory never shrinks. Running initdb in a short-lived child process brought the worker down to 115 MB.
+- **Four more bugs fixed:** streams with a time limit never stopped when each chunk came back faster than the grace period; bystander requests failed on a kill; a deadlock when the task holding a transaction read through `db` (now `NestedWriteError`); log noise on cancel under Python 3.15.
+- **Still possible:** a child task created inside a transaction block and awaited by it can deadlock on a single-session backend. The core cannot tell that from legitimate waiting.
+- **`Registry.stats().awake` peaked at 16 with a cap of 8,** while live processes stayed at 8: it counts databases marked awake that are still waiting for a place. The figure is misleading as a measure of resource use.
+- Scale: 100 data directories under one registry with a cap of 8 ran at 39 to 48 requests/s. Not pushed further: each database is 40 MB and the disk had 36 GB free.
+- Turning on V8's optimising compiler costs about 600 MB per process.
+- Tests: 481 passed, 20 skipped for this backend. Full suite at the time: 3 failed (one PGlite's, since fixed; two load-dependent tests in other areas), 7,270 passed.
+
+### Decision
+
+- **Recommendation from the subagent: practical for a modest number of mostly asleep databases that need real PostgreSQL** (its types, JSON, extensions) with strong isolation. Not for a large fleet: about 8 to 10 awake costs over 1 GB, and 1,000 databases need 40 GB of disk. A demo fleet of them should be capped at about 50 to 100 members.
+
+### Idea: to discuss
+
+- **`max_awake` per backend class in the registry,** or the weighted places already proposed: PGlite's memory is per database, not per connection.
+- **A per-user cached template directory** as the default, cutting creation from about 1 s to about 0.3 s.
+- **For Datasette, what PGlite would make possible:** it ships about 40 PostgreSQL contrib extensions (pg_trgm, hstore, ltree, pgcrypto, citext and others), so per-database fuzzy search and richer types would come without a server; and a "live query" API that pushes a query's results as they change, which could drive auto-refreshing pages without polling. Neither was built on. pgvector is not in this package version.
+- `asyncio.shield` in the base `WorkerProcess._wait` may still log on cancel under Python 3.15 (the bug-fix subagent reports having changed it; worth confirming the two fixes agree).
+
+### Upstream suggestions
+
+- None for sqlite-utils or Datasette.
+- **PGlite (not sqlite-utils or Datasette):** in-process initdb leaves about 830 MB resident; `initialMemory` cannot go below the declared 128 MB; `statement_timeout` cannot fire. All three verified by the subagent.
+
+### Found: process
+
+- Another scratchpad collision: this subagent overwrote two files that may have belonged to another. Briefs now give each subagent its own scratch subdirectory.
