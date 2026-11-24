@@ -369,6 +369,20 @@ BACKENDS: list[BackendSpec] = [
 ]
 
 
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):  # type: ignore[no-untyped-def]
+    """``DBLAYER_HANG_DUMP_S``: dump stacks, tasks and child processes for a
+    test still running after that many seconds (see ``tests/hangdump.py``)."""
+    from . import hangdump
+
+    timer = hangdump.arm(item.nodeid)
+    try:
+        return (yield)
+    finally:
+        if timer is not None:
+            timer.cancel()
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # type: ignore[no-untyped-def]
     """List the spec latency figures ``helpers.check_latency`` measured."""
     from .helpers import STRICT_TIMING, latencies

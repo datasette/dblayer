@@ -12,10 +12,21 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: false
 
+# Hang diagnostics for every pytest run: a test still running after 240 s
+# dumps its threads, asyncio tasks and child processes (tests/hangdump.py,
+# also appended to hang-dump.txt); pytest-timeout fails it at 300 s with the
+# thread stacks. -v names each test as it starts, so a killed runner's log
+# ends at the test that was running.
+env:
+  PYTEST_ADDOPTS: -v --durations=30 --timeout=300 --timeout-method=thread
+  DBLAYER_HANG_DUMP_S: "240"
+  DBLAYER_HANG_DUMP_FILE: ${{ github.workspace }}/hang-dump.txt
+
 jobs:
   linux:
     name: Linux, Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -63,11 +74,17 @@ jobs:
       # The demo group (starlette, httpx, ...) runs tests/demo against every
       # backend, PostgreSQL included; without it those tests skip.
       - name: Run tests with every optional backend and the demo app installed
-        run: uv run --all-extras --group demo pytest -ra
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras --group demo pytest -ra
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
 
   macos:
     name: macOS, Python 3.14
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.4.0
@@ -88,12 +105,17 @@ jobs:
         run: make -C cworker wasm
       # No PostgreSQL server here: those tests skip themselves.
       - name: Run tests
-        run: uv run --all-extras pytest -ra
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras pytest -ra
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
 
   cworker-sanitizers:
     name: C worker under ASan + UBSan, and TSan
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.4.0
@@ -110,10 +132,9 @@ jobs:
         env:
           DBLAYER_CWORKER: ${{ github.workspace }}/cworker/build-asan/dblayer-cworker
           ASAN_OPTIONS: detect_leaks=0
-        run: >-
-          uv run --all-extras pytest -ra
-          -k "(cworker or c-worker or cpool or c-pool) and not heap_limit and not rlimit and not memory_limit"
-          tests/worker tests/faults tests/conformance
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras pytest -ra -k "(cworker or c-worker or cpool or c-pool) and not heap_limit and not rlimit and not memory_limit" tests/worker tests/faults tests/conformance
       # The multi-tenant C worker (--multi) is a threaded server: its own
       # tests under ThreadSanitizer. Ubuntu's 32-bit mmap randomisation
       # breaks TSan's memory layout, hence the sysctl. These steps run even
@@ -126,9 +147,12 @@ jobs:
         env:
           DBLAYER_CWORKER: ${{ github.workspace }}/cworker/build-tsan/dblayer-cworker
           TSAN_OPTIONS: halt_on_error=1 suppressions=${{ github.workspace }}/cworker/tsan.supp
-        run: >-
-          uv run --all-extras pytest -ra -k "(cpool or c-pool or cworker_multi) and not rlimit"
-          tests/worker/test_cworker_multi.py tests/worker/test_cpool.py tests/faults tests/conformance
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras pytest -ra -k "(cpool or c-pool or cworker_multi) and not rlimit" tests/worker/test_cworker_multi.py tests/worker/test_cpool.py tests/faults tests/conformance
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
 
   duckdb-rs-worker:
     # The experimental Rust DuckDB worker (duckdb-rs-worker/): the pinned
@@ -160,7 +184,12 @@ jobs:
       - name: Rust unit tests
         run: make -C duckdb-rs-worker test
       - name: Run the Rust worker's tests
-        run: uv run --all-extras pytest -ra -k "rsworker or rust" tests/worker tests/faults tests/conformance
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras pytest -ra -k "rsworker or rust" tests/worker tests/faults tests/conformance
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
 
   duckdb-cppworker:
     # The experimental DuckDB worker in C++ (duckdb-cpp-worker/): downloads
@@ -183,7 +212,9 @@ jobs:
       - name: Build the DuckDB C++ worker
         run: make -C duckdb-cpp-worker && duckdb-cpp-worker/build/dblayer-duckdb-worker --version
       - name: Run the DuckDB C++ worker's tests
-        run: uv run --all-extras pytest -ra -k "cppworker or cpp" tests/worker tests/faults tests/conformance
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras pytest -ra -k "cppworker or cpp" tests/worker tests/faults tests/conformance
       - name: Build it with -fsanitize=address,undefined
         run: make -C duckdb-cpp-worker SANITIZE=1
       # As for the C worker: RLIMIT_AS tests are left out under ASan, and so
@@ -193,13 +224,17 @@ jobs:
         env:
           DBLAYER_DUCKDB_CPP_WORKER: ${{ github.workspace }}/duckdb-cpp-worker/build-asan/dblayer-duckdb-worker
           ASAN_OPTIONS: detect_leaks=0
-        run: >-
-          uv run --all-extras pytest -ra -k "(cppworker or cpp) and not rlimit and not mid_stream and not unbounded"
-          tests/worker tests/faults tests/conformance
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras pytest -ra -k "(cppworker or cpp) and not rlimit and not mid_stream and not unbounded" tests/worker tests/faults tests/conformance
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
 
   stdlib-only:
     name: Core with no optional dependencies
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.4.0
@@ -208,13 +243,19 @@ jobs:
           enable-cache: true
       # Proves the core and SQLite backends need only the standard library.
       - name: Run tests
-        run: uv run pytest -ra
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run pytest -ra
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
 
   cworker-system-sqlite:
     # Informational: the C worker linked against Ubuntu's libsqlite3 instead
     # of the pinned amalgamation, to see what a different SQLite changes.
     name: C worker with the system libsqlite3 (informational)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
@@ -229,7 +270,12 @@ jobs:
       - name: Run the C worker's tests
         env:
           DBLAYER_CWORKER: ${{ github.workspace }}/cworker/build-system/dblayer-cworker
-        run: uv run --all-extras pytest -ra -k "cworker or c-worker" tests/worker tests/faults tests/conformance
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras pytest -ra -k "cworker or c-worker" tests/worker tests/faults tests/conformance
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
 
   pglite-worker:
     # The experimental PGlite backend (pglite-worker/, PostgreSQL in
@@ -238,7 +284,7 @@ jobs:
     # server is only for the differential test against psycopg.
     name: PGlite worker (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:18
@@ -266,6 +312,9 @@ jobs:
       - name: Install the PGlite worker's npm packages
         run: npm ci --prefix pglite-worker && node pglite-worker/src/main.mjs --version
       - name: Run the PGlite backend's tests
-        run: >-
-          uv run --all-extras --group demo pytest -ra -k pglite
-          tests/conformance tests/worker tests/faults tests/scale tests/demo
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras --group demo pytest -ra -k pglite tests/conformance tests/worker tests/faults tests/scale tests/demo
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
