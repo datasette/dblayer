@@ -698,3 +698,20 @@ Simon's idea: today the Python server must turn rows into CSV, TSV or JSON itsel
 - **PostgreSQL on psycopg 3:** `COPY (query) TO STDOUT`, so the server serialises and the bytes pass through two hops.
 
 The core gets a Python fallback so `export()` works on every backend and serves as the baseline. The hard part is parity: three engines format floats, timestamps and NULLs differently, so the experiment must say, per format and backend, whether native output is byte-identical to the fallback, equal after parsing, or has to fall back. The numbers that matter are CPU time in the Python process and event-loop lag during a large export, not wall time alone.
+
+## 2026-11-24: ambitious ideas for the process-backend pattern (ideas only)
+
+Asked by Simon: wildly ambitious directions for out-of-process backends, "Haskell or Erlang or something that talks over a network to a novel service". None built. Gains are guesses.
+
+1. **Hand the worker the client's socket.** For large exports, pass the HTTP connection's file descriptor to the worker (`SCM_RIGHTS` over a Unix socket) and let it write the CSV or JSON response itself. Python frames the headers and never sees the body. The logical end of the native export experiment.
+2. **A database daemon shared by every web worker** (Rust, over a Unix socket; QUIC for remote). Today each Python process has its own registry, cap and write queue, so several uvicorn workers cannot share a SQLite write slot. A long-lived daemon owns them once, survives web-server restarts, and keeps hot databases open.
+3. **Group commit in that daemon.** Coalesce independent write transactions from many callers into one SQLite transaction, a savepoint each, one fsync for all. Write slot hold time is dominated by the commit, so this could multiply write throughput. Haskell's STM is a natural fit for composing the queue, deadlines and rollback of only the failed members.
+4. **Erlang/OTP as the supervisor.** The registry (sleep, wake, cap, wake lock, restart after kill) is a hand-written subset of OTP. A BEAM node could supervise the C workers as ports, one lightweight process per database, with restart strategies, backpressure through mailboxes and distribution across machines built in.
+5. **PostgreSQL in WebAssembly (PGlite) inside the Node worker.** A real PostgreSQL per database with no server, sleeping to a directory on disk. Thousands of tiny, isolated PostgreSQL databases under the same registry.
+6. **SQLite with concurrent writers:** mvSQLite (SQLite on FoundationDB, MVCC) or libSQL/Turso over its Hrana protocol with embedded replicas. Would flip `concurrent_writers` to true for a SQLite dialect and make a database reachable from many machines.
+7. **Arrow Flight SQL / ADBC backend.** One columnar network protocol reaches DuckDB servers, DataFusion, InfluxDB 3 and others; results arrive as Arrow batches with no per-row decoding.
+8. **A DataFusion (Rust) worker over Parquet or Iceberg in object storage.** A "database" is a prefix in a bucket; there is nothing to copy on wake. The Cold state disappears.
+9. **Incremental-view engines over the PostgreSQL wire protocol** (Materialize, RisingWave). A backend whose queries stay continuously up to date, with a subscription API: Datasette pages that update live.
+10. **ClickHouse through chDB or `clickhouse-local` as a worker.** An engine with its own output formats built in, so native export costs nothing to implement there.
+11. **A microVM per untrusted database** (Firecracker snapshot restore, a few milliseconds). The strongest containment available, and it would allow untrusted extensions and user-defined functions, which no other option here can.
+12. **Deterministic simulation testing of the worker protocol,** in the FoundationDB and TigerBeetle style: a simulated clock, scheduler and failure injector driving kills, lost frames and deadline races reproducibly from a seed.
