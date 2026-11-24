@@ -1,0 +1,22 @@
+make: Entering directory '/data/src/cworker'
+make -f wasm.mk SQLITE_DIR=vendor/sqlite-amalgamation-3530100
+make[1]: Entering directory '/data/src/cworker'
+mkdir -p build-wasm
+make -f wasm.mk vendor/wasi-sdk-34.0-x86_64-linux.tar.gz
+make[2]: Entering directory '/data/src/cworker'
+mkdir -p vendor
+curl -fsSL -o vendor/wasi-sdk-34.0-x86_64-linux.tar.gz.tmp https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz
+mv vendor/wasi-sdk-34.0-x86_64-linux.tar.gz.tmp vendor/wasi-sdk-34.0-x86_64-linux.tar.gz
+make[2]: Leaving directory '/data/src/cworker'
+cd vendor && tar xzf wasi-sdk-34.0-x86_64-linux.tar.gz
+touch vendor/wasi-sdk-34.0-x86_64-linux/bin/clang
+vendor/wasi-sdk-34.0-x86_64-linux/bin/clang --target=wasm32-wasip1 --sysroot=vendor/wasi-sdk-34.0-x86_64-linux/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-global -Wno-missing-prototypes -DCWORKER_WASM -DCWORKER_NO_LOAD_EXTENSION -Ivendor/sqlite-amalgamation-3530100 -c -o build-wasm/worker.o src/worker.c
+vendor/wasi-sdk-34.0-x86_64-linux/bin/clang --target=wasm32-wasip1 --sysroot=vendor/wasi-sdk-34.0-x86_64-linux/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-global -Wno-missing-prototypes -DCWORKER_WASM -DCWORKER_NO_LOAD_EXTENSION -Ivendor/sqlite-amalgamation-3530100 -c -o build-wasm/codec.o src/codec.c
+vendor/wasi-sdk-34.0-x86_64-linux/bin/clang --target=wasm32-wasip1 --sysroot=vendor/wasi-sdk-34.0-x86_64-linux/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-global -Wno-missing-prototypes -DCWORKER_WASM -DCWORKER_NO_LOAD_EXTENSION -Ivendor/sqlite-amalgamation-3530100 -c -o build-wasm/sqlutil.o src/sqlutil.c
+vendor/wasi-sdk-34.0-x86_64-linux/bin/clang --target=wasm32-wasip1 --sysroot=vendor/wasi-sdk-34.0-x86_64-linux/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-global -Wno-missing-prototypes -DCWORKER_WASM -DCWORKER_NO_LOAD_EXTENSION -Ivendor/sqlite-amalgamation-3530100 -c -o build-wasm/schema.o src/schema.c
+vendor/wasi-sdk-34.0-x86_64-linux/bin/clang --target=wasm32-wasip1 --sysroot=vendor/wasi-sdk-34.0-x86_64-linux/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-global -Wno-missing-prototypes -DCWORKER_WASM -DCWORKER_NO_LOAD_EXTENSION -Ivendor/sqlite-amalgamation-3530100 -c -o build-wasm/wasm_vfs.o src/wasm_vfs.c
+vendor/wasi-sdk-34.0-x86_64-linux/bin/clang --target=wasm32-wasip1 --sysroot=vendor/wasi-sdk-34.0-x86_64-linux/share/wasi-sysroot -O2 -msimd128 -fno-builtin -c -o build-wasm/wasm_libc.o src/wasm_libc.c
+vendor/wasi-sdk-34.0-x86_64-linux/bin/clang --target=wasm32-wasip1 --sysroot=vendor/wasi-sdk-34.0-x86_64-linux/share/wasi-sysroot -O2 -DSQLITE_THREADSAFE=0 -DSQLITE_OS_OTHER=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_MAX_MMAP_SIZE=0 -DSQLITE_ENABLE_FTS3 -DSQLITE_ENABLE_FTS3_PARENTHESIS -DSQLITE_ENABLE_FTS4 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_GEOPOLY -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_DBSTAT_VTAB -DSQLITE_DQS=3 -DSQLITE_DEFAULT_MEMSTATUS=1 -c -o build-wasm/sqlite3.o vendor/sqlite-amalgamation-3530100/sqlite3.c
+vendor/wasi-sdk-34.0-x86_64-linux/bin/clang --target=wasm32-wasip1 --sysroot=vendor/wasi-sdk-34.0-x86_64-linux/share/wasi-sysroot -O2 -mexec-model=reactor -Wl,--export-dynamic -Wl,-z,stack-size=1048576 -Wl,--initial-memory=2097152 -Wl,--max-memory=4294967296 -Wl,--strip-debug -o build-wasm/dblayer-sqlite.wasm build-wasm/worker.o build-wasm/codec.o build-wasm/sqlutil.o build-wasm/schema.o build-wasm/wasm_vfs.o build-wasm/wasm_libc.o build-wasm/sqlite3.o
+make[1]: Leaving directory '/data/src/cworker'
+make: Leaving directory '/data/src/cworker'

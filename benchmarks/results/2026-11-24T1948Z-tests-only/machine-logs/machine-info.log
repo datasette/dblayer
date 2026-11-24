@@ -1,0 +1,19 @@
+8
+model name	: AMD EPYC
+MemTotal:       16379764 kB
+Linux 80e457c61e5118 6.12.118-fly #1 SMP PREEMPT_DYNAMIC Tue Nov 17 20:27:34 UTC 2026 x86_64 GNU/Linux
+TARGET SOURCE   FSTYPE OPTIONS
+/data  /dev/vdc ext4   rw,relatime
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdc         30G  2.6G   26G  10% /data
+none            7.8G   12M  7.4G   1% /
+0.00 0.00 0.00 1/151 716
+v24.22.3
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+clippy 0.1.100 (0ef1bc3860 2026-11-09)
+uv 0.13.0 (x86_64-unknown-linux-gnu)
+cpython-3.14.8-linux-x86_64-gnu     /opt/uv-python/cpython-3.14-linux-x86_64-gnu/bin/python3.14
+cpython-3.13.16-linux-x86_64-gnu    /opt/uv-python/cpython-3.13-linux-x86_64-gnu/bin/python3.13
+cpython-3.12.15-linux-x86_64-gnu    /opt/uv-python/cpython-3.12-linux-x86_64-gnu/bin/python3.12
+postgres (PostgreSQL) 18.7 (Debian 18.7-1.pgdg13+5)
+cc (Debian 14.2.0-19) 14.2.0
