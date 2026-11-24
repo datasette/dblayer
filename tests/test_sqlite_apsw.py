@@ -130,3 +130,93 @@ async def test_memdb_readers_wait_for_an_open_write_transaction():
         assert e.value.code == "SQLITE_BUSY"
     assert (await db.execute("select count(*) from t")).rows == [(1,)]
     await db.close()
+
+
+# -- exact counts and rowids without extra statements --------------------------
+
+
+async def test_cte_write_rowcount_and_last_pk(file_db):
+    await file_db.execute_write("create table t (id integer primary key, v)")
+    r = await file_db.execute_write(
+        "with x(v) as (values (1), (2), (3)) insert into t (v) select v from x"
+    )
+    assert (r.rowcount, r.last_pk) == (3, 3)
+    r = await file_db.execute_write(
+        "with x(n) as (select 2) delete from t where id >= (select n from x)"
+    )
+    assert r.rowcount == 2 and r.last_pk is None
+
+
+async def test_last_pk_when_an_insert_reuses_the_previous_rowid(file_db):
+    """SqliteInProcess compares last_insert_rowid() before and after, so it
+    reports None here; apsw sets a sentinel first and gets it right."""
+    await file_db.execute_write("create table t (id integer primary key)")
+    await file_db.execute_write("insert into t (id) values (5)")
+    await file_db.execute_write("delete from t")
+    r = await file_db.execute_write("insert into t (id) values (5)")
+    assert (r.rowcount, r.last_pk) == (1, 5)
+
+
+async def test_skipped_insert_leaves_last_insert_rowid_alone(file_db):
+    await file_db.execute_write("create table t (id integer primary key)")
+    await file_db.execute_write("insert into t (id) values (7)")
+    r = await file_db.execute_write("insert into t (id) values (7) on conflict do nothing")
+    assert (r.rowcount, r.last_pk) == (0, None)
+    # The sentinel was restored: SQL still sees the last real insert.
+    assert (await file_db.execute_write("select last_insert_rowid()")).rows == [(7,)]
+
+
+async def test_upsert_update_path_has_no_last_pk(file_db):
+    await file_db.execute_write("create table t (id integer primary key, v)")
+    await file_db.execute_write("insert into t values (1, 'a')")
+    r = await file_db.execute_write(
+        "insert into t values (1, 'b') on conflict (id) do update set v = excluded.v"
+    )
+    assert (r.rowcount, r.last_pk) == (1, None)
+
+
+async def test_execute_many_rowcount(file_db):
+    await file_db.execute_write("create table t (id integer primary key, v)")
+    async with file_db.transaction() as tx:
+        r = await tx.execute_many("insert into t (v) values (:v)", [{"v": i} for i in range(5)])
+        assert r.rowcount == 5
+        r = await tx.execute_many("update t set v = 0 where id <= :n", [{"n": 2}, {"n": 3}])
+        assert r.rowcount == 5  # 2 + 3, per statement, as sqlite3 counts
+
+
+# -- declared column types ----------------------------------------------------
+
+
+async def test_result_columns_carry_declared_types(tmp_path):
+    backend = SqliteApsw(tmp_path / "types.db")
+    file_db = Database(backend)
+    await file_db.execute_write(
+        "create table t (id integer primary key, name text, score real, b blob, n)"
+    )
+    await file_db.execute_write("create view v as select id as ident, name from t")
+    r = await file_db.execute("select id, name, score, b, n, id + 1 as expr from t")
+    assert [(c.name, c.type) for c in r.columns] == [
+        ("id", "INTEGER"), ("name", "TEXT"), ("score", "REAL"), ("b", "BLOB"),
+        ("n", None), ("expr", None),
+    ]
+    r = await file_db.execute("select * from v")
+    assert [(c.name, c.type) for c in r.columns] == [("ident", "INTEGER"), ("name", "TEXT")]
+    await file_db.close()
+    conn = await backend.open(write=False)
+    stream = conn.stream("select name from t", params={}, chunk_rows=10)
+    async for _ in stream:
+        pass
+    assert [c.type for c in stream.columns] == ["TEXT"]
+    await conn.close()
+    await backend.close()
+
+
+# -- statement-level control --------------------------------------------------
+
+
+async def test_expanded_sql_is_kept_when_tracing(tmp_path):
+    db = Database(SqliteApsw(tmp_path / "x.db", trace_sql=True))
+    await db.execute("select :a, :b", {"a": 1, "b": "it's"})
+    conn = db._pool._idle_read[0].conn  # type: ignore[union-attr]
+    assert conn.last_expanded_sql == "select 1, 'it''s'"
+    await db.close()
