@@ -44,6 +44,10 @@ if [ -z "$got" ]; then log "could not fetch the results"; exit 1; fi
 
 mkdir -p "$WORK/x"
 tar -xzf "$got" -C "$WORK/x"
+if ! ls -d "$WORK"/x/results/*/ >/dev/null 2>&1; then
+    # A tests-only run has no benchmark results: keep its logs.
+    mkdir -p "$WORK/x/results/$(date -u +%Y-%m-%dT%H%MZ)-tests-only"
+fi
 for d in "$WORK"/x/results/*/; do
     name="$(basename "$d")"
     mkdir -p "$DEST/$name"
