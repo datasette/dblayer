@@ -67,6 +67,7 @@ C worker. ``init`` hooks and extensions are not supported.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import ctypes
 import errno
 import fcntl
@@ -905,6 +906,26 @@ def _runtime(module_path: str, interruption: str = "epoch") -> _Runtime:
             if rt is None:
                 rt = _runtimes[key] = _Runtime(module_path, interruption)
     return rt
+
+
+@atexit.register
+def _close_runtimes() -> None:
+    """Free wasmtime objects while wasmtime-py's bindings still exist (left
+    to interpreter teardown, their finalizers fail noisily)."""
+    for key in list(_by_key):
+        inst = _by_key.pop(key, None)
+        if inst is not None:
+            try:
+                inst.close()
+            except Exception:
+                pass
+    for rt in list(_runtimes.values()):
+        for obj in (rt.pre, rt.linker, rt.module, rt.engine):
+            try:
+                obj.close()
+            except Exception:
+                pass
+    _runtimes.clear()
 
 
 def runtime_stats(module: str | os.PathLike[str] | None = None) -> dict[str, Any]:
