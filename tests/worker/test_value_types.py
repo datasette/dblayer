@@ -113,6 +113,13 @@ select date '2024-01-02' d, time '12:34:56.789' t, timestamp '2024-01-02 03:04:0
 
 def _worker_class(kind: str) -> type:
     """The Python DuckDB worker, or the C++ one (skipped when not built)."""
+    if kind == "rust":
+        from dblayer.backends import duckdb_rsworker
+
+        reason = duckdb_rsworker.binary_unavailable()
+        if reason:
+            pytest.skip(reason)
+        return duckdb_rsworker.DuckDBRustWorker
     if kind == "cpp":
         from dblayer.backends.duckdb_cppworker import DuckDBCppWorker, binary_unavailable
 
@@ -125,7 +132,7 @@ def _worker_class(kind: str) -> type:
     return DuckDBWorker
 
 
-WORKERS = ["python", "cpp"]
+WORKERS = ["python", "cpp", "rust"]
 
 
 @pytest.mark.parametrize("worker", WORKERS)

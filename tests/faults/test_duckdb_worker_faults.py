@@ -21,9 +21,16 @@ from .conftest import LINUX, linux_only  # noqa: E402
 UNBOUNDED = "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c"
 
 
-@pytest.fixture(params=["duckdb-worker", "duckdb-cppworker"])
+@pytest.fixture(params=["duckdb-worker", "duckdb-cppworker", "duckdb-rsworker"])
 def Worker(request: pytest.FixtureRequest) -> type[DuckDBWorker]:
-    """The Python DuckDB worker, and the C++ one (skipped when not built)."""
+    """The Python DuckDB worker, and the C++ and Rust ones (skipped when not built)."""
+    if request.param == "duckdb-rsworker":
+        from dblayer.backends import duckdb_rsworker
+
+        reason = duckdb_rsworker.binary_unavailable()
+        if reason:
+            pytest.skip(reason)
+        return duckdb_rsworker.DuckDBRustWorker
     if request.param == "duckdb-cppworker":
         reason = binary_unavailable()
         if reason:
