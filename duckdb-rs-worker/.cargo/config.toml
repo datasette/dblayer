@@ -1,0 +1,6 @@
+# Read when cargo runs inside duckdb-rs-worker/ (make does that): link the
+# libduckdb fetch-libduckdb.sh put in vendor/libduckdb. An explicit
+# DUCKDB_LIB_DIR in the environment wins.
+[env]
+DUCKDB_LIB_DIR = { value = "vendor/libduckdb", relative = true }
+DUCKDB_INCLUDE_DIR = { value = "vendor/libduckdb", relative = true }

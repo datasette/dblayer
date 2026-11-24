@@ -1,0 +1,23 @@
+[package]
+name = "dblayer-duckdb-rsworker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Experimental DuckDB worker process for dblayer (docs/worker-protocol.md), in Rust"
+publish = false
+
+[[bin]]
+name = "dblayer-duckdb-rsworker"
+path = "src/main.rs"
+
+[dependencies]
+# Raw bindings to DuckDB's C API, linked against the prebuilt libduckdb that
+# fetch-libduckdb.sh downloads (DUCKDB_LIB_DIR, set in .cargo/config.toml).
+# The crate version encodes the DuckDB version: 1.20001.0 is DuckDB 2.0.1.
+# No default features: no build-time download, no pkg-config, no vcpkg.
+libduckdb-sys = { version = "=1.20001.0", default-features = false, features = ["capi-v1"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
