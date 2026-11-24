@@ -44,6 +44,10 @@ ZIPF_S = 1.1
 """Skew of the fan-out draw: rank r is chosen with weight 1 / r**s."""
 
 
+MAX_CONCURRENT_MATERIALISE = 8
+"""Cold databases being built at once (template copy plus personalisation)."""
+
+
 class FanoutBusy(Exception):
     pass
 
@@ -128,6 +132,9 @@ class Fleet:
     started_at: float = 0.0
     startup_seconds: float = 0.0
     _fanout_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _materialising: asyncio.Semaphore = field(
+        default_factory=lambda: asyncio.Semaphore(MAX_CONCURRENT_MATERIALISE)
+    )
     _hot: list[Database] | None = None
 
     def __post_init__(self) -> None:
@@ -304,7 +311,7 @@ class Fleet:
         assert member.path is not None
         tmp = member.path.with_name(member.path.name + ".tmp")
         _remove(tmp)
-        await asyncio.to_thread(shutil.copyfile, self.template_path(member.kind), tmp)
+        await self._in_pool(shutil.copyfile, self.template_path(member.kind), tmp)
         db = Database(self._file_backend(member.kind, tmp))
         try:
             await _personalise(db, member)
@@ -312,12 +319,25 @@ class Fleet:
             await db.close()
         os.replace(tmp, member.path)
 
+    async def _in_pool(self, fn: Any, *args: Any) -> Any:
+        """Blocking file work on the registry's thread pool, so the thread
+        count stays fixed (``asyncio.to_thread`` would grow the loop's own
+        default pool)."""
+        return await asyncio.get_running_loop().run_in_executor(
+            self.registry.executor, fn, *args
+        )
+
     # -- hooks -----------------------------------------------------------------
 
     async def _on_wake(self, db: Database) -> None:
         member = self.members[db.name or ""]
         if db.state == "cold":
-            await self._materialise(member)
+            # on_wake runs before the database has a place under the
+            # connection cap, so without this a fan-out would build every
+            # cold database it touches at once (each with a temporary
+            # connection the cap does not count).
+            async with self._materialising:
+                await self._materialise(member)
             member.materialised += 1
         member.last_wake = time.time()
 
@@ -328,7 +348,7 @@ class Fleet:
         member = self.members[db.name or ""]
         if member.path is None:
             return False
-        await asyncio.to_thread(_remove, member.path)
+        await self._in_pool(_remove, member.path)
         return True
 
     async def _on_sleep(self, db: Database) -> None:
