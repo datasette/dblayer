@@ -715,3 +715,10 @@ Asked by Simon: wildly ambitious directions for out-of-process backends, "Haskel
 10. **ClickHouse through chDB or `clickhouse-local` as a worker.** An engine with its own output formats built in, so native export costs nothing to implement there.
 11. **A microVM per untrusted database** (Firecracker snapshot restore, a few milliseconds). The strongest containment available, and it would allow untrusted extensions and user-defined functions, which no other option here can.
 12. **Deterministic simulation testing of the worker protocol,** in the FoundationDB and TigerBeetle style: a simulated clock, scheduler and failure injector driving kills, lost frames and deadline races reproducibly from a seed.
+
+### Decision: build a PGlite backend and a ClickHouse backend (2026-11-24)
+
+Simon chose two of the ambitious ideas above, each given to its own subagent:
+
+- **PGlite in a Node.js worker** (`pglite`): a real PostgreSQL per database with no server, one data directory per `Database`. Open questions put to the subagent: PGlite is a single session, so how do dblayer's pooled connections and transactions map onto it; durability after a kill; whether anything short of a kill can stop a running query; start-up and memory per awake database.
+- **ClickHouse** (`clickhouse`), chDB in-process as the first form to try. It is the engine furthest from the others: no general transactions, no enforced uniqueness or foreign keys, mutations in place of row updates. It is the hardest test so far of the capability-flag approach, and a natural fit for the native export experiment.
