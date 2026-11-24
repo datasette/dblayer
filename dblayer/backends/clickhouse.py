@@ -878,7 +878,21 @@ class ClickHouse:
     # -- Backend protocol ----------------------------------------------------
 
     async def open(self, *, write: bool) -> "ClickHouseConnection":
-        conn = await run_blocking(self.executor, self._connect, write)
+        made: list[Any] = []
+
+        def connect() -> Any:
+            made.append(self._connect(write))
+            return made[0]
+
+        try:
+            conn = await run_blocking(self.executor, connect)
+        except BaseException:
+            # Cancelled while connecting (a deadline, a cancelled stream):
+            # run_blocking waits for the connect but drops its result, and
+            # an unreleased connection keeps the shared server up forever.
+            if made:
+                _server.release(made[0])
+            raise
         return ClickHouseConnection(self, conn, write=write)
 
     def change_hint(self) -> object:

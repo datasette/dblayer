@@ -7,6 +7,7 @@ The conformance suite covers the portable behaviour (``-k clickhouse``)."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from pathlib import Path
@@ -319,6 +320,30 @@ async def test_server_stops_when_the_last_connection_closes(db):
     assert not ClickHouse.server_running()
     await db.execute("select 1")
     assert ClickHouse.server_starts() == starts + 1
+
+
+async def test_cancelled_connects_do_not_keep_the_server_up():
+    """A task cancelled while its connection was being opened (a deadline,
+    a cancelled stream) left that chDB connection open, so the shared
+    server never stopped (found by tests/conformance/test_stream_races.py
+    running before this file)."""
+    from dblayer.backends.clickhouse import ClickHouse
+
+    backend = ch.make()
+    d = Database(backend)
+    try:
+        for i in range(30):
+            await d.sleep()
+            task = asyncio.create_task(d.execute("select 1"))
+            await asyncio.sleep(0.0005 * (i % 6))
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await d.sleep()
+        assert not ClickHouse.server_running()
+    finally:
+        await d.close()
+        await ch.cleanup(backend)
 
 
 async def test_many_databases_share_the_server(db):
