@@ -388,3 +388,7 @@ Subagent-reported; combined suite not yet re-run by me while milestone 3 is stil
 ### Decision: add a DuckDB worker-process backend (beyond the spec)
 
 The spec rules a DuckDB worker out of scope. Simon asked for one once the SQLite worker exists, to test whether it fixes DuckDB not returning memory after sleep: in-process, an awake instance costs about 5 MB and sleeping gives little of it back, and the demo's resident memory stayed near 180 to 200 MB after all 1,000 databases slept. A worker that exits on sleep returns everything to the OS by definition. The milestone 4 subagent has been told to make the worker engine-pluggable so this is a thin addition. To measure: resident memory of parent plus children before, during and after a fan-out, against the in-process DuckDB backend, and the per-query cost of the process boundary for analytical result sets.
+
+### Decision: add a psycopg 3 PostgreSQL backend to compare with asyncpg
+
+Simon asked for this on 2026-11-23 (his words: "a psycopg3 worker so we can compare it with asyncpg"). I read that as a second PostgreSQL backend on psycopg 3's native asyncio API, registered in the conformance suite next to the asyncpg one, with a problem-by-problem comparison and a benchmark. It answers the spec's open question 1 with evidence. Whether to also run it inside the worker process is a separate question the subagent will assess; the generic worker makes that cheap to try afterwards.
