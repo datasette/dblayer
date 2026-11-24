@@ -27,8 +27,15 @@ def main(argv: list[str] | None = None) -> None:
         help=f"PostgreSQL DSN naming the dblayer_test database (default: ${POSTGRES_DSN_ENV}, "
         f"else {POSTGRES_DEFAULT_DSN}, which connects as the current OS user)",
     )
+    parser.add_argument(
+        "--fleet-size", type=int, default=1000, help="databases in the fleet (default 1000; 0 for none)"
+    )
     args = parser.parse_args(argv)
-    config = DemoConfig(data_dir=args.data_dir, postgres_dsn=args.postgres_dsn or _env_dsn())
+    config = DemoConfig(
+        data_dir=args.data_dir,
+        postgres_dsn=args.postgres_dsn or _env_dsn(),
+        fleet_size=args.fleet_size,
+    )
     uvicorn.run(create_app(config), host=args.host, port=args.port)
 
 
