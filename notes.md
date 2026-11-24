@@ -832,3 +832,22 @@ Simon asked that, once every running subagent has finished, dblayer use pluggy a
 ### Found: demo with all thirteen featured backends (2026-11-24, my own check)
 
 After building every native piece in the main checkout (`make -C cworker`, `make -C cworker wasm`, `npm ci --prefix nodeworker`, `npm ci --prefix pglite-worker`, `make -C duckdb-cpp-worker`, `make -C duckdb-rs-worker`), the demo lists 13 featured databases, all available. Checked over plain HTTP for each one: a count query returns 200 rows' worth of books, the table page loads, and the `.csv` export returns 201 lines (header plus 200 rows). A 500-way fan-out across the fleet: 500 of 500 succeeded in 0.99 s over 175 databases with connections at the cap of 40. Getting there took six separate build commands; a single top-level build target is worth adding. The demo server had died about an hour earlier with a termination signal, cause unknown; possibly a subagent's process clean-up.
+
+### Found: eight subagents were stopped before reporting (2026-11-24)
+
+At a status check at 07:33 no subagent was running. Their transcripts stopped at 05:02 (the fleet and bug-fix subagent) and at about 06:52 (the other seven), and the harness refuses to resume them. Both times are close to moments when the session was interrupted from the user's side, so that is the likely cause; I do not know it for certain. Lesson for the process: an interrupt of the main session can end every background subagent, and nothing announces it, so check for silent subagents after any interruption.
+
+State of each at the stop, from what is pushed (their own commit messages; no final reports, so no verified results or measurements):
+
+| Work | Pushed | Missing |
+| --- | --- | --- |
+| Fleet C workers and three worker bug fixes | Fleet C-worker members (verified by me in the demo) | All three bug fixes: DuckDB stream lost interrupt, `duckdb-worker` unbounded query, `sqlite-worker` hang after cancel |
+| SQLite WASM under wasmtime | Backend, host VFS for locking, locking and fault tests, CI build, demo entry (works in the demo) | Report: locking design and cost, whether evading queries are stopped, measurements |
+| SQLite WASM in Node.js | Backend, tests, fault tests, demo entry (works in the demo) | Report: locking, cancel limits, measurements |
+| Multi-tenant C worker | Backend, tests, sanitizer CI, benchmark columns, demo entry (works in the demo) | Report: scaling curve, blast radius, sanitizer results |
+| DuckDB worker in Rust | Worker, parent backend, demo entry (works in the demo) | Unknown how much of conformance, benchmarks and CI; report and the Rust against C++ comparison |
+| Native export and socket handoff | `db.export()` with fallback, format definitions, C worker native export, socket handoff, PostgreSQL COPY export, DuckDB export, demo downloads (CSV works on all 13 demo databases), benchmark script, parity table | Benchmark results, report, recommendation |
+| PGlite in Node worker | Backend, conformance registration, kill and scale tests, CI job | Demo entry, benchmark, report |
+| ClickHouse | Backend, "whole conformance suite passes", tests | Demo entry, benchmark, capability table, report |
+
+Uncommitted files were left in three worktrees (bug fixes, PGlite, ClickHouse).
