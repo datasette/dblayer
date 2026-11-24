@@ -123,7 +123,12 @@ def _postgres(tmp_path: Path) -> Backend:
 
 
 def _postgres_psycopg(tmp_path: Path) -> Backend:
-    return pg.make("psycopg")
+    import os
+
+    # DBLAYER_PSYCOPG_PREPARE_THRESHOLD=0 runs the suite with server-side
+    # prepared statements (psycopg's statement cache), off by default.
+    threshold = os.environ.get("DBLAYER_PSYCOPG_PREPARE_THRESHOLD")
+    return pg.make("psycopg", prepare_threshold=None if threshold is None else int(threshold))
 
 
 async def _postgres_cleanup(backend: Backend) -> None:
