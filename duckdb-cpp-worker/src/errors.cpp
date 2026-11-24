@@ -6,6 +6,7 @@
 
 #include <cctype>
 #include <cstring>
+#include <map>
 
 namespace dbw {
 
@@ -111,6 +112,28 @@ Error duckdb_error(const std::string &message) {
         e.code = code;
     }
     return e;
+}
+
+Error duckdb_error_typed(int type, const std::string &message) {
+    if (duckdb_exception_class(message) != "Error") return duckdb_error(message);
+    // ExceptionTypeToString, for the types that have a Python class.
+    static const std::map<int, const char *> prefixes = {
+        {DUCKDB_ERROR_OUT_OF_RANGE, "Out of Range"},   {DUCKDB_ERROR_CONVERSION, "Conversion"},
+        {DUCKDB_ERROR_MISMATCH_TYPE, "Mismatch Type"}, {DUCKDB_ERROR_INVALID_TYPE, "Invalid type"},
+        {DUCKDB_ERROR_SERIALIZATION, "Serialization"}, {DUCKDB_ERROR_TRANSACTION, "TransactionContext"},
+        {DUCKDB_ERROR_NOT_IMPLEMENTED, "Not implemented"}, {DUCKDB_ERROR_CATALOG, "Catalog"},
+        {DUCKDB_ERROR_PARSER, "Parser"},               {DUCKDB_ERROR_CONSTRAINT, "Constraint"},
+        {DUCKDB_ERROR_CONNECTION, "Connection"},       {DUCKDB_ERROR_SYNTAX, "Syntax"},
+        {DUCKDB_ERROR_BINDER, "Binder"},               {DUCKDB_ERROR_IO, "IO"},
+        {DUCKDB_ERROR_INTERRUPT, "INTERRUPT"},         {DUCKDB_ERROR_FATAL, "FATAL"},
+        {DUCKDB_ERROR_INTERNAL, "INTERNAL"},           {DUCKDB_ERROR_INVALID_INPUT, "Invalid Input"},
+        {DUCKDB_ERROR_OUT_OF_MEMORY, "Out of Memory"}, {DUCKDB_ERROR_PERMISSION, "Permission"},
+        {DUCKDB_ERROR_DEPENDENCY, "Dependency"},       {DUCKDB_ERROR_HTTP, "HTTP"},
+        {DUCKDB_ERROR_SEQUENCE, "Sequence"},
+    };
+    auto it = prefixes.find(type);
+    if (it == prefixes.end()) return duckdb_error(message);
+    return duckdb_error(std::string(it->second) + " Error: " + message);
 }
 
 bool is_interrupt(const Error &e) { return e.type == "QueryInterrupted"; }

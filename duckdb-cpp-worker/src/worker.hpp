@@ -37,6 +37,9 @@ Error query_error(const std::string &message, const std::string &code);
 // Map a DuckDB error message ("Constraint Error: ...") as
 // DuckDBDialect.map_exception maps the Python exception.
 Error duckdb_error(const std::string &message);
+// The same for an error whose message may lack the "<Type> Error: " prefix
+// (the appender's), with DuckDB's error type.
+Error duckdb_error_typed(int duckdb_error_type, const std::string &message);
 // The Python class DuckDB's Python package raises for this message.
 std::string duckdb_exception_class(const std::string &message);
 bool is_interrupt(const Error &e);
@@ -88,6 +91,8 @@ bool type_has_timestamptz(duckdb_logical_type t);
 // Bind request parameters (a list for `?`/`$1`, a map for `$name`) as the
 // Python package binds Python values. Throws Error.
 void bind_params(duckdb_prepared_statement p, const val *params);
+// One value converted as a parameter would be (the caller destroys it).
+duckdb_value make_param_value(const val *x);
 
 // -- schema ----------------------------------------------------------------------------
 

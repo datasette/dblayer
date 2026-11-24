@@ -946,6 +946,13 @@ std::string lower(std::string s) {
 
 }  // namespace
 
+duckdb_value make_param_value(const val *x) {
+    Value v = make_value(x);
+    duckdb_value out = v.v;
+    v.v = nullptr;
+    return out;
+}
+
 void bind_params(duckdb_prepared_statement p, const val *params) {
     idx_t n = duckdb_nparams(p);
     // Identifiers given: "1".."n" for a list, the keys of a map.

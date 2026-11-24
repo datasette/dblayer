@@ -4,6 +4,7 @@
 // streamed from DuckDB and written straight into the reply.
 #include "server.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 
@@ -678,12 +679,150 @@ void stream_more(Conn &c, const JobPtr &job) {
     pump(c, *it->second, job);
 }
 
-void run_op(Conn &, Writer &wr, const Msg &) {
-    // Declined: the parent runs the core's default implementation.
+namespace {
+
+void write_declined(Writer &wr) {
+    // The parent runs the core's default implementation instead.
     wbuf *w = wr.w();
     w_map(w, 1);
     w_cstr(w, "declined");
     w_bool(w, 1);
+    w_end(w);
+}
+
+std::string fold(std::string s) {
+    for (auto &ch : s) ch = (char)tolower((unsigned char)ch);
+    return s;
+}
+
+// The table's columns (DuckDB._table_columns), empty if there is no such
+// table here.
+std::vector<std::string> table_columns(Conn &c, const std::string &table) {
+    std::vector<std::string> out;
+    duckdb_prepared_statement p = nullptr;
+    const char *sql =
+        "SELECT c.column_name FROM duckdb_columns() c JOIN duckdb_tables() t ON c.table_oid = t.table_oid "
+        "WHERE t.database_name = current_database() AND t.schema_name = current_schema() AND t.table_name = $1 "
+        "ORDER BY c.column_index";
+    if (duckdb_prepare(c.c, sql, &p) != DuckDBSuccess) {
+        std::string msg = duckdb_prepare_error(p) ? duckdb_prepare_error(p) : "prepare failed";
+        duckdb_destroy_prepare(&p);
+        throw duckdb_error(msg);
+    }
+    duckdb_value v = duckdb_create_varchar_length(table.data(), table.size());
+    duckdb_bind_value(p, 1, v);
+    duckdb_destroy_value(&v);
+    duckdb_result res;
+    if (duckdb_execute_prepared(p, &res) != DuckDBSuccess) {
+        std::string msg = duckdb_result_error(&res) ? duckdb_result_error(&res) : "query failed";
+        duckdb_destroy_result(&res);
+        duckdb_destroy_prepare(&p);
+        throw duckdb_error(msg);
+    }
+    for (;;) {
+        duckdb_data_chunk ch = duckdb_fetch_chunk(res);
+        if (!ch) break;
+        duckdb_string_t *s = (duckdb_string_t *)duckdb_vector_get_data(duckdb_data_chunk_get_vector(ch, 0));
+        for (idx_t i = 0, n = duckdb_data_chunk_get_size(ch); i < n; i++)
+            out.emplace_back(duckdb_string_t_data(&s[i]), duckdb_string_t_length(s[i]));
+        duckdb_destroy_data_chunk(&ch);
+    }
+    duckdb_destroy_result(&res);
+    duckdb_destroy_prepare(&p);
+    return out;
+}
+
+struct Appender {
+    duckdb_appender a = nullptr;
+    ~Appender() {
+        if (a) duckdb_appender_destroy(&a);
+    }
+    [[noreturn]] void fail() {
+        std::string msg = "appender failed";
+        duckdb_error_type type = DUCKDB_ERROR_INVALID;
+        if (a) {
+            duckdb_error_data e = duckdb_appender_error_data(a);
+            if (e) {
+                if (duckdb_error_data_message(e)) msg = duckdb_error_data_message(e);
+                type = duckdb_error_data_error_type(e);
+                duckdb_destroy_error_data(&e);
+            }
+            duckdb_appender_clear(a);  // never let buffered rows be flushed later
+        }
+        throw duckdb_error_typed(type, msg);
+    }
+};
+
+}  // namespace
+
+// insert_rows through DuckDB's appender, as DuckDBConnection.run_operation
+// does it: executemany costs ~0.2 ms a row on DuckDB. Declined (so the
+// parent runs the default implementation) for ignore/replace, for a table
+// that does not exist here, and for rows with columns the table lacks
+// (with alter=True the default code adds them).
+void run_op(Conn &c, Writer &wr, const Msg &m) {
+    const val *args = m.get("args");
+    if (m.str("name") != "insert_rows" || args == nullptr || args->t != V_MAP) return write_declined(wr);
+    auto truthy = [&](const char *k) {
+        const val *x = map_get(args, k);
+        return x != nullptr && ((x->t == V_BOOL && x->u.b) || (x->t == V_INT && x->u.i));
+    };
+    const val *rows = map_get(args, "rows");
+    if (truthy("ignore") || truthy("replace") || rows == nullptr || rows->t != V_ARR || rows->u.a.n == 0)
+        return write_declined(wr);
+    std::string table = val_str(map_get(args, "table"));
+    std::vector<std::string> existing = table_columns(c, table);
+    if (existing.empty()) return write_declined(wr);
+    std::vector<std::string> have;
+    for (auto &e : existing) have.push_back(fold(e));
+    // Consecutive runs of rows with the same keys (operations._groups).
+    struct Group {
+        std::vector<std::string> cols;
+        std::vector<const val *> rows;
+    };
+    std::vector<Group> groups;
+    for (size_t i = 0; i < rows->u.a.n; i++) {
+        const val *r = &rows->u.a.v[i];
+        if (r->t != V_MAP) return write_declined(wr);
+        std::vector<std::string> cols;
+        for (size_t k = 0; k < r->u.a.n; k++) {
+            std::string col = val_str(&r->u.a.v[2 * k]);
+            if (std::find(have.begin(), have.end(), fold(col)) == have.end()) return write_declined(wr);
+            cols.push_back(col);
+        }
+        if (groups.empty() || groups.back().cols != cols) groups.push_back(Group{cols, {}});
+        groups.back().rows.push_back(r);
+    }
+    int64_t total = 0;
+    {
+        Statement st(c, -1);
+        for (const Group &g : groups) {
+            Appender app;
+            if (duckdb_appender_create(c.c, nullptr, table.c_str(), &app.a) != DuckDBSuccess) app.fail();
+            for (const std::string &col : g.cols)
+                if (duckdb_appender_add_column(app.a, col.c_str()) != DuckDBSuccess) app.fail();
+            for (const val *r : g.rows) {
+                for (size_t k = 0; k < r->u.a.n; k++) {
+                    duckdb_value v = make_param_value(&r->u.a.v[2 * k + 1]);
+                    duckdb_state s = duckdb_append_value(app.a, v);
+                    duckdb_destroy_value(&v);
+                    if (s != DuckDBSuccess) app.fail();
+                }
+                if (duckdb_appender_end_row(app.a) != DuckDBSuccess) app.fail();
+            }
+            if (duckdb_appender_flush(app.a) != DuckDBSuccess) app.fail();
+            total += (int64_t)g.rows.size();
+        }
+    }
+    wbuf *w = wr.w();
+    w_map(w, 3);
+    w_cstr(w, "rowcount");
+    w_int(w, total);
+    w_cstr(w, "table_created");
+    w_bool(w, 0);
+    w_cstr(w, "columns_added");
+    w_array(w, 0);
+    w_end(w);
     w_end(w);
 }
 
