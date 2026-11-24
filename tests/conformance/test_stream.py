@@ -47,12 +47,14 @@ async def test_stream_releases_connection_when_exhausted(db):
 
 
 async def test_slow_consumer_does_not_use_up_time_limit(db):
-    # 5 chunks, 0.1s pause after each: 0.5s wall clock, limit 200ms of
-    # database time. Only time spent inside the database counts.
+    # 5 chunks, 0.25 s pause after each: 1.25 s wall clock against a limit
+    # of 1 s of database time. Only time spent inside the database counts.
+    # (With 200 ms the fetches themselves - a thread hop or a round trip per
+    # chunk - added up past the limit on a loaded machine.)
     n = 0
-    async for chunk in db.stream(series(50), chunk_rows=10, time_limit_ms=200):
+    async for chunk in db.stream(series(50), chunk_rows=10, time_limit_ms=1000):
         n += len(chunk)
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.25)
     assert n == 50
 
 
