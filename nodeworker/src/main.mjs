@@ -428,6 +428,13 @@ function dispatch(payload) {
       replyError(id, err);
       return;
     }
+    // A stream is routable from now, not only once its executor reports
+    // it open: the executor writes the first chunk to fd 1 itself, so the
+    // parent's `more` (or `cancel`) can arrive on stdin before that report
+    // is handled here, and was then dropped: the parent waited for a
+    // chunk that never came (seen as a hang on Linux CI). The report of a
+    // stream that ended or failed removes the entry again.
+    if (type === 'stream') streams.set(id, ex);
     ex.enqueue(job);
   });
 }
@@ -437,14 +444,20 @@ function cancel(target) {
     for (const ex of executors.values()) {
       if (ex.current && ex.current.id === target && ex.current.kind !== 'expire') {
         ex.cancelCurrent(1);
-        return;
+        break;
       }
       const queued = ex.queue.find((j) => j.id === target && j.kind !== 'expire');
       if (queued) {
         queued.cancelled = true;
-        return;
+        break;
       }
     }
+    // An open stream is also closed, whether or not a job was found (as
+    // in the C worker): the job that last pumped it stays `current` until
+    // its executor's report is handled, so a cancel arriving after its
+    // last frame only marked a finished job and the stream stayed open
+    // with no reply. A job still pumping fails and drops the stream first;
+    // this close then finds nothing and sends nothing.
     const ex = streams.get(target);
     if (ex) ex.enqueue({ kind: 'close_stream', id: target, stream: target });
   });
