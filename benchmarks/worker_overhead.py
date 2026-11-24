@@ -15,7 +15,11 @@ Measures (the spec's "Benchmarks" rows that concern the worker):
 
 The C worker (``SqliteCWorker``, ``cworker/``) is measured alongside when
 its binary is built (``make -C cworker``): variants ``cworker-json`` and
-``cworker-msgpack``.
+``cworker-msgpack``. The apsw backend (``SqliteApsw``, extra ``apsw``) is
+measured when apsw is installed: ``apsw`` (executor) and ``apsw-inline``
+(``inline_reads=True``), with an extra table against in-process ``sqlite3``
+and the C worker (connection open, ``execute_many`` of 100,000 rows,
+memory per open connection). ``--variants a,b`` limits the run.
 
 Prints one table. Every figure is a median over repeats; machine load moves
 them a lot, so compare figures from one run. Later benchmark work can import
@@ -42,7 +46,15 @@ from dblayer.backends.sqlite import SqliteInProcess  # noqa: E402
 from dblayer.backends.sqlite_worker import SharedWorkers, SqliteWorker, reap_workers  # noqa: E402
 from dblayer.worker.protocol import FrameDecoder, available_codecs, frame, get_codec  # noqa: E402
 
-VARIANTS = ["in-process", "worker-json", "worker-msgpack", "cworker-json", "cworker-msgpack"]
+VARIANTS = [
+    "in-process", "apsw", "apsw-inline", "worker-json", "worker-msgpack", "cworker-json", "cworker-msgpack",
+]
+
+
+def apsw_available() -> bool:
+    from dblayer.backends.sqlite_apsw import apsw_unavailable
+
+    return apsw_unavailable() is None
 
 
 def cworker_available() -> bool:
@@ -54,6 +66,10 @@ def cworker_available() -> bool:
 def make_backend(variant: str, path: Path, **kw: Any) -> Any:
     if variant == "in-process":
         return SqliteInProcess(path)
+    if variant in ("apsw", "apsw-inline"):
+        from dblayer.backends.sqlite_apsw import SqliteApsw
+
+        return SqliteApsw(path, inline_reads=variant == "apsw-inline")
     kind, codec = variant.split("-", 1)
     if kind == "cworker":
         from dblayer.backends.sqlite_cworker import SqliteCWorker
@@ -290,13 +306,68 @@ async def bench_insert_with_alter(variant: str, d: Path, repeat: int) -> dict[st
     return {"interactive_us": med_us(interactive), "op_us": med_us(op)}
 
 
-async def run_all(quick: bool = False) -> dict[str, Any]:
+async def bench_apsw_extras(variant: str, d: Path, repeat: int) -> dict[str, float]:
+    """Connection open, execute_many of 100,000 rows in one transaction,
+    and memory per open read connection (RSS growth of this process over
+    200 open connections, each with its schema loaded; for the C worker,
+    which holds no memory in this process, the worker's own RSS)."""
+    path = d / f"x-{variant}.db"
+    db = Database(make_backend(variant, path))
+    await db.execute_write("create table t (id integer primary key, title text, score real)")
+    rows = [{"title": f"title {i}", "score": i * 1.5} for i in range(100_000)]
+    many = []
+    for _ in range(max(repeat // 2, 2)):
+        await db.execute_write("delete from t")
+        t0 = time.perf_counter()
+        async with db.transaction() as tx:
+            await tx.execute_many("insert into t (title, score) values (:title, :score)", rows)
+        many.append(time.perf_counter() - t0)
+    await db.close()
+    backend = make_backend(variant, path)
+    opens = []
+    for _ in range(repeat * 5):
+        t0 = time.perf_counter()
+        conn = await backend.open(write=False)
+        opens.append(time.perf_counter() - t0)
+        await conn.close()
+    await backend.close()
+    out = {"open_us": med_us(opens), "execute_many_100k_ms": statistics.median(many) * 1e3}
+    if variant.startswith("cworker"):
+        return out
+    import gc
+    import os
+
+    gc.collect()
+    before = _rss_kb(os.getpid())
+    backends = [make_backend(variant, d / f"mem-{variant}-{i}.db") for i in range(200)]
+    conns = []
+    for i, b in enumerate(backends):
+        c = await b.open(write=True)
+        await c.execute("create table t (id integer primary key, v text)", {}, time_limit_ms=None, max_rows=None)
+        await c.execute("select * from t", {}, time_limit_ms=None, max_rows=None)
+        conns.append(c)
+    gc.collect()
+    after = _rss_kb(os.getpid())
+    out["rss_per_conn_kb"] = (after - before) / len(conns)
+    if hasattr(backends[0], "memory_status"):
+        s = [b.memory_status() for b in backends]
+        out["sqlite_bytes_per_conn"] = statistics.median(x["cache_used"] + x["schema_used"] + x["stmt_used"] for x in s)
+    for c in conns:
+        await c.close()
+    for b in backends:
+        await b.close()
+    return out
+
+
+async def run_all(quick: bool = False, only: list[str] | None = None) -> dict[str, Any]:
     n = 500 if quick else 3000
     rep = 3 if quick else 7
     variants = [
         v for v in VARIANTS
         if (not v.endswith("-msgpack") or "msgpack" in available_codecs())
         and (not v.startswith("cworker") or cworker_available())
+        and (not v.startswith("apsw") or apsw_available())
+        and (only is None or v in only)
     ]
     out: dict[str, Any] = {"round_trip": {}, "rows_1000": {}, "rows_100000": {}, "insert_with_alter": {}}
     with tempfile.TemporaryDirectory() as tmp:
@@ -306,8 +377,13 @@ async def run_all(quick: bool = False) -> dict[str, Any]:
             out["rows_1000"][v] = await bench_rows(v, d, 1000, rep * 3)
             out["rows_100000"][v] = await bench_rows(v, d, 100_000, rep)
             out["insert_with_alter"][v] = await bench_insert_with_alter(v, d, rep * 5)
-        out["start"] = await bench_start(d, rep)
-        out["startup_breakdown"] = await bench_startup_breakdown(d, rep * 3)
+        out["apsw_extras"] = {}
+        for v in variants:
+            if v in ("in-process", "apsw", "cworker-msgpack", "cworker-json"):
+                out["apsw_extras"][v] = await bench_apsw_extras(v, d, rep)
+        if only is None:
+            out["start"] = await bench_start(d, rep)
+            out["startup_breakdown"] = await bench_startup_breakdown(d, rep * 3)
     reap_workers(5)
     return out
 
@@ -332,6 +408,27 @@ def print_table(r: dict[str, Any]) -> None:
     for v in variants:
         x = r["insert_with_alter"][v]
         print(f"  {v:<{w}} interactive transaction {x['interactive_us']:8.1f}   one named operation {x['op_us']:8.1f}")
+    x = r.get("apsw_extras") or {}
+    if x:
+        import sqlite3
+
+        line = f"in-process sqlite3 {sqlite3.sqlite_version}"
+        if apsw_available():
+            import apsw
+
+            line += f"; apsw {apsw.apsw_version()} bundles SQLite {apsw.sqlite_lib_version()}"
+        print(f"\nSQLite versions: {line}")
+        print("Connection open (median us), execute_many of 100,000 rows in a transaction (ms), "
+              "memory per open connection (KB of process RSS; SQLite's own bytes)")
+        for v, e in x.items():
+            mem = ""
+            if "rss_per_conn_kb" in e:
+                mem = f"   rss {e['rss_per_conn_kb']:6.1f} KB/conn"
+                if "sqlite_bytes_per_conn" in e:
+                    mem += f" (db_status {e['sqlite_bytes_per_conn'] / 1024:.1f} KB)"
+            print(f"  {v:<{w}} open {e['open_us']:8.1f}   execute_many {e['execute_many_100k_ms']:8.1f} ms{mem}")
+    if "start" not in r:
+        return
     s = r["start"]
     print("\nOpen to first result of a new Database (ms)")
     print(f"  in-process {s['in-process_ms']:.2f}; worker dedicated {s['dedicated_ms']:.1f} (a process per connection); "
@@ -357,8 +454,9 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--quick", action="store_true")
     p.add_argument("--json", type=Path)
+    p.add_argument("--variants", help="comma-separated subset of " + ",".join(VARIANTS))
     args = p.parse_args()
-    r = asyncio.run(run_all(args.quick))
+    r = asyncio.run(run_all(args.quick, args.variants.split(",") if args.variants else None))
     print_table(r)
     if args.json:
         args.json.write_text(json.dumps(r, indent=2))
