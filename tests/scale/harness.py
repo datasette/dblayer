@@ -51,7 +51,9 @@ class ScaleBackend:
     registry to cap them. A backend with one OS process per database holds
     that many processes, so fewer: 1,000 Python workers measured 38 GB of
     summed RSS on macOS and 1,000 Node workers 62 GB, more than a 16 GB CI
-    runner has (the runner thrashed, then hung or was killed)."""
+    runner has (the runner thrashed, then hung or was killed); 1,000 C
+    workers fit in memory but hit the macOS runner's process limit (fork
+    failed with EAGAIN)."""
 
 
 def sqlite_files(root: Path, n: int) -> list[Path]:
@@ -194,7 +196,7 @@ SCALE_BACKENDS: list[ScaleBackend] = [
     # databases take a longer load. Growth reported, as for the Python one.
     ScaleBackend(
         "sqlite-cworker", sqlite_files, _cworker_backend, 1_000, requests=10_000, growth_limit=None,
-        available=_cworker_available,
+        available=_cworker_available, open_at_once=200,
     ),
     # SQLite-WASM in Node: a wake starts a Node process (~60 ms, as the
     # Python worker), so the Python worker's shorter load.
