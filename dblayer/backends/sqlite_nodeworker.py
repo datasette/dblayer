@@ -266,6 +266,24 @@ class NodeDatabaseWorker(DatabaseWorker):
 
     process_class = PipelinedWorkerProcess
 
+    def _retire(self, proc: WorkerProcess) -> None:
+        super()._retire(proc)
+        # DatabaseWorker keeps a retired process in ``_exiting`` until the
+        # next start; with a database that sleeps and is not woken again,
+        # that was about 260 KB per database left behind (the scale test).
+        # Drop it once it has exited.
+        if self._exiting:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            loop.call_later(0.05, self._prune, loop, 0.05)
+
+    def _prune(self, loop: asyncio.AbstractEventLoop, delay: float) -> None:
+        self._exiting = [p for p in self._exiting if p.popen is not None and p.popen.poll() is None]
+        if self._exiting and not loop.is_closed() and delay < 10:
+            loop.call_later(delay * 2, self._prune, loop, delay * 2)
+
 
 _owners: weakref.WeakValueDictionary[str, DatabaseWorker] = weakref.WeakValueDictionary()
 
