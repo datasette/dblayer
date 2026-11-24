@@ -30,7 +30,10 @@ async def test_stats_follow_the_lifecycle(make_backend, monkeypatch):
         assert s.open_connections == 2
         assert s.wakes == 3
         clock.advance(100, registry._hub)  # idle timeout
-        await wait_until(lambda: registry.stats().sleeps == 3)
+        # Every sleep finished: a sleep is counted when it starts, and its
+        # cap place is given back only once the backend is closed (DuckDB
+        # checkpoints on close, which takes a while).
+        await wait_until(lambda: all(d.state == "asleep" and d._transition is None for d in dbs))
         s = registry.stats()
         assert (s.awake, s.open_connections, s.idle_connections) == (0, 0, 0)
         assert s.sleeps == 3
