@@ -1411,3 +1411,9 @@ Interim, not yet confirmed by a green run.
 - The workflow is now split by backend family, with a timeout on every job and stack dumps on a hang.
 
 With Simon's go-ahead I deleted the 33 pytest temp folders that nothing had touched for over three hours: 20 GB freed, 66 GB free afterwards. The 11 folders modified in the last three hours were left, since running subagents may be using them.
+
+### Found: the Linux CI hang is identified (2026-11-24)
+
+Subagent-reported, from the log of the cancelled run. The Linux jobs stopped in `tests/scale/test_threads.py`, at the standalone thread test on the Python SQLite worker, and one job's log ends with "The runner has received a shutdown signal". The test held 1,000 databases open with no registry cap, which is 1,000 worker processes: about 38 GB of memory for the Python worker and 62 to 69 GB for the Node.js worker, on a 16 GB runner. The runner thrashed until it was killed or wedged. A test bug, not a library hang. Those two backends now hold 100 open. No run on the new workflow has completed yet to confirm it.
+
+Worth keeping as a finding about the backends themselves: 1,000 awake databases cost 38 GB on the Python worker and over 60 GB on the Node.js worker, against 188 KB each (under 200 MB in total) on the multi-tenant C worker.
