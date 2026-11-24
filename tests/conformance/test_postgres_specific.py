@@ -220,6 +220,65 @@ async def test_upsert_rows_is_one_statement_per_group(db, spy):
     assert (await db.execute("select a from t where id = 3")).rows == [("y",)]
 
 
+# -- alter_table and staged import -------------------------------------------------
+
+
+async def test_alter_table_is_native(db):
+    # Every change is a native ALTER: the table keeps its identity, so
+    # views and other tables' foreign keys stay attached.
+    await db.create_table("t", {"id": "integer", "a": "text", "b": "text"}, pk="id")
+    await db.insert_rows("t", [{"id": 1, "a": "10", "b": "x"}, {"id": 2, "a": "20", "b": "y"}])
+    oid = (await db.execute("select 't'::regclass::oid")).rows[0][0]
+    await db.alter_table("t", rename={"a": "n"}, types={"a": "integer"})  # text -> BIGINT
+    # (PostgreSQL refuses a type change on a column a view uses.)
+    await db.execute_write("create view v as select id, n from t")
+    await db.alter_table("t", pk=["id", "n"])
+    await db.alter_table("t", drop=["b"])
+    assert (await db.execute("select 't'::regclass::oid")).rows[0][0] == oid
+    assert await db.primary_keys("t") == ["id", "n"]
+    cols = {c.name: c.type for c in await db.table_columns("t")}
+    assert cols == {"id": "BIGINT", "n": "BIGINT"}
+    assert (await db.execute("select * from v order by id")).rows == [(1, 10), (2, 20)]
+    assert [i.name for i in await db.indexes("t") if i.origin == "pk"] == ["t_pkey"]
+    with pytest.raises(ValueError):
+        await db.alter_table("t", drop=["id"])  # a pk column, with no new pk
+    await db.alter_table("t", pk=None)
+    assert await db.primary_keys("t") == []
+
+
+async def test_staged_replace_renames_constraints(db):
+    await db.create_table("posts", {"id": "integer", "slug": "text"}, pk="id")
+    await db.execute_write("alter table posts add constraint posts_slug_key unique (slug)")
+    await db.create_index("posts", ["slug"], name="posts_slug_idx")
+    for n in range(2):  # twice: names from the first swap must not collide
+        async with db.staged_import("posts", mode="replace") as imp:
+            await imp.write([{"id": i, "slug": f"s{n}-{i}"} for i in range(5)])
+    names = sorted(i.name for i in await db.indexes("posts"))
+    assert names == ["posts_pkey", "posts_slug_idx", "posts_slug_key"]
+    assert (await db.execute("select count(*) from posts")).rows == [(5,)]
+
+
+async def test_staged_replace_refuses_check_constraints(db):
+    from dblayer import NotSupported
+
+    await db.execute_write("create table t (id integer primary key, n integer check (n > 0))")
+    with pytest.raises(NotSupported):
+        async with db.staged_import("t", mode="replace") as imp:
+            await imp.write([{"id": 1, "n": 1}])
+
+
+async def test_staged_replace_of_a_referenced_table_fails_cleanly(db):
+    await db.create_table("p", {"id": "integer"}, pk="id")
+    await db.insert_rows("p", [{"id": 1}])
+    await db.execute_write("create table c (pid integer references p (id))")
+    with pytest.raises(QueryError) as e:
+        async with db.staged_import("p", mode="replace") as imp:
+            await imp.write([{"id": 2}])
+    assert e.value.code == "2BP01"  # dependent_objects_still_exist
+    assert (await db.execute("select id from p")).rows == [(1,)]
+    assert not [t for t in (await db.schema()).tables if t.startswith("_dblayer_")]
+
+
 # -- the spec's "what this backend must demonstrate" ---------------------------
 # 1. The conformance suite passes: the "postgres" entry in conftest.BACKENDS.
 
