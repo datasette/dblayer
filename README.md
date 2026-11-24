@@ -21,6 +21,27 @@ uv run pytest
 - `tests/conformance/test_sqlite_specific.py` holds tests that only make sense
   for SQLite.
 
+### Timing
+
+The suite must pass on a loaded machine or a shared CI runner, so tests wait
+for the event they check (`helpers.wait_until`, an `asyncio.Event`, a hook)
+rather than sleeping a fixed time, and idle-timeout tests move the clock by
+hand (`helpers.IdleClock`). Hang guards allow `helpers.EVENTUALLY_S` (10 s).
+
+The spec's latency promises (cancel releases the write slot within 50 ms,
+DuckDB interrupts within 100 ms of the time limit, deadline expiry) are
+checked by `helpers.check_latency`: the operation must complete within the
+generous functional bound, and the measured figure is printed (`pytest -s`)
+and listed in a "spec latencies" section at the end of the run. The spec's
+tight figure is asserted only with `DBLAYER_STRICT_TIMING=1`:
+
+```bash
+DBLAYER_STRICT_TIMING=1 uv run --all-extras pytest
+```
+
+Use strict mode on a quiet machine when measuring; expect it to fail under
+load.
+
 ## Demo app
 
 `dblayer_demo/` is a small Datasette-like Starlette app built only on
