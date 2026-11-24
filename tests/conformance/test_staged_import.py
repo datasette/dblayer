@@ -8,6 +8,8 @@ import pytest
 from dblayer import QueryError, TableNotFound
 from dblayer.core.staged import STAGING_PREFIX
 
+from ..helpers import EVENTUALLY_S
+
 
 async def dump(db, table, order="1"):
     return (await db.execute(f"select * from {table} order by {order}")).dicts()
@@ -176,7 +178,7 @@ async def test_chunks_are_short_transactions(posts):
     """Other writers get in between chunks."""
     async with posts.staged_import("posts", mode="append") as imp:
         await imp.write(chunks(5, 5)[0])
-        await asyncio.wait_for(posts.execute_write("insert into posts values (2000, 'x')"), 1)
+        await asyncio.wait_for(posts.execute_write("insert into posts values (2000, 'x')"), EVENTUALLY_S)
         await imp.write(chunks(5, 5, start=6)[0])
     assert len(await dump(posts, "posts")) == 12
 

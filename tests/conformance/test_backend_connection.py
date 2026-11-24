@@ -12,6 +12,8 @@ from dblayer.backends.base import BackendConnection
 from dblayer.core.database import map_errors
 from dblayer.core.params import rewrite
 
+from ..helpers import EVENTUALLY_S
+
 
 def native(backend, sql, params=None):
     d = backend.dialect
@@ -94,11 +96,20 @@ async def test_interrupt(conns):
         "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c",
     )
     task = asyncio.create_task(r.execute(sql, params, time_limit_ms=None, max_rows=None))
+
+    async def interrupt_until_done():
+        # interrupt() is a no-op while no statement runs (SQLite, DuckDB),
+        # so a caller repeats it until the statement returns, as the core's
+        # deadline does; one sent before the thread starts would be lost.
+        while not task.done():
+            await r.interrupt()
+            await asyncio.sleep(0.01)
+
     await asyncio.sleep(0.05)
-    await r.interrupt()
+    await asyncio.wait_for(interrupt_until_done(), EVENTUALLY_S)
     with pytest.raises(QueryInterrupted):
         with map_errors(backend):
-            await asyncio.wait_for(task, 2)
+            await task
     assert await count(backend, r) == 0
 
 

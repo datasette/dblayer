@@ -40,10 +40,22 @@ async def _concurrent_writers(db: Database, n: int) -> int:
     pool = db._get_pool()
     held = []
     for _ in range(n):
-        try:
-            held.append(await asyncio.wait_for(pool.acquire(write=True), 0.05))
-        except TimeoutError:
+        # The fake backend opens without any real wait, so an acquire that
+        # can succeed does within a few loop iterations; counting
+        # iterations, not wall-clock time, keeps this independent of load.
+        task = asyncio.ensure_future(pool.acquire(write=True))
+        for _ in range(50):
+            if task.done():
+                break
+            await asyncio.sleep(0)
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
             break
+        held.append(task.result())
     for c in held:
         await pool.release(c)
     return len(held)

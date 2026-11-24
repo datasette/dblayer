@@ -6,6 +6,8 @@ import pytest
 
 from dblayer import IntegrityError, NestedWriteError, SchemaChanged, WriteResult
 
+from ..helpers import EVENTUALLY_S
+
 
 @pytest.fixture
 async def t(db):
@@ -82,7 +84,7 @@ async def test_batch_empty(t):
 async def test_batch_inside_transaction_raises(t):
     async with t.transaction():
         with pytest.raises(NestedWriteError):
-            await asyncio.wait_for(t.batch(["select 1"]), 1)
+            await asyncio.wait_for(t.batch(["select 1"]), EVENTUALLY_S)
 
 
 async def test_batches_are_serialised(t):

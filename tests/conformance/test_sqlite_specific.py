@@ -11,7 +11,7 @@ import pytest
 from dblayer import Database, NotSupported, QueryError
 from dblayer.backends.sqlite import SqliteInProcess
 
-from ..helpers import count_open_fds
+from ..helpers import EVENTUALLY_S, count_open_fds
 
 
 @pytest.fixture
@@ -265,16 +265,26 @@ async def test_cancelled_write_releases_write_slot(file_db):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await asyncio.wait_for(file_db.execute_write("insert into t values (1)"), 2)
+    await asyncio.wait_for(file_db.execute_write("insert into t values (1)"), EVENTUALLY_S)
     assert (await file_db.execute("select count(*) from t")).rows == [(1,)]
 
 
 async def test_many_databases_do_not_add_threads(tmp_path):
-    # Warm the shared executor to its maximum size first.
+    # Warm the shared executor to its maximum size first. Queries alone do
+    # not guarantee that on a loaded machine (a finished thread is reused
+    # before the next submit), so jobs that wait for one another start
+    # every thread.
+    from dblayer.core.executor import DEFAULT_MAX_THREADS, get_default_executor
+
     warm = [Database(SqliteInProcess(tmp_path / f"warm{i}.db")) for i in range(16)]
     await asyncio.gather(*(d.execute_write("create table t (x)") for d in warm))
     for d in warm:
         await d.close()
+    executor = get_default_executor()
+    size = getattr(executor, "_max_workers", DEFAULT_MAX_THREADS)
+    barrier = threading.Barrier(size)
+    loop = asyncio.get_running_loop()
+    await asyncio.gather(*(loop.run_in_executor(executor, barrier.wait, 30) for _ in range(size)))
     threads = threading.active_count()
     dbs = [Database(SqliteInProcess(tmp_path / f"m{i}.db")) for i in range(200)]
     await asyncio.gather(*(d.execute_write("create table t (x)") for d in dbs))
