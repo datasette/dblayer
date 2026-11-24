@@ -223,7 +223,8 @@ static int write_indexes(sqlite3 *db, wbuf *w, const char *table, master_row *ma
     }
     sqlite3_finalize(st);
     if (rc == SQLITE_OK) {
-        qsort(rows, n, sizeof *rows, cmp_index);
+        if (n > 1) /* qsort(NULL, 0) is undefined: glibc declares base nonnull */
+            qsort(rows, n, sizeof *rows, cmp_index);
         w_cstr(w, "indexes");
         w_array(w, (uint32_t)n);
         for (size_t i = 0; i < n && rc == SQLITE_OK; i++) {
