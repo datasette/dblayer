@@ -7,7 +7,7 @@ import pytest
 
 from dblayer import Database, Registry
 
-from ..helpers import CountingBackend
+from ..helpers import EVENTUALLY_S, CountingBackend, wait_until
 
 
 async def test_concurrent_first_requests_trigger_one_on_wake(make_backend):
@@ -81,7 +81,7 @@ async def test_cancelled_waker_hands_over_to_a_waiter(make_backend):
         second = asyncio.create_task(db.execute("select 2"))
         await asyncio.sleep(0.01)
         first.cancel()
-        assert (await asyncio.wait_for(second, 2)).rows == [(2,)]
+        assert (await asyncio.wait_for(second, EVENTUALLY_S)).rows == [(2,)]
         assert attempts == 2
 
 
@@ -95,16 +95,18 @@ async def test_on_sleep_runs_after_everything_is_released(make_backend):
     async with Registry(on_sleep=on_sleep, idle_timeout=0.05) as registry:
         db = registry.add("a", Database(backend))  # type: ignore[arg-type]
         await db.execute("select 1")
-        await asyncio.sleep(0.2)
+        await wait_until(lambda: seen)  # the idle timeout put it to sleep
         released = db.capabilities.sleep_releases_everything
         assert seen == [(0, released, "asleep")]
 
 
 async def test_wake_waits_for_on_sleep_to_finish(make_backend):
     events = []
+    sleep_started = asyncio.Event()
 
     async def on_sleep(db):
         events.append("sleep start")
+        sleep_started.set()
         await asyncio.sleep(0.05)
         events.append("sleep end")
 
@@ -115,7 +117,9 @@ async def test_wake_waits_for_on_sleep_to_finish(make_backend):
         db = registry.add("a", Database(make_backend()))
         await db.execute("select 1")
         sleeping = asyncio.create_task(db.sleep())
-        await asyncio.sleep(0.01)
+        # Wait until the sleep is under way (closing a server connection can
+        # take a while; a call arriving before then just keeps it awake).
+        await asyncio.wait_for(sleep_started.wait(), EVENTUALLY_S)
         assert (await db.execute("select 2")).rows == [(2,)]
         await sleeping
         assert events == ["wake", "sleep start", "sleep end", "wake"]
