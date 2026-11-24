@@ -392,3 +392,9 @@ The spec rules a DuckDB worker out of scope. Simon asked for one once the SQLite
 ### Decision: add a psycopg 3 PostgreSQL backend to compare with asyncpg
 
 Simon asked for this on 2026-11-23 (his words: "a psycopg3 worker so we can compare it with asyncpg"). I read that as a second PostgreSQL backend on psycopg 3's native asyncio API, registered in the conformance suite next to the asyncpg one, with a problem-by-problem comparison and a benchmark. It answers the spec's open question 1 with evidence. Whether to also run it inside the worker process is a separate question the subagent will assess; the generic worker makes that cheap to try afterwards.
+
+### Found: demo fleet worker databases were built from the wrong template (fixed)
+
+Once the worker backend landed, opening any fleet worker database returned a 500, "file is not a database": the fleet code picked the DuckDB template for every kind except in-process SQLite. Fixed in `1b9c71e`, with a test that opens one fleet member of every backend kind (it failed before the fix). The demo tests had passed because none opened a worker member of the fleet. After the fix, on a fresh server: all 1,000 databases registered and none unavailable; a 500-way fan-out gave 500 of 500 reads in 1.44 s over 192 databases with open connections at the cap of 40.
+
+A second gap this shows: an unexpected `QueryError` from `db.schema()` reaches the app as a 500. The demo should render it as an error page, and the library's error for "this file is not a database" could be more specific than `QueryError`.
