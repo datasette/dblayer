@@ -10,7 +10,7 @@ from datetime import timedelta
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping, Sequence
 from typing import Any
 
-from ..backends.base import Backend, Capabilities
+from ..backends.base import Backend, Capabilities, Dialect
 from ..errors import DatabaseClosed, NestedWriteError
 from .api import IntrospectionMixin, OperationsMixin
 from .common import DEFAULT, Opt, map_errors, pick, spawn
@@ -150,6 +150,13 @@ class Database(IntrospectionMixin, OperationsMixin):
     @property
     def capabilities(self) -> Capabilities:
         return self._backend.capabilities
+
+    @property
+    def dialect(self) -> Dialect:
+        """The backend's SQL dialect, as on ``Transaction``: ``name``,
+        ``quote_identifier()``, ``rowid_column``... Lets callers build SQL
+        (quote a table name) without a handle on the backend."""
+        return self._backend.dialect
 
     @property
     def closed(self) -> bool:

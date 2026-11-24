@@ -177,3 +177,16 @@ async def test_change_hint_survives_sleep_without_waking(db):
     db.change_hint()
     assert db.stats().opened_total == before
     assert db.stats().open_total == 0
+
+
+async def test_database_dialect_quotes_identifiers(db):
+    # ``db.dialect`` (like ``tx.dialect``) lets callers quote names without
+    # a handle on the backend: an odd table name round-trips.
+    name = 'odd "name" here'
+    q = db.dialect.quote_identifier(name)
+    await db.execute_write(f"create table {q} (id integer primary key)")
+    await db.execute_write(f"insert into {q} (id) values (1)")
+    assert name in await db.table_names()
+    assert (await db.execute(f"select count(*) from {q}")).rows[0][0] == 1
+    async with db.transaction() as tx:
+        assert tx.dialect is db.dialect
