@@ -6,7 +6,7 @@ import pytest
 
 from dblayer import DatabaseClosed
 
-from ..helpers import count_open_fds
+from ..helpers import EVENTUALLY_S, count_open_fds, wait_until
 
 SLOW = (
     "with recursive c(x) as (select 1 union all select x + 1 from c where x < 200000) "
@@ -72,7 +72,7 @@ async def test_sleep_is_repeatable(db):
 async def test_sleep_during_in_flight_read(db):
     await db.execute_write("create table t (x integer)")
     task = asyncio.create_task(db.execute(SLOW))
-    await asyncio.sleep(0.01)
+    await wait_until(lambda: db.stats().in_use_read == 1, interval=0)  # in flight
     await db.sleep()
     assert (await task).rows[0][0] == 200000  # finished on the connection it held
     assert db.stats().open_read == 0  # and that connection was closed on return
@@ -109,7 +109,7 @@ async def test_close_is_permanent(db):
 
 async def test_close_waits_for_nothing_but_closes_on_return(db):
     task = asyncio.create_task(db.execute(SLOW))
-    await asyncio.sleep(0.01)
+    await wait_until(lambda: db.stats().in_use_read == 1, interval=0)  # in flight
     await db.close()
     # The in-flight read finishes on the connection it holds.
     assert (await task).rows[0][0] == 200000
@@ -123,10 +123,10 @@ async def test_cancelled_read_returns_connection(db):
             "select count(*) from c"
         )
     )
-    await asyncio.sleep(0.05)
+    await wait_until(lambda: db.stats().in_use_read == 1, interval=0)  # in flight
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     s = db.stats()
     assert s.in_use_read == 0
-    assert (await asyncio.wait_for(db.execute("select 1"), 2)).rows == [(1,)]
+    assert (await asyncio.wait_for(db.execute("select 1"), EVENTUALLY_S)).rows == [(1,)]
