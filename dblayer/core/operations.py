@@ -224,6 +224,8 @@ def _key_columns(dialect: Dialect, info: TableInfo) -> tuple[str, ...]:
 def _key_values(keys: Sequence[str], pk_values: Any) -> list[Any]:
     if len(keys) == 1 and not isinstance(pk_values, (list, tuple)):
         return [pk_values]
+    if not isinstance(pk_values, (list, tuple)):
+        raise ValueError(f"table key is {list(keys)}; pass a sequence of {len(keys)} values")
     values = list(pk_values)
     if len(values) != len(keys):
         raise ValueError(f"expected {len(keys)} primary key value(s) for {list(keys)}, got {values!r}")
