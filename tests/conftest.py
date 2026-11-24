@@ -89,6 +89,24 @@ def _sqlite_cworker(codec: str | None) -> Callable[[Path], Backend]:
     return make
 
 
+_cpool: list = []  # one CPool for the session: every sqlite-cpool test database shares its processes
+
+
+def _sqlite_cpool(tmp_path: Path) -> Backend:
+    from dblayer.backends.sqlite_cpool import CPool, SqliteCPool
+
+    global _counter
+    _counter += 1
+    if not _cpool:
+        _cpool.append(CPool(2, linger=0))
+    return SqliteCPool(tmp_path / f"db{_counter}.db", pool=_cpool[0])  # type: ignore[return-value]
+
+
+async def _cpool_cleanup(backend: Backend) -> None:
+    backend.pool.close()  # type: ignore[attr-defined]
+    await _reap_workers(backend)
+
+
 def _cworker_available() -> str | None:
     from dblayer.backends.sqlite_cworker import binary_unavailable
 
@@ -197,6 +215,9 @@ BACKENDS: list[BackendSpec] = [
         native_operations=True,
         cleanup=_reap_workers,
     ),
+    # Multi-tenant C worker processes shared by every database (sqlite_cpool).
+    BackendSpec("sqlite-cpool", _sqlite_cpool, available=_cworker_available, native_operations=True,
+                cleanup=_cpool_cleanup),
     BackendSpec("duckdb", _duckdb_file, available=_duckdb_available, native_operations=True),
     # DuckDB in a worker process the database owns; JSON codec. The
     # MessagePack variant runs with DBLAYER_DUCKDB_WORKER_MSGPACK=1.
