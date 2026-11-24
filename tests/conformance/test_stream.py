@@ -1,0 +1,107 @@
+"""Streaming: chunks, backpressure, slow consumers, limits, early close."""
+
+import asyncio
+from contextlib import aclosing
+
+import pytest
+
+from dblayer import QueryInterrupted, ResourceLimitExceeded, Row
+
+
+def series(n: int) -> str:
+    return (
+        "with recursive c(x) as (select 1 union all select x + 1 from c "
+        f"where x < {n}) select x from c"
+    )
+
+
+INFINITE = "with recursive c(x) as (select 1 union all select x + 1 from c) select x from c"
+
+
+async def test_stream_chunks(db):
+    sizes = []
+    values = []
+    async for chunk in db.stream(series(95), chunk_rows=10):
+        sizes.append(len(chunk))
+        assert all(isinstance(r, Row) for r in chunk)
+        values.extend(r["x"] for r in chunk)
+    assert sizes == [10] * 9 + [5]
+    assert values == list(range(1, 96))
+
+
+async def test_stream_params(db):
+    chunks = [c async for c in db.stream("select :a as a, :b as b", {"a": 1, "b": 2})]
+    assert chunks == [[(1, 2)]]
+    chunks = [c async for c in db.stream("select ? as a, ? as b", [3, 4])]
+    assert chunks == [[(3, 4)]]
+
+
+async def test_stream_empty(db):
+    assert [c async for c in db.stream(series(5) + " where x > 100")] == []
+
+
+async def test_stream_releases_connection_when_exhausted(db):
+    async for _ in db.stream(series(20), chunk_rows=5):
+        assert db.stats().in_use_read == 1
+    assert db.stats().in_use_read == 0
+
+
+async def test_slow_consumer_does_not_use_up_time_limit(db):
+    # 5 chunks, 0.1s pause after each: 0.5s wall clock, limit 200ms of
+    # database time. Only time spent inside the database counts.
+    n = 0
+    async for chunk in db.stream(series(50), chunk_rows=10, time_limit_ms=200):
+        n += len(chunk)
+        await asyncio.sleep(0.1)
+    assert n == 50
+
+
+async def test_stream_time_limit_interrupts(db):
+    sql = (
+        "with recursive c(x) as (select 1 union all select x + 1 from c) "
+        "select count(*) from c"
+    )
+    with pytest.raises(QueryInterrupted):
+        async for _ in db.stream(sql, time_limit_ms=50):
+            pass
+    assert db.stats().in_use_read == 0
+    assert (await db.execute("select 1")).rows == [(1,)]
+
+
+async def test_backpressure_infinite_stream_can_be_abandoned(db):
+    # If the backend read ahead, this would never finish.
+    got = []
+    async with aclosing(db.stream(INFINITE, chunk_rows=100)) as s:
+        async for chunk in s:
+            got.extend(chunk)
+            if len(got) >= 300:
+                break
+    assert len(got) == 300
+    assert db.stats().in_use_read == 0
+    assert (await db.execute("select 2")).rows == [(2,)]
+
+
+async def test_stream_max_result_bytes(db):
+    sql = (
+        "with recursive c(x) as (select 1 union all select x + 1 from c where x < 1000) "
+        "select x, :pad as pad from c"
+    )
+    with pytest.raises(ResourceLimitExceeded):
+        async for _ in db.stream(sql, {"pad": "p" * 100}, chunk_rows=50, max_result_bytes=5000):
+            pass
+    assert db.stats().in_use_read == 0
+
+
+async def test_concurrent_streams_and_reads(make_db):
+    db = make_db(max_read_connections=2)
+
+    async def consume():
+        total = 0
+        async for chunk in db.stream(series(100), chunk_rows=7):
+            total += sum(r[0] for r in chunk)
+            await asyncio.sleep(0)
+        return total
+
+    results = await asyncio.gather(*(consume() for _ in range(5)))
+    assert results == [5050] * 5
+    assert db.stats().open_read <= 2

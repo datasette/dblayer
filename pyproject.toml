@@ -1,0 +1,31 @@
+[project]
+name = "dblayer"
+version = "0.1.0a0"
+description = "Research prototype: an asyncio database layer that never hands out a raw connection"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+postgres = ["asyncpg"]
+duckdb = ["duckdb"]
+msgpack = ["msgpack"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["dblayer*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = [
+    "requires(*flags): skip unless the backend has every named capability flag set",
+    "requires_not(*flags): skip if the backend has any named capability flag set",
+]
