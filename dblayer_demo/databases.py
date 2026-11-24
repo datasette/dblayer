@@ -276,6 +276,26 @@ def _duckdb_cppworker(config: DemoConfig) -> Backend:
     return DuckDBCppWorker(config.data_dir / "duckdb-cppworker.duckdb")
 
 
+def _pglite(config: DemoConfig) -> Backend:
+    # Experimental: PostgreSQL compiled to WebAssembly (PGlite) in a Node.js
+    # process, one data directory per database (`npm ci --prefix pglite-worker`).
+    return pglite_backend(config.data_dir / "pglite")
+
+
+def pglite_backend(path: Path, **options: object) -> Backend:
+    """A PGlite data directory, opened by a Node.js worker on wake and
+    released on sleep. Raises ``Unavailable`` naming the setup command until
+    the npm packages are installed."""
+    try:
+        from dblayer.backends.pglite_worker import PGliteWorker, unavailable
+    except ImportError as e:
+        raise Unavailable(f"the PGliteWorker backend is not available here ({e})") from e
+    reason = unavailable()
+    if reason:
+        raise Unavailable(reason)
+    return PGliteWorker(path, memory_limit_mb=512, **options)  # type: ignore[arg-type]
+
+
 DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite", "SQLite, in process", "SqliteInProcess", _sqlite),
     DemoSpec("sqlite-apsw", "SQLite, in process (apsw)", "SqliteApsw", _sqlite_apsw),
@@ -289,6 +309,12 @@ DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("duckdb-worker", "DuckDB, in a worker process", "DuckDBWorker", _duckdb_worker),
     DemoSpec("duckdb-rsworker", "DuckDB, in a Rust worker process", "DuckDBRustWorker", _duckdb_rsworker),
     DemoSpec("duckdb-cppworker", "DuckDB, in a C++ worker process", "DuckDBCppWorker", _duckdb_cppworker),
+    DemoSpec(
+        "pglite",
+        "PostgreSQL in WebAssembly (PGlite, Node.js process)",
+        "PGliteWorker",
+        _pglite,
+    ),
     DemoSpec(
         "postgres-psycopg",
         "PostgreSQL (psycopg 3)",

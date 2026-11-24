@@ -48,6 +48,7 @@ SLOW_SQL["duckdb-worker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["duckdb-rsworker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["duckdb-cppworker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["postgres-psycopg"] = SLOW_SQL["postgres"]
+SLOW_SQL["pglite"] = SLOW_SQL["postgres"]
 
 
 @pytest.fixture(scope="session")
@@ -164,7 +165,7 @@ async def test_table_page_and_pagination(client: httpx.AsyncClient) -> None:
 
 async def test_table_definition(client: httpx.AsyncClient) -> None:
     r = await client.get(f"/{client.slug}/authors")  # type: ignore[attr-defined]
-    if client.slug in ("postgres", "postgres-psycopg"):  # type: ignore[attr-defined]
+    if client.slug in ("postgres", "postgres-psycopg", "pglite"):  # type: ignore[attr-defined]
         assert "cannot supply CREATE statements" in r.text
     else:
         assert re.search(r'<pre class="sql">CREATE TABLE (&#34;)?authors', r.text, re.I)
