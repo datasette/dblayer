@@ -215,6 +215,19 @@ def _sqlite_wasm(config: DemoConfig) -> Backend:
     return SqliteWasm(config.data_dir / "sqlite-wasm.db", memory_limit_mb=256)
 
 
+def _sqlite_nodeworker(config: DemoConfig) -> Backend:
+    # Experimental: SQLite compiled to WebAssembly in a Node.js process, one
+    # per database (`npm ci --prefix nodeworker`). Capped at 256 MB.
+    try:
+        from dblayer.backends.sqlite_nodeworker import SqliteNodeWorker, unavailable
+    except ImportError as e:
+        raise Unavailable(f"the SqliteNodeWorker backend is not available here ({e})") from e
+    reason = unavailable()
+    if reason:
+        raise Unavailable(reason)
+    return SqliteNodeWorker(config.data_dir / "sqlite-nodeworker.db", memory_limit_mb=256)
+
+
 def _duckdb(config: DemoConfig) -> Backend:
     from dblayer.backends.duckdb import DuckDB  # ImportError without the duckdb extra
 
@@ -270,6 +283,7 @@ DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite-cworker", "SQLite, in a C worker process", "SqliteCWorker", _sqlite_cworker),
     DemoSpec("sqlite-cpool", "SQLite, multi-tenant C worker", "SqliteCPool", _sqlite_cpool),
     DemoSpec("sqlite-wasm", "SQLite, in WebAssembly (wasmtime)", "SqliteWasm", _sqlite_wasm),
+    DemoSpec("sqlite-nodeworker", "SQLite, WebAssembly in a Node.js process", "SqliteNodeWorker", _sqlite_nodeworker),
     DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),
     DemoSpec("duckdb", "DuckDB", "DuckDB", _duckdb),
     DemoSpec("duckdb-worker", "DuckDB, in a worker process", "DuckDBWorker", _duckdb_worker),
