@@ -998,3 +998,44 @@ Interim report from the relaunched subagent. Load 17 to 30; provisional, and sin
 
 - Run 45413464925 has been "in progress" since 14:25 UTC: the Linux runners got a shutdown signal during `tests/scale/test_threads.py`, and every later push has queued behind it and been cancelled. So no CI result exists for anything pushed since. The TSan step has never run in CI.
 - Subagents polling `gh` used up the account's 5,000 requests per hour, which is shared with all of Simon's other work. All eight have been told to stop calling `gh` except once at the end. Future briefs must say this from the start.
+
+## 2026-11-24: SQLite in WebAssembly under wasmtime, final report
+
+Subagent-reported. Timings at load 17 to 47; provisional. CI not verified for these commits. The interim section above covers the locking design and the bug it fixed; this adds the measurements and the recommendation.
+
+### Found
+
+- **Every query a progress handler cannot stop was stopped about 50 ms after its limit, with no process and no kill.** `glob`, `instr` and `like` on long strings and `randomblob(1e8)` over 30 rows trapped at 251 to 255 ms against a 200 ms limit plus 50 ms grace; a fresh instance is ready in under 1 ms. `randomblob(1e9)` and a `printf` of width 1e9 hit the memory cap in 1 to 2 ms and the same instance carried on.
+- **The memory cap is exact per instance,** but the memory is this process's memory: the cap bounds it, it does not hide it. Instances that grew are recycled.
+- **Cost against native SQLite:**
+
+| Statement | Native | Wasm, epoch interruption |
+| --- | --- | --- |
+| 1M-row recursive CTE | 70 ms | 150 ms |
+| 200,000-row sort | 36 ms | 84 ms |
+| `instr` on long strings | 146 ms | 115 ms |
+
+  Roughly 1.5 to 2 times native on CPU-bound SQL (faster on `instr`, thanks to SIMD `memcmp`), about 1.5 µs per page read through the host VFS, and about 900 KB per open instance.
+- **With an inline read mode added by the subagent, a one-row read is about 25 µs,** against 10 µs for apsw inline, 90 µs for in-process through the executor, 130 µs for the multi-tenant C worker and 184 µs for the C worker in the same run. New database to first result: about 0.6 ms.
+- **Epoch interruption, not fuel:** fuel cannot be revoked from another thread, so it cannot implement cancellation.
+- Compiling the module takes 131 to 187 ms once; the compiled form is cached on disk and loads in about 10 ms. Importing wasmtime takes about 120 ms.
+- Scale test at 1,000 databases (load 42): 1,435 requests/s, 1,003 B per asleep database.
+- **Verified safe against other writers on the same file:** another process, the C worker, the `sqlite3` shell, and native SQLite on a thread of the same process. A negative control with locks turned off tore 599 of 1,031 reads, so the tests do detect the problem.
+- **A stale `.wasm` or C worker binary fails conformance after `worker.c` changes.** The build outputs need a staleness check or a single build target.
+- Tests: 493 passed, 10 skipped for this backend. The full suite run showed 2 failures and 1 error that passed on rerun; their names were not captured.
+
+### Decision
+
+- **Recommendation from the subagent: make this the default for untrusted read-only SQL in-process,** and keep native in-process SQLite for trusted, WAL-mode or hot write paths. It is the only in-process option that stops single-C-call queries and caps memory exactly, on every platform.
+- Caveats that go with that: no WAL; ATTACH and VACUUM INTO refused; a build step; and, on macOS, safety alongside native SQLite in the same process depends on open-file-description locks that are a private kernel interface there.
+
+### Idea: to discuss
+
+- **A three-tier picture is emerging for SQLite:** apsw or standard-library inline reads for trusted speed (about 10 µs); WebAssembly in-process for untrusted reads (about 25 µs inline, containment without processes); the multi-tenant C worker for parallel throughput and for writes that must be killable.
+- Make `inline_reads` the default for WebAssembly read connections.
+- One instance hosting several small databases, to cut the 900 KB per connection.
+- Drive the epoch from a C-level ticker in place of a Python callback every 2 ms.
+
+### Upstream suggestions
+
+- **Datasette issue 1270:** a WebAssembly sandbox with epoch interruption stops the single-C-call queries that neither the progress handler nor `interrupt()` can. Verified here on SQLite 3.53.1, outside Datasette. Worth mentioning on that issue as a third option beside a worker process.
