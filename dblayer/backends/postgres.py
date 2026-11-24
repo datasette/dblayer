@@ -375,6 +375,7 @@ class Postgres:
         )
         self._schema_ready = False
         self._hint_generation = 0
+        self._schema_memo: Schema | None = None
 
     def __repr__(self) -> str:
         return f"Postgres(schema={self.schema!r})"
@@ -424,6 +425,7 @@ class Postgres:
         # Connections belong to the core pool, which closes them; the
         # backend holds nothing else.
         self._schema_ready = False
+        self._schema_memo = None
 
     # -- internals -----------------------------------------------------------
 
@@ -857,6 +859,110 @@ class PostgresConnection:
             if own_tx and not raw.is_closed() and self._in_tx():
                 await raw.execute("ROLLBACK")
 
+    async def _cached_schema(self) -> Schema:
+        """The schema as this connection's transaction sees it: one version
+        query, and the full catalog read only when the version is not the
+        one last read through this backend."""
+        version = await self._raw.fetchval(_VERSION_SQL, self._backend.schema)
+        memo = self._backend._schema_memo
+        if memo is not None and memo.version == version:
+            return memo
+        schema = await _read_schema(self._raw, self._backend.schema)
+        self._backend._schema_memo = schema
+        return schema
+
+    # -- native operations (SupportsOperations) -------------------------------------
+
+    async def run_operation(self, name: str, args: dict[str, Any]) -> object:
+        """Native ``insert_rows`` (``COPY``) and ``upsert_rows`` (one
+        multi-row ``INSERT ... ON CONFLICT`` per group of rows), each inside
+        one statement savepoint. Everything else, and the cases these do
+        not handle, return ``NotImplemented`` before running anything."""
+        if name == "insert_rows":
+            op = self._op_insert_rows
+        elif name == "upsert_rows":
+            op = self._op_upsert_rows
+        else:
+            return NotImplemented
+        if not _ConnTx.precheck(name, args):
+            return NotImplemented
+        return await self._call(self._guarded(None, None, lambda: op(**args)))
+
+    async def _op_insert_rows(
+        self,
+        table: str,
+        rows: list[dict[str, Any]],
+        pk: list[str] | None = None,
+        alter: bool = False,
+        ignore: bool = False,
+        replace: bool = False,
+    ) -> object:
+        from ..core.operations import OperationResult, _ensure_table, _groups
+
+        tx = _ConnTx(self)
+        created, added = await _ensure_table(tx, table, rows, tuple(pk or ()), alter)
+        info = (await tx.schema()).tables.get(table)
+        types = {c.name: c.type for c in info.columns} if info else {}
+        total = 0
+        for cols, group in _groups(rows):
+            records = [tuple(r[c] for c in cols) for r in group]
+            if all(_copyable(types.get(c), [rec[i] for rec in records]) for i, c in enumerate(cols)):
+                status = await self._raw.copy_records_to_table(
+                    table, records=records, columns=list(cols), schema_name=self._backend.schema
+                )
+                total += max(_rowcount(status), 0)
+            else:
+                # Values the binary COPY codecs would refuse (an int for a
+                # text column...): the INSERT path adapts them.
+                r = await tx.execute_many(self._backend.dialect.insert_sql(table, cols), records)
+                total += max(r.rowcount, 0)
+        return OperationResult(rowcount=total, table_created=created, columns_added=added)
+
+    async def _op_upsert_rows(
+        self,
+        table: str,
+        rows: list[dict[str, Any]],
+        pk: list[str] | None = None,
+        alter: bool = False,
+    ) -> object:
+        from ..core.operations import OperationResult, _ensure_table, _groups
+
+        tx = _ConnTx(self)
+        pk_cols = tuple(pk or ())
+        schema = await tx.schema()
+        info = schema.tables.get(table)
+        if not pk_cols:
+            pk_cols = info.primary_keys if info else ()
+        try:
+            unusable = (
+                not pk_cols
+                or (info is None and not pk)
+                or any(row.get(p) is None for row in rows for p in pk_cols)
+                or len({tuple(row[p] for p in pk_cols) for row in rows}) != len(rows)
+            )
+        except TypeError:  # unhashable key values
+            unusable = True
+        if unusable:
+            # The default path raises the right error, or (duplicate keys)
+            # updates the same row twice, which one statement cannot.
+            return NotImplemented
+        created, added = await _ensure_table(tx, table, rows, pk_cols, alter)
+        d = self._backend.dialect
+        total = 0
+        for cols, group in _groups(rows):
+            per = max(1, _MAX_PARAMS // len(cols))
+            for start in range(0, len(group), per):
+                part = group[start : start + per]
+                one = d.upsert_sql(table, cols, pk_cols)
+                head, tail = one.split(" VALUES ", 1)
+                conflict = tail[tail.index(")") + 1 :]
+                marks = ", ".join("(" + ", ".join("?" for _ in cols) + ")" for _ in part)
+                r = await tx.execute(
+                    f"{head} VALUES {marks}{conflict}", [row[c] for row in part for c in cols]
+                )
+                total += max(r.rowcount, 0)
+        return OperationResult(rowcount=total, table_created=created, columns_added=added)
+
     # -- misc --------------------------------------------------------------------
 
     async def interrupt(self) -> None:
@@ -888,6 +994,81 @@ class PostgresConnection:
         except BaseException:
             raw.terminate()
             raise
+
+
+_MAX_PARAMS = 32767  # PostgreSQL's limit on parameters in one statement
+
+# Python types the binary COPY codecs take for a column type, by the type
+# name introspection reports (without a modifier). Other column types, and
+# other values, go through INSERT, which adapts values as execute() does.
+_COPY_TYPES: dict[str, tuple[type, ...]] = {
+    "BIGINT": (int,),
+    "INTEGER": (int,),
+    "SMALLINT": (int,),
+    "DOUBLE PRECISION": (int, float),
+    "REAL": (int, float),
+    "NUMERIC": (int, float, Decimal),
+    "TEXT": (str,),
+    "VARCHAR": (str,),
+    "CHAR": (str,),
+    "BYTEA": (bytes, bytearray, memoryview),
+    "BOOLEAN": (bool,),
+}
+
+
+def _copyable(column_type: str | None, values: Sequence[Any]) -> bool:
+    if column_type is None:
+        return False
+    accepted = _COPY_TYPES.get(column_type.split("(", 1)[0])
+    if accepted is None:
+        return False
+    return all(v is None or isinstance(v, accepted) for v in values)
+
+
+class _ConnTx:
+    """The ``TxLike`` the core's default operations are written against,
+    over one connection inside its open transaction. Statements run without
+    their own savepoints: the whole native operation runs in one."""
+
+    def __init__(self, conn: PostgresConnection) -> None:
+        self._conn = conn
+        self.dialect = conn._backend.dialect
+        self.capabilities = conn._backend.capabilities
+        self._schema: Schema | None = None
+
+    @staticmethod
+    def precheck(name: str, args: Mapping[str, Any]) -> bool:
+        """Cases the native operations take, decided from the arguments
+        alone."""
+        rows = args.get("rows")
+        if not rows:
+            return False
+        if name == "insert_rows" and (args.get("ignore") or args.get("replace")):
+            return False  # COPY has no conflict handling
+        return True
+
+    async def execute(self, sql: str, params: Any = None) -> Results:
+        from ..core.params import rewrite
+
+        native, args = rewrite(sql, params, ParamStyle.NUMERIC_DOLLAR, POSTGRES_FLAVOR)
+        try:
+            return await self._conn._execute(native, list(args), None, None, None)
+        finally:
+            if leading_keyword(sql, POSTGRES_FLAVOR) not in _NO_SCHEMA_CHANGE:
+                self._schema = None
+
+    async def execute_many(self, sql: str, params_seq: Any) -> WriteResult:
+        from ..core.params import rewrite
+
+        rewritten = [rewrite(sql, p, ParamStyle.NUMERIC_DOLLAR, POSTGRES_FLAVOR) for p in params_seq]
+        if not rewritten:
+            return WriteResult(rowcount=0)
+        return await self._conn._execute_many(rewritten[0][0], [list(p) for _, p in rewritten])
+
+    async def schema(self) -> Schema:
+        if self._schema is None:
+            self._schema = await self._conn._cached_schema()
+        return self._schema
 
 
 def _close_socket(raw: "asyncpg.Connection") -> None:

@@ -162,3 +162,59 @@ async def test_introspection_details(db):
     assert by_name["c_lower"].origin == "c" and by_name["c_lower"].columns == (None,)
     assert await db.view_names() == ["cv"]
     assert [c.name for c in await db.table_columns("cv")] == ["id", "k"]
+
+
+@pytest.fixture
+def spy(monkeypatch):
+    """Counts COPYs, and native operations that ran (did not decline)."""
+    import asyncpg
+
+    from dblayer.backends.postgres import PostgresConnection
+
+    counts = {"copy": 0, "insert_rows": 0, "upsert_rows": 0}
+    copy = asyncpg.Connection.copy_records_to_table
+
+    async def counting_copy(self, *a, **kw):
+        counts["copy"] += 1
+        return await copy(self, *a, **kw)
+
+    monkeypatch.setattr(asyncpg.Connection, "copy_records_to_table", counting_copy)
+    for name in ("insert_rows", "upsert_rows"):
+        original = getattr(PostgresConnection, f"_op_{name}")
+
+        def wrap(original=original, name=name):
+            async def op(self, **kw):
+                r = await original(self, **kw)
+                if r is not NotImplemented:
+                    counts[name] += 1
+                return r
+
+            return op
+
+        monkeypatch.setattr(PostgresConnection, f"_op_{name}", wrap())
+    return counts
+
+
+async def test_insert_rows_uses_copy(db, spy):
+    r = await db.insert_rows("t", [{"id": i, "v": f"v{i}"} for i in range(250)], pk="id")
+    assert (r.rowcount, r.table_created) == (250, True)
+    assert spy["copy"] == 3 and spy["insert_rows"] == 3  # batch_size=100
+    # Conflict handling is not COPY's: the default path takes those.
+    r = await db.insert_rows("t", [{"id": 1, "v": "x"}, {"id": 999, "v": "y"}], ignore=True)
+    assert r.rowcount == 1 and spy["copy"] == 3
+    # Values COPY's binary codecs refuse go through INSERT, as by default.
+    r = await db.insert_rows("t", [{"id": 1000, "v": 5}])
+    assert r.rowcount == 1 and spy["insert_rows"] == 4 and spy["copy"] == 3
+    assert (await db.execute("select v from t where id = 1000")).rows == [("5",)]
+
+
+async def test_upsert_rows_is_one_statement_per_group(db, spy):
+    await db.create_table("t", {"id": "integer", "a": "text", "b": "text"}, pk="id")
+    await db.insert_rows("t", [{"id": 1, "a": "a1", "b": "b1"}])
+    r = await db.upsert_rows("t", [{"id": 1, "a": "A"}, {"id": 2, "a": "B", "b": "x"}])
+    assert r.rowcount == 2 and spy["upsert_rows"] == 1
+    assert (await db.execute("select * from t order by id")).rows == [(1, "A", "b1"), (2, "B", "x")]
+    # The same key twice cannot be one INSERT ... ON CONFLICT: declined.
+    r = await db.upsert_rows("t", [{"id": 3, "a": "x"}, {"id": 3, "a": "y"}])
+    assert r.rowcount == 2 and spy["upsert_rows"] == 1
+    assert (await db.execute("select a from t where id = 3")).rows == [("y",)]

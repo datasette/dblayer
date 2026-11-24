@@ -159,7 +159,12 @@ async def test_insert_rows_batches_let_other_writers_in(posts):
         order.append("import")
 
     await asyncio.gather(importer(), other())
-    assert order == ["other", "import"]
+    if posts.capabilities.concurrent_writers:
+        # No write queue: the other writer never waits for the import, so
+        # which finishes first is down to timing.
+        assert sorted(order) == ["import", "other"]
+    else:
+        assert order == ["other", "import"]
 
 
 async def test_insert_rows_on_tx_is_atomic(posts):
