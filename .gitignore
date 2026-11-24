@@ -15,3 +15,8 @@ dist/
 
 # Demo app data (python -m dblayer_demo)
 demo-data/
+
+# C worker: build output and the downloaded SQLite amalgamation (make -C cworker)
+cworker/build/
+cworker/build-asan/
+cworker/vendor/
