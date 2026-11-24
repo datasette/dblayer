@@ -194,6 +194,14 @@ def sqlite_cworker_backend(path: Path) -> Backend:
     return SqliteCWorker(path)
 
 
+def _sqlite_cpool(config: DemoConfig) -> Backend:
+    # Experimental: a thread per connection inside a shared C process.
+    sqlite_cworker_backend(config.data_dir / "sqlite-cpool.db")  # Unavailable until built
+    from dblayer.backends.sqlite_cpool import SqliteCPool
+
+    return SqliteCPool(config.data_dir / "sqlite-cpool.db")
+
+
 def _duckdb(config: DemoConfig) -> Backend:
     from dblayer.backends.duckdb import DuckDB  # ImportError without the duckdb extra
 
@@ -221,6 +229,7 @@ DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite-apsw", "SQLite, in process (apsw)", "SqliteApsw", _sqlite_apsw),
     DemoSpec("sqlite-worker", "SQLite, in a worker process", "SqliteWorker", _sqlite_worker),
     DemoSpec("sqlite-cworker", "SQLite, in a C worker process", "SqliteCWorker", _sqlite_cworker),
+    DemoSpec("sqlite-cpool", "SQLite, multi-tenant C worker", "SqliteCPool", _sqlite_cpool),
     DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),
     DemoSpec("duckdb", "DuckDB", "DuckDB", _duckdb),
     DemoSpec("duckdb-worker", "DuckDB, in a worker process", "DuckDBWorker", _duckdb_worker),
