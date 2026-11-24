@@ -1503,3 +1503,7 @@ Subagent-reported: run 45454952137. Ten of fifteen jobs passed and five failed; 
 ### Idea
 
 - **Platform-dependent attack surface:** an engine's set of host-reaching functions differs by platform and build. Any allowlist must be checked against the running engine at start-up or in CI on the deployment platform, not only on a developer's machine.
+
+### Decision: pluggy registration dropped (2026-11-24)
+
+Simon dropped the queued work to register every backend through a pluggy hook. Nothing had been built. The core stays free of runtime dependencies. The mention of pluggy in `dblayer-api-revision-proposal.md` is now out of date and is marked there as dropped.

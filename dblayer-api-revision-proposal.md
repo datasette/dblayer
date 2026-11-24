@@ -155,9 +155,9 @@ Capabilities are derived today from the parent's SQLite version, not the worker'
 
 Inline reads (run on the event loop thread under an opcode budget, continue on a thread if it runs over) took a one-row read from about 61 µs to about 10 µs on apsw, and a raw test suggests the standard `sqlite3` module can do the same. Nothing in the protocol prevents this. The default SQLite backend should do it, and the `UsesExecutor` protocol should be described as one strategy among several.
 
-### Backend registration through pluggy
+### Backend registration
 
-Already requested. Each backend registers through a hook and may report itself unavailable with a reason. Worker processes must not import pluggy at start-up.
+A pluggy hook for registering backends was requested and then dropped on 2026-11-24, before anything was built. Backends are still listed by hand in the tests and the demo. The need behind it remains: one place where a backend registers itself and can report that it is unavailable, with a reason.
 
 ## Registry and lifecycle
 
