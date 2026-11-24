@@ -184,13 +184,13 @@ bool needs_zone(duckdb_prepared_statement p) {
 }
 
 // With max_rows, run SELECT * FROM (sql) LIMIT max_rows + 1 instead, when
-// that prepares and keeps the column names. Through the C API DuckDB
-// computes a recursive CTE to its end before the first row arrives, so
-// without the LIMIT an unbounded one never returns; the duckdb Python
-// package does return its first rows (it is built on another API). The
-// statement as written is kept for anything the wrap would change
-// (duplicate column names become a_1) or cannot parse, so errors and
-// results are the same either way.
+// that prepares and keeps the column names. Through the C API DuckDB works
+// on an unbounded recursive CTE for seconds before the first rows arrive
+// (the duckdb Python package, built on engine internals, gets them in a
+// fraction of that); with the LIMIT it stops at once. The statement as
+// written is kept for anything the wrap would change (duplicate column
+// names become a_1) or cannot parse, so errors and results are the same
+// either way.
 void limit_rows(Conn &c, const std::string &sql, Prepared &p, int64_t limit) {
     idx_t n = duckdb_prepared_statement_column_count(p.p);
     std::vector<std::string> names;

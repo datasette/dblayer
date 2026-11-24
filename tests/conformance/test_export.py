@@ -210,10 +210,11 @@ async def test_byte_cap(db, native):
 
 def _no_recursive_cte_streaming(request: pytest.FixtureRequest) -> None:
     if "duckdb-cppworker" in request.node.name:
-        # Through DuckDB's C API a recursive CTE yields no row until it has
-        # finished (the duckdb Python package streams it), so a stream of
-        # INFINITE never produces a first chunk. See duckdb-cpp-worker/README.md.
-        pytest.xfail("DuckDB's C API does not stream recursive CTEs")
+        # Through DuckDB's C API an unbounded recursive CTE yields its first
+        # rows only after seconds of work (about 3.6 s here; the duckdb
+        # Python package streams them in well under a second), past these
+        # tests' time limits. See duckdb-cpp-worker/README.md.
+        pytest.xfail("DuckDB's C API streams a recursive CTE's first rows late")
 
 
 async def test_time_limit_mid_stream(db, native, request):
