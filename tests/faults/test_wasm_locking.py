@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -338,14 +339,28 @@ async def test_wal_is_not_available(tmp_path):
         await db.close()
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="open file description locks are Linux-only")
-async def test_linux_ofd_locks_exclude_sqlite3_in_this_same_process(tmp_path):
+def _ofd() -> bool:
+    from dblayer.backends.sqlite_wasm import OFD_LOCKS
+
+    return OFD_LOCKS
+
+
+needs_ofd = pytest.mark.skipif(
+    UNAVAILABLE is not None or not _ofd(),
+    reason="no open file description locks here (Linux and macOS have them)",
+)
+
+
+def test_open_file_description_locks_are_used_on_linux_and_macos():
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
+        assert _ofd() or os.environ.get("DBLAYER_WASM_POSIX_LOCKS") == "1"
+
+
+@needs_ofd
+async def test_ofd_locks_exclude_sqlite3_in_this_same_process(tmp_path):
     """With F_OFD_SETLK the instances' locks conflict with the classic
     POSIX locks of ordinary SQLite even in this process, and a ``sqlite3``
     connection closing its descriptor does not drop them."""
-    from dblayer.backends.sqlite_wasm import OFD_LOCKS
-
-    assert OFD_LOCKS
     path = tmp_path / "ofd.db"
     _setup(path)
     db = Database(_wasm(path, busy_timeout=0.2), name="ofd")
@@ -366,5 +381,219 @@ async def test_linux_ofd_locks_exclude_sqlite3_in_this_same_process(tmp_path):
         native.execute("commit")
         native.close()
         assert (await db.execute("select n from counter")).rows == [(1,)]
+    finally:
+        await db.close()
+
+
+@needs_ofd
+async def test_opening_and_closing_instances_never_drops_sqlite3_locks_in_this_process(tmp_path):
+    """Closing any descriptor of a file drops every classic lock this
+    process holds on it, including ordinary SQLite's. So while ``sqlite3``
+    here holds EXCLUSIVE, new instances opening the file (and closing it
+    again) must neither open-and-close a descriptor nor close the last one:
+    the lock survives, instances keep getting SQLITE_BUSY, and the
+    descriptor parked meanwhile is closed once the lock is gone."""
+    import dblayer.backends.sqlite_wasm as sw
+
+    path = tmp_path / "keep.db"
+    _setup(path)
+    native = sqlite3.connect(path, isolation_level=None)
+    native.execute("begin exclusive")
+    try:
+        for i in range(3):
+            db = Database(_wasm(path, busy_timeout=0.05), name=f"keep{i}")
+            try:
+                with pytest.raises(QueryError) as e:
+                    await db.execute("select n from counter")
+                assert e.value.code == "SQLITE_BUSY"
+            finally:
+                await db.close()
+            p = _spawn(TRY_WRITE, str(path))
+            assert p.communicate(timeout=30)[0].strip() == "database is locked", i
+        assert sum(len(v) for v in sw._parked.values()) <= 1
+    finally:
+        native.execute("rollback")
+        native.close()
+    db = Database(_wasm(path), name="keep")
+    try:
+        assert (await db.execute("select n from counter")).rows == [(0,)]
+    finally:
+        await db.close()
+    assert not sw._parked
+
+
+def _native_writer_thread(path: Path, n: int, stop: list[bool]) -> None:
+    """NATIVE_WRITER, on a thread of this process (ordinary SQLite: classic
+    POSIX locks owned by this very process)."""
+    conn = sqlite3.connect(path, timeout=30, isolation_level=None, check_same_thread=False)
+    try:
+        for _ in range(n):
+            time.sleep(0.002)
+            conn.execute("begin immediate")
+            conn.execute("update a set v = v + 1 where id = 1")
+            conn.execute("update a set pad = randomblob(length(pad))")
+            conn.execute("update b set pad = randomblob(length(pad))")
+            conn.execute("update b set v = v - 1 where id = 1")
+            conn.execute("update counter set n = n + 1")
+            conn.execute("commit")
+    finally:
+        conn.close()
+        stop[0] = True
+
+
+@needs_ofd
+async def test_no_torn_reads_while_sqlite3_in_this_process_writes(tmp_path):
+    """The in-process backend's library (``sqlite3``) writing the same file
+    from a thread of this process while instances read: safe only because
+    open file description locks conflict with this process's own POSIX
+    locks. With classic locks this is the documented unsafe case."""
+    import threading
+
+    path = tmp_path / "same.db"
+    _setup(path)
+    db = Database(_wasm(path), name="same")
+    stop = [False]
+    t = threading.Thread(target=_native_writer_thread, args=(path, 300, stop))
+    try:
+        t.start()
+        sums: list[int] = []
+
+        async def reader() -> None:
+            while not stop[0]:
+                sums.append(await _read_sum(db))
+
+        await asyncio.gather(*(reader() for _ in range(3)))
+        t.join(60)
+        print(f"\n[wasm] {len(sums)} reads while sqlite3 in this process committed 300 transactions")
+        assert len(sums) > 30 and set(sums) == {1000}
+        assert (await db.execute("select n from counter")).rows == [(300,)]
+    finally:
+        t.join(60)
+        await db.close()
+
+
+@needs_ofd
+async def test_in_process_backend_and_wasm_writers_in_one_process(tmp_path):
+    """``SqliteInProcess`` and ``SqliteWasm`` on one file in one process,
+    both writing: no lost update, integrity ok."""
+    from dblayer.backends.sqlite import SqliteInProcess
+
+    path = tmp_path / "both.db"
+    _setup(path)
+    local = Database(SqliteInProcess(path), name="local")
+    wasm = Database(_wasm(path, busy_timeout=10), name="wasm")
+
+    async def bump(db: Database, n: int) -> None:
+        for _ in range(n):
+            async with db.transaction() as tx:
+                await tx.execute("update a set v = v + 1 where id = 1")
+                await tx.execute("update b set v = v - 1 where id = 1")
+                await tx.execute("update counter set n = n + 1")
+
+    try:
+        await asyncio.gather(bump(local, 200), bump(wasm, 200))
+        for db in (local, wasm):
+            assert (await db.execute("select n from counter")).rows == [(400,)]
+            assert (await db.execute("select (select v from a where id=1) + (select v from b where id=1)")).rows == [
+                (1000,)
+            ]
+        assert (await wasm.execute("pragma integrity_check")).rows == [("ok",)]
+    finally:
+        await local.close()
+        await wasm.close()
+
+
+async def test_no_torn_reads_while_a_c_worker_writes(tmp_path):
+    """Another backend's worker process (the C worker) as the writer."""
+    from dblayer.backends.sqlite_cworker import SqliteCWorker, binary_unavailable
+
+    if binary_unavailable():
+        pytest.skip(binary_unavailable() or "")
+    path = tmp_path / "cw.db"
+    _setup(path)
+    cw = Database(SqliteCWorker(path), name="cw")
+    db = Database(_wasm(path), name="wasm-cw")
+    done = False
+    try:
+
+        async def writer() -> None:
+            nonlocal done
+            try:
+                for _ in range(150):
+                    async with cw.transaction() as tx:
+                        await tx.execute("update a set v = v + 1 where id = 1")
+                        await tx.execute("update a set pad = randomblob(length(pad))")
+                        await tx.execute("update b set pad = randomblob(length(pad))")
+                        await tx.execute("update b set v = v - 1 where id = 1")
+                        await tx.execute("update counter set n = n + 1")
+            finally:
+                done = True
+
+        sums: list[int] = []
+
+        async def reader() -> None:
+            while not done:
+                sums.append(await _read_sum(db))
+
+        await asyncio.gather(writer(), reader(), reader())
+        print(f"\n[wasm] {len(sums)} reads while a C worker committed 150 transactions")
+        assert len(sums) > 20 and set(sums) == {1000}
+    finally:
+        await cw.close()
+        await db.close()
+
+
+@pytest.mark.skipif(shutil.which("sqlite3") is None, reason="no sqlite3 command-line shell")
+async def test_no_torn_reads_while_the_sqlite3_shell_writes(tmp_path):
+    path = tmp_path / "cli.db"
+    _setup(path)
+    script = "".join(
+        "begin immediate; update a set v = v + 1 where id = 1; update a set pad = randomblob(length(pad));"
+        " update b set pad = randomblob(length(pad)); update b set v = v - 1 where id = 1;"
+        " update counter set n = n + 1; commit;\n"
+        for _ in range(300)
+    )
+    db = Database(_wasm(path), name="cli")
+    try:
+        p = subprocess.Popen(
+            ["sqlite3", "-cmd", ".timeout 30000", str(path)], stdin=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        assert p.stdin is not None
+        p.stdin.write(script)
+        p.stdin.close()
+        sums: list[int] = []
+
+        async def reader() -> None:
+            while p.poll() is None:
+                sums.append(await _read_sum(db))
+
+        await asyncio.gather(reader(), reader())
+        assert p.wait(60) == 0, p.stderr.read() if p.stderr else ""
+        print(f"\n[wasm] {len(sums)} reads while the sqlite3 shell committed 300 transactions")
+        assert set(sums) <= {1000} and (await db.execute("select n from counter")).rows == [(300,)]
+    finally:
+        await db.close()
+
+
+async def test_switched_to_wal_by_another_process_while_open(tmp_path):
+    """Another process turns an open database to WAL: the instance's next
+    statement fails cleanly (no shared memory, so it cannot follow), the
+    file is intact, and the other process carries on in WAL."""
+    path = tmp_path / "towal.db"
+    _setup(path)
+    db = Database(_wasm(path), name="towal")
+    try:
+        assert (await db.execute("select n from counter")).rows == [(0,)]
+        conn = sqlite3.connect(path, isolation_level=None)
+        assert conn.execute("pragma journal_mode = wal").fetchone() == ("wal",)
+        conn.execute("update counter set n = 7")
+        with pytest.raises(QueryError) as e:
+            await db.execute("select n from counter")
+        print(f"\n[wasm] after another process switched to WAL: {e.value.code}: {e.value}")
+        with pytest.raises(QueryError):
+            await db.execute_write("update counter set n = 8")
+        assert conn.execute("select n from counter").fetchone() == (7,)
+        assert conn.execute("pragma integrity_check").fetchone() == ("ok",)
+        conn.close()
     finally:
         await db.close()

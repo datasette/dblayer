@@ -55,10 +55,14 @@ What is given up: WAL (no shared memory between instances; the VFS has no
 ``xShmMap``, so ``journal_mode=WAL`` stays ``delete`` and a WAL-mode file
 cannot be opened), and memory-mapped I/O. Readers and a writer still run
 concurrently under rollback-journal locking, as in-process SQLite does by
-default. Not safe: ordinary SQLite *in this same process* (the in-process
-backend, ``sqlite3``) using the same file at the same time, because POSIX
-locks do not conflict within one process; the same rule SQLite documents
-for two copies of the library in one process.
+default. On Linux and macOS the host takes open file description locks
+(``OFD_LOCKS``), which also conflict with the classic locks of ordinary
+SQLite *in this same process* (the in-process backend, ``sqlite3``), and it
+never closes a descriptor of a file while anyone holds a lock on it (that
+would drop this process's classic locks): the two libraries can share a file
+in one process. Elsewhere, or with ``DBLAYER_WASM_POSIX_LOCKS=1``, that
+case is unsafe, the rule SQLite documents for two copies of the library in
+one process.
 
 Named operations run in the parent (the module has no Python), as for the
 C worker. ``init`` hooks and extensions are not supported.
@@ -193,16 +197,50 @@ class _Busy(Exception):
     pass
 
 
-OFD_LOCKS = (
-    sys.platform.startswith("linux")
-    and hasattr(fcntl, "F_OFD_SETLK")
-    and os.environ.get("DBLAYER_WASM_POSIX_LOCKS") != "1"
-)
-"""Linux: open file description locks (``F_OFD_SETLK``). They conflict with
-the classic POSIX locks ordinary SQLite takes, even within this process,
-and closing some other descriptor of the file does not drop them, so the
-in-process backend (or ``sqlite3``) in this same process is excluded too.
-Elsewhere classic ``F_SETLK`` locks, which exclude other processes only."""
+if sys.platform == "darwin":
+    # xnu has had open file description locks since macOS 10.15, with
+    # Linux's semantics, but its header defines the commands only under
+    # PRIVATE (sys/fcntl.h: F_OFD_SETLK 90, F_OFD_GETLK 92), so Python's
+    # fcntl module does not export them. Probed below before use.
+    _F_OFD_SETLK, _F_OFD_GETLK = 90, 92
+else:
+    _F_OFD_SETLK = getattr(fcntl, "F_OFD_SETLK", None)
+    _F_OFD_GETLK = getattr(fcntl, "F_OFD_GETLK", None)
+
+
+def _probe_ofd() -> bool:
+    """Whether this kernel has open file description locks that conflict
+    with classic POSIX locks taken through another descriptor of this same
+    process (what makes them safe beside ordinary SQLite here)."""
+    if _F_OFD_SETLK is None or os.environ.get("DBLAYER_WASM_POSIX_LOCKS") == "1":
+        return False
+    if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+        return False
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="dblayer-ofd-probe-")
+    except OSError:
+        return False
+    other = -1
+    try:
+        try:
+            other = os.open(tmp, os.O_RDWR | os.O_CLOEXEC)
+        finally:
+            os.unlink(tmp)
+        fcntl.fcntl(fd, _F_OFD_SETLK, _flock(fcntl.F_WRLCK, 0, 1))
+        try:
+            fcntl.lockf(other, fcntl.LOCK_EX | fcntl.LOCK_NB, 1, 0, os.SEEK_SET)
+        except OSError as e:
+            return e.errno in (errno.EAGAIN, errno.EACCES)
+        return False  # granted: no conflict within the process, useless here
+    except OSError:
+        return False
+    finally:
+        for d in (other, fd):
+            if d >= 0:
+                try:
+                    os.close(d)
+                except OSError:
+                    pass
 
 
 def _setlk(fd: int, kind: str, start: int, length: int) -> None:
@@ -212,7 +250,7 @@ def _setlk(fd: int, kind: str, start: int, length: int) -> None:
     try:
         if OFD_LOCKS:
             t = {"r": fcntl.F_RDLCK, "w": fcntl.F_WRLCK, "u": fcntl.F_UNLCK}[kind]
-            fcntl.fcntl(fd, fcntl.F_OFD_SETLK, _flock(t, start, length))
+            fcntl.fcntl(fd, _F_OFD_SETLK, _flock(t, start, length))
         else:
             cmd = {"r": fcntl.LOCK_SH | fcntl.LOCK_NB, "w": fcntl.LOCK_EX | fcntl.LOCK_NB, "u": fcntl.LOCK_UN}[kind]
             fcntl.lockf(fd, cmd, length, start, os.SEEK_SET)
@@ -240,8 +278,17 @@ else:
         return struct.unpack(_FLOCK, raw)[0]
 
 
+OFD_LOCKS = _probe_ofd()
+"""Linux and macOS: open file description locks (``F_OFD_SETLK``). They
+conflict with the classic POSIX locks ordinary SQLite takes, even within
+this process, and closing some other descriptor of the file does not drop
+them, so the in-process backend (or ``sqlite3``) in this same process is
+excluded too. Elsewhere, or with ``DBLAYER_WASM_POSIX_LOCKS=1``, classic
+``F_SETLK`` locks, which exclude other processes only."""
+
+
 def _write_locked_by_other_process(fd: int, start: int, length: int) -> bool:
-    cmd = fcntl.F_OFD_GETLK if OFD_LOCKS else fcntl.F_GETLK
+    cmd = _F_OFD_GETLK if OFD_LOCKS else fcntl.F_GETLK
     raw = fcntl.fcntl(fd, cmd, _flock(fcntl.F_WRLCK, start, length))
     return _flock_type(raw) != fcntl.F_UNLCK
 
@@ -251,8 +298,8 @@ class _Inode:
     that has it open: SQLite's ``unixInodeInfo``. POSIX locks belong to the
     process, so the strongest lock any handle holds is taken once, on the
     inode's own descriptor, and the counts decide when to release it. The
-    descriptor is closed only when no handle remains (closing any
-    descriptor of a file drops all of the process's locks on it)."""
+    descriptor is closed only when no handle remains, and then only when
+    that cannot drop anyone's locks (see ``_parked``)."""
 
     __slots__ = ("key", "fd", "writable", "lock", "level", "n_shared", "n_lock", "refs")
 
@@ -269,11 +316,92 @@ class _Inode:
 
 _inodes: dict[tuple[int, int], _Inode] = {}
 _inodes_lock = threading.Lock()
+_parked: dict[tuple[int, int], list[tuple[int, bool]]] = {}
+"""Descriptors waiting to be closed, per file, with whether each is
+read-write. [_inodes_lock] Closing *any* descriptor of a file drops every
+classic POSIX lock this process holds on it: the host's own (classic mode)
+and, in either mode, those of ordinary SQLite in this process (the
+in-process backend, ``sqlite3``), which has its own lock table that cannot
+see this one. So a descriptor is closed only when that cannot happen:"""
+
+
+def _safe_to_close(fd: int, node: _Inode | None) -> bool:
+    """With open file description locks, when no one at all holds a lock on
+    the file (``F_OFD_GETLK`` over the whole file sees this process's
+    classic locks as well as everyone else's; this descriptor holds none).
+    With classic locks, when the host holds none on it (other libraries'
+    locks in this process are invisible, the documented unsafe case)."""
+    if node is not None and node.n_lock > 0 and not OFD_LOCKS:
+        return False
+    if not OFD_LOCKS:
+        return True
+    try:
+        raw = fcntl.fcntl(fd, _F_OFD_GETLK, _flock(fcntl.F_WRLCK, 0, 0))
+    except OSError:
+        return True
+    return _flock_type(raw) == fcntl.F_UNLCK
+
+
+def _sweep(key: tuple[int, int] | None = None) -> None:
+    """[_inodes_lock held] Close the parked descriptors that may now be
+    closed (of one file, or of every file)."""
+    for k in [key] if key is not None else list(_parked):
+        fds = _parked.get(k)
+        if not fds:
+            continue
+        node = _inodes.get(k)
+        keep = []
+        for fd, rw in fds:
+            if _safe_to_close(fd, node):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            else:
+                keep.append((fd, rw))
+        if keep:
+            _parked[k] = keep
+        else:
+            _parked.pop(k, None)
+
+
+def _park(key: tuple[int, int], fd: int, writable: bool) -> None:
+    """[_inodes_lock held] Close ``fd`` now if that is safe, else later."""
+    _parked.setdefault(key, []).append((fd, writable))
+    _sweep(key)
 
 
 def _inode_open(path: str, want_write: bool) -> tuple[_Inode, bool]:
-    """The shared inode for ``path`` (opened once per process, read-write
-    if at all possible) and whether it is writable."""
+    """The shared inode for ``path`` (one descriptor per file per process,
+    read-write if at all possible) and whether it is writable. A file this
+    process already has open is found by ``stat()``, without opening (and so
+    later closing) another descriptor of it."""
+    try:
+        st0 = os.stat(path)
+        key0: tuple[int, int] | None = (st0.st_dev, st0.st_ino)
+    except OSError:
+        key0 = None
+    with _inodes_lock:
+        if _parked:
+            _sweep()
+        if key0 is not None:
+            node = _inodes.get(key0)
+            if node is not None:
+                node.refs += 1
+                return node, node.writable
+            # A descriptor parked when this file was last released (someone
+            # still held a lock then): take it back instead of opening another.
+            for i, (fd, rw) in enumerate(_parked.get(key0, ())):
+                if rw or not want_write:
+                    try:
+                        st = os.fstat(fd)
+                    except OSError:
+                        continue
+                    if (st.st_dev, st.st_ino) == key0:
+                        del _parked[key0][i]
+                        node = _inodes[key0] = _Inode(key0, fd, rw)
+                        node.refs = 1
+                        return node, rw
     flags = os.O_CLOEXEC
     try:
         fd = os.open(path, flags | os.O_RDWR)
@@ -291,32 +419,18 @@ def _inode_open(path: str, want_write: bool) -> tuple[_Inode, bool]:
             node = _inodes[key] = _Inode(key, fd, writable)
             fd = -1
         node.refs += 1
-    if fd >= 0:
-        # Already open in this process. This descriptor never holds a lock,
-        # but closing it would drop the locks taken on the shared one...
-        # unless no lock is held. Keep it until the inode is released.
-        _deferred_close(node, fd)
+        if fd >= 0:
+            # Opened concurrently by another thread: this descriptor never
+            # holds a lock; close it when that is safe.
+            _park(key, fd, writable)
     return node, node.writable
 
 
-_deferred: dict[tuple[int, int], list[int]] = {}
-
-
-def _deferred_close(node: _Inode, fd: int) -> None:
-    with node.lock:
-        if node.n_lock == 0:
-            os.close(fd)
-            return
-        _deferred.setdefault(node.key, []).append(fd)
-
-
 def _close_deferred(node: _Inode) -> None:
-    """[node.lock held, n_lock == 0]"""
-    for fd in _deferred.pop(node.key, ()):
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+    """[node.lock held, the host's lock count on it just fell to 0]"""
+    if node.key in _parked:
+        with _inodes_lock:
+            _sweep(node.key)
 
 
 def _inode_release(node: _Inode) -> None:
@@ -324,14 +438,11 @@ def _inode_release(node: _Inode) -> None:
         node.refs -= 1
         if node.refs > 0:
             return
-        _inodes.pop(node.key, None)
-    with node.lock:
-        _close_deferred(node)
-        try:
-            os.close(node.fd)
-        except OSError:
-            pass
-        node.fd = -1
+        if _inodes.get(node.key) is node:
+            del _inodes[node.key]
+        fd, node.fd = node.fd, -1  # no handle is left to use it
+        if fd >= 0:
+            _park(node.key, fd, node.writable)
 
 
 def _lock(node: _Inode, h: "_Handle", level: int) -> int:

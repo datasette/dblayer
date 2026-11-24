@@ -79,6 +79,11 @@ Proved by `tests/faults/test_wasm_locking.py`:
   transaction behaves the same way within one process.
 * Two instances in one process: a read transaction holds off a writer's
   commit until it ends, and keeps its snapshot.
+* The other writer may also be another backend's worker (the C worker) or
+  the `sqlite3` command-line shell: no torn reads.
+* Another process switching an open database to WAL: the instance's next
+  statement fails with `SQLITE_CANTOPEN` (it cannot follow without shared
+  memory), the file stays intact and the other process carries on.
 
 What it costs and gives up:
 
@@ -93,16 +98,25 @@ What it costs and gives up:
   Python (about 1 to 2 us each). A one-row read on a warm connection makes
   seven host calls: lock, two journal checks, the change counter, the file
   size, unlock.
-* **On macOS, not safe against ordinary SQLite in the same process** using
-  the same file at the same time (the in-process backend, `sqlite3`):
-  classic POSIX locks do not conflict within one process, and that
-  library's own lock table cannot see this one (the rule SQLite documents
-  for two copies of the library in one process). Other processes are fine.
-  On Linux the host uses open file description locks (`F_OFD_SETLK`),
-  which conflict with ordinary SQLite's locks even in this process and are
-  not dropped when some other descriptor of the file closes
-  (`test_linux_ofd_locks_exclude_sqlite3_in_this_same_process`, CI only).
-  `DBLAYER_WASM_POSIX_LOCKS=1` forces classic locks.
+* **Ordinary SQLite in the same process** (the in-process backend,
+  `sqlite3`) using the same file at the same time: safe on Linux and macOS.
+  The host takes open file description locks (`F_OFD_SETLK`; on macOS the
+  kernel has them, with Linux's semantics, but its header defines the
+  commands only under `PRIVATE`, so they are probed at import), which
+  conflict with ordinary SQLite's classic POSIX locks even in this process
+  and are not dropped when some other descriptor of the file closes. The
+  other direction needs care too: closing *any* descriptor of a file drops
+  every classic lock this process holds on it, so the host finds a file it
+  already has open by `stat()` instead of opening another descriptor, and
+  parks a descriptor it would close while anyone holds a lock on the file
+  (`F_OFD_GETLK` over the whole file sees this process's classic locks
+  too), closing it later. Tests: sqlite3 on a thread of this process
+  committing while instances read, the in-process backend and instances
+  writing the same file, and new instances opening and closing the file
+  while sqlite3 here holds EXCLUSIVE. Elsewhere, or with
+  `DBLAYER_WASM_POSIX_LOCKS=1` (classic locks), this case is unsafe: the
+  rule SQLite documents for two copies of the library in one process.
+  Other processes are fine either way.
 
 Alternatives considered: one instance per database serving all its
 connections (no locking problem inside the process, but every statement of
