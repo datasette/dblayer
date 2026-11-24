@@ -221,3 +221,51 @@ Other facts: no savepoints, no triggers, no partial indexes; table names are cas
 
 - **Datasette, design note:** a DuckDB backend that accepts arbitrary SQL must open with `enable_external_access=false` and `lock_configuration=true`, or SQL can read local files. Verified by the subagent on DuckDB 2.0.1.
 - **DuckDB itself (not sqlite-utils or Datasette):** COMMIT of an aborted transaction reports success while rolling back. Verified with minimal scripts.
+
+## 2026-11-23: PostgreSQL backend done (milestone 5)
+
+Subagent-reported; combined suite not yet re-run by me while milestone 3 is still landing.
+
+### Built
+
+- Nineteen commits, `2a1a0fe` to `f27f8cb`. `dblayer/backends/postgres.py` on `asyncpg`, a `PostgresDialect`, `COPY` and `INSERT ... ON CONFLICT` overrides, and 38 PostgreSQL-specific tests covering the spec's five "must demonstrate" items.
+- Reported: 409 passed and 20 skipped for PostgreSQL, every skip from a capability flag.
+- `tests/pg.py` refuses any DSN that does not name `dblayer_test`, gives each test its own schema and drops it afterwards.
+
+### Found
+
+- **Untyped parameters fail on PostgreSQL.** The server types a parameter it cannot infer as `text`, and asyncpg then refuses a Python int: `select :a` with `{"a": 1}` fails. The backend now adds casts. This is the largest single portability gap for "SQL passes through unchanged".
+- **asyncpg's statement cache breaks after DDL** ("cached plan must not change result type"), and inside a transaction it does not retry.
+- **asyncpg schedules a timer per cached statement** unless `max_cached_statement_lifetime=0`.
+- **`executemany` reports no row counts** on asyncpg.
+- **COMMIT of an aborted transaction silently rolls back** on PostgreSQL too (the server answers ROLLBACK). Same trap as DuckDB.
+- **`idle_in_transaction_session_timeout` ends the session**, so it works as the server-side deadline the spec wanted.
+- **PostgreSQL refuses to drop a table that a view or foreign key depends on**, so staged `replace` fails cleanly there when a view exists.
+- **`arr[:n]` is ambiguous:** the rewriter reads `:n` as a parameter, so a slice ending at a parameter needs a space.
+- **A core pool race:** if `sleep()` ran while a connection was still being opened, that connection was kept and the backend never released. Fixed in `ec73867`.
+- **Costs on the local socket:** `schema_version()` 0.6 ms; full `schema()` for 50 tables 2.9 ms; a savepoint per call adds 30 to 40 µs, roughly 45% on a trivial statement.
+
+### Decision: departures from the spec
+
+- **No asyncpg pool.** The spec asked for one with minimum size zero. The core pool already pools connections; a second pool underneath would have its own idle policy.
+- **Savepoint per call inside a transaction, on by default,** so a failed statement does not kill the transaction and `tx` behaves as on SQLite. `statement_savepoints=False` turns it off. A named operation runs in one savepoint, so it is atomic.
+- **Number of concurrent writers is a pool property driven by `concurrent_writers`**: one for SQLite and DuckDB, up to the pool size for PostgreSQL.
+- **Read connections are opened read-only** (`default_transaction_read_only=on`), the equivalent of SQLite's `mode=ro`.
+- **`alter_table` is all native ALTER,** including primary-key changes.
+- **`execute_many` counts rows** by wrapping the statement in a CTE with `RETURNING 1`.
+- **`refresh_schema()` exists on every backend**, not only PostgreSQL.
+- **Server deadline** is set in the same round trip as BEGIN, at the deadline plus one second of grace.
+- **The backend uses three private asyncpg APIs** (`_prepare`, `_execute`, the transport socket), checked against asyncpg 0.32. That is a fragile dependency.
+
+### Idea: to discuss
+
+- **Is asyncpg the right driver?** (Open question 1.) The private-API use, the statement-cache trouble after DDL, the missing `executemany` counts and the strict parameter typing are all asyncpg-specific. A spike on psycopg 3 would show whether it removes them.
+- **Savepoints: now three answers on three engines.** SQLite carries on after an error, PostgreSQL does with savepoints at a 45% cost on small statements, DuckDB cannot. Needs one decision about the portable contract.
+- **Pool health check** so connections the server has killed are never handed out.
+- **Staged replace by truncate-and-copy** when the target has dependent views, to keep the views working.
+- **`search_path` holds only the database's schema,** so extension functions installed in `public` are invisible. Probably want `schema, public`.
+- **`max_result_bytes` is checked after the fetch** on PostgreSQL, not during it, so it does not protect memory there yet.
+
+### Upstream suggestions
+
+- None for sqlite-utils or Datasette. Note for any future PostgreSQL support in Datasette: `select :a` with an int fails without parameter casts.
