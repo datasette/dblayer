@@ -973,3 +973,28 @@ Subagent-reported, load about 24.
 - The small buffer costs little: 100,000-row reads were within noise of the default, at most about 10% slower on plain rows in some runs.
 - **It does not explain the Python DuckDB worker's CI failure.** Through the `duckdb` Python package the first rows arrive in 0.3 to 0.4 ms with either buffer size; only the C API's streaming execute waits for the buffer. That failure is still unexplained. The double time-limit bug fixed by the export subagent is the next candidate.
 - The `LIMIT max_rows+1` wrap is kept as an optimisation.
+
+### Found: multi-tenant C worker (`sqlite-cpool`), interim (2026-11-24)
+
+Interim report from the relaunched subagent. Load 17 to 30; provisional, and single-client figures swung 3 to 10 times between runs.
+
+- **Throughput scales with concurrency where the others do not.** Requests per second at 1, 4, 16 and 64 concurrent clients on different databases:
+
+| Backend | 1 | 4 | 16 | 64 | Processes at 64 |
+| --- | --- | --- | --- | --- | --- |
+| Multi-tenant C worker | about 8,000 | 25,000 | 48,000 | 54,000 | 2 |
+| Single-tenant C worker | about 8,000 | 28,000 | 48,000 | 23,000 | 64 |
+| In-process SQLite | about 7,000 | 10,000 | 8,000 | 10,000 | 1 |
+
+  At 64 clients the parent process is using 0.95 of a CPU, so the Python event loop is now the limit, not the worker. In-process SQLite is flat at about 10,000 because of the thread hop and the GIL.
+- **Memory per open database is 188 KB,** against about 3 MB for a single-tenant C worker process. Warm open to first result is 0.49 ms.
+- **One-row read:** 101 µs, level with the single-tenant C worker (105 µs); apsw inline is 10.6 µs.
+- **Blast radius, measured.** One tenant's uninterruptible query was killed 451 ms after a 200 ms limit plus 250 ms grace. Four in-flight reads on other tenants were retried and finished 13 ms after the kill (normal median 7.9 ms). Of 1,948 writes, one failed loudly with `WorkerCrashed`; none was lost or duplicated. The open transaction got `WorkerCrashed` and left nothing behind. Idle connections reconnected in 0.9 to 6 ms. The culprit is then quarantined onto its own process, and a second offence killed only that process.
+- **Sanitizers:** ASan and UBSan clean over 1,484 tests. TSan clean over 486 tests, with a positive control (5 reports without the suppressions file, all a known benign SQLite race in `unixOpen`), so detection works.
+- Tests: 431 passed, 10 skipped on conformance.
+- Added: a `sqlite-cpool` fleet kind in the demo (100 of the 1,000), and a fix for a worker process that outlived its event loop at demo shutdown.
+
+### Found: CI is wedged and the GitHub API limit was exhausted (process)
+
+- Run 45413464925 has been "in progress" since 14:25 UTC: the Linux runners got a shutdown signal during `tests/scale/test_threads.py`, and every later push has queued behind it and been cancelled. So no CI result exists for anything pushed since. The TSan step has never run in CI.
+- Subagents polling `gh` used up the account's 5,000 requests per hour, which is shared with all of Simon's other work. All eight have been told to stop calling `gh` except once at the end. Future briefs must say this from the start.
