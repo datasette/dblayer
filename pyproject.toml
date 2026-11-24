@@ -10,6 +10,7 @@ dependencies = []
 postgres = ["asyncpg"]
 duckdb = ["duckdb"]
 msgpack = ["msgpack"]
+psycopg = ["psycopg[binary]"]
 
 [dependency-groups]
 demo = [
