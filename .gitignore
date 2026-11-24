@@ -20,3 +20,8 @@ demo-data/
 cworker/build/
 cworker/build-*/
 cworker/vendor/
+
+# DuckDB C++ worker: build output and the downloaded libduckdb (make -C duckdb-cpp-worker)
+duckdb-cpp-worker/build/
+duckdb-cpp-worker/build-*/
+duckdb-cpp-worker/vendor/
