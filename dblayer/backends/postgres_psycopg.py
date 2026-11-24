@@ -306,15 +306,16 @@ class PostgresPsycopg(PostgresBackendBase):
             try:
                 await raw.execute(
                     "BEGIN READ WRITE; CREATE SCHEMA IF NOT EXISTS "
-                    f"{_DIALECT.quote_identifier(self.schema)}; COMMIT"
+                    f"{_DIALECT.quote_identifier(self.schema)}; COMMIT",
+                    prepare=False,
                 )
             except psycopg.errors.UniqueViolation:
                 # Another connection created it at the same moment.
-                await raw.execute("ROLLBACK")
+                await raw.execute("ROLLBACK", prepare=False)
             except BaseException:
                 if not raw.closed:
                     with contextlib.suppress(Exception):
-                        await raw.execute("ROLLBACK")
+                        await raw.execute("ROLLBACK", prepare=False)
                 raise
         self._schema_ready = True
 
@@ -419,7 +420,8 @@ class PsycopgConnection:
             return
         with contextlib.suppress(Exception):
             await self._raw.execute(
-                f"ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT}"
+                f"ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT}",
+                prepare=False,
             )
 
     async def _settle_timeout(self, time_limit_ms: int | None) -> None:
@@ -427,7 +429,7 @@ class PsycopgConnection:
         paths that cannot be pipelined)."""
         sql = self._timeout_sql(time_limit_ms)
         if sql is not None:
-            await self._raw.execute(sql)
+            await self._raw.execute(sql, prepare=False)
 
     # -- execute -------------------------------------------------------------
 
@@ -516,10 +518,10 @@ class PsycopgConnection:
         async with self._pipe():
             for i, s in enumerate(pre):
                 last = i == len(pre) - 1
-                await aux.execute(s, first_args if (last and first_args) else None)
+                await aux.execute(s, first_args if (last and first_args) else None, prepare=False)
             await cur.execute(sql, args)
             for s in post:
-                await aux.execute(s)
+                await aux.execute(s, prepare=False)
         return cur
 
     async def _fetch(self, cur: Any) -> list[tuple[Any, ...]]:
@@ -602,7 +604,7 @@ class PsycopgConnection:
             curs = []
             async with self._pipe():
                 if pre:
-                    await raw.cursor().execute(pre)
+                    await raw.cursor().execute(pre, prepare=False)
                 for sql, params in statements:
                     cur = raw.cursor()
                     await cur.execute(sql, list(params) if params else [])
@@ -633,7 +635,7 @@ class PsycopgConnection:
                 await self._rollback_to_savepoint()
             raise
         if savepoint:
-            await self._raw.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
+            await self._raw.execute(f"RELEASE SAVEPOINT {SAVEPOINT}", prepare=False)
         return result
 
     async def _execute_many(self, sql: str, seq: list[list[Any]], pre: Sequence[str] = ()) -> WriteResult:
@@ -644,7 +646,7 @@ class PsycopgConnection:
         # for the idle-timer re-arm too.
         async with self._pipe():
             for s in pre:
-                await raw.cursor().execute(s)
+                await raw.cursor().execute(s, prepare=False)
             await cur.executemany(sql, seq)
         return WriteResult(rowcount=cur.rowcount if verb in DML else -1)
 
@@ -688,7 +690,7 @@ class PsycopgConnection:
             transaction_timeout=modern,
         )
         self._end_tx()
-        await self._raw.execute(sql)
+        await self._raw.execute(sql, prepare=False)
         self._rearm_idle_timer = deadline_ms is not None and not modern
         if deadline_ms is not None:
             grace = self.backend.server_deadline_grace_ms
@@ -707,13 +709,13 @@ class PsycopgConnection:
         async with self._raw.pipeline():
             yield
         if self._rearm_idle_timer and self._in_tx():
-            await self._raw.execute("")
+            await self._raw.execute("", prepare=False)
 
     async def commit(self) -> None:
         if self._closed or not self._in_tx():
             return
         try:
-            cur = await self._timed(self._raw.execute("COMMIT"), None)
+            cur = await self._timed(self._raw.execute("COMMIT", prepare=False), None)
         finally:
             self._end_tx()
         if cur.statusmessage == "ROLLBACK":
@@ -738,7 +740,7 @@ class PsycopgConnection:
             self._end_tx()
             return
         try:
-            await self._raw.execute("ROLLBACK")
+            await self._raw.execute("ROLLBACK", prepare=False)
         finally:
             self._end_tx()
 
@@ -764,17 +766,21 @@ class PsycopgConnection:
             async with self._pipe():
                 aux = raw.cursor()
                 if pre:
-                    await aux.execute(pre)
+                    await aux.execute(pre, prepare=False)
                 if own_tx:
-                    await aux.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                    await aux.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", prepare=False)
                 for cur, q in zip(curs, queries):
                     await cur.execute(q, [schema])
                 if own_tx:
-                    await aux.execute("ROLLBACK")
+                    # COMMIT, not ROLLBACK, of this read-only transaction: a
+                    # ROLLBACK in a pipeline that also prepared statements
+                    # puts psycopg's statement cache out of step with the
+                    # server (scripts/psycopg_prepared_rollback_pipeline.py).
+                    await aux.execute("COMMIT", prepare=False)
         except BaseException:
             if own_tx and not raw.closed and self._in_tx():
                 with contextlib.suppress(Exception):
-                    await raw.execute("ROLLBACK")
+                    await raw.execute("ROLLBACK", prepare=False)
             raise
         return [await c.fetchall() for c in curs]
 
@@ -830,7 +836,8 @@ class PsycopgConnection:
         pre = self._timeout_sql(None)
         if savepoint or pre:
             await self._raw.execute(
-                "; ".join(s for s in (pre, f"SAVEPOINT {SAVEPOINT}" if savepoint else None) if s)
+                "; ".join(s for s in (pre, f"SAVEPOINT {SAVEPOINT}" if savepoint else None) if s),
+                prepare=False,
             )
         try:
             result = await self._timed(op(**args), None)
@@ -842,7 +849,7 @@ class PsycopgConnection:
             if result is NotImplemented:
                 await self._rollback_to_savepoint()
             else:
-                await self._raw.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
+                await self._raw.execute(f"RELEASE SAVEPOINT {SAVEPOINT}", prepare=False)
         return result
 
     async def _op_insert_rows(
