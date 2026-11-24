@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>dblayer demo</h1>
+<p>The same small dataset in each of dblayer's backends.</p>
+<ul class="dbs">
+{% for db in databases %}
+  <li>{{ db.title }}</li>
+{% endfor %}
+</ul>
+{% endblock %}

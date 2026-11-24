@@ -12,3 +12,6 @@ dist/
 *.db-shm
 *.db-journal
 .DS_Store
+
+# Demo app data (python -m dblayer_demo)
+demo-data/
