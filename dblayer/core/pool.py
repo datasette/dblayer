@@ -2,9 +2,13 @@
 
 * Up to ``max_read_connections`` read connections (default 3), checked out by
   one caller at a time and handed back afterwards.
-* One write connection behind a FIFO ``asyncio.Lock``: holding the write
-  connection *is* holding the database's write slot, so writes are
-  serialised in the event loop with no writer thread.
+* Write connections behind a FIFO slot: holding a write connection *is*
+  holding one of the database's write slots. Backends without
+  ``capabilities.concurrent_writers`` get one slot (an ``asyncio.Lock``), so
+  writes are serialised in the event loop with no writer thread. Backends
+  with it (PostgreSQL) get ``max_write_connections`` slots: the backend's
+  own attribute of that name if it has one, else ``max_read_connections``;
+  the server arbitrates between them.
 * Reset on return: ``rollback()`` is called on every returned connection
   (backends make that a no-op when nothing is open). A connection whose reset
   fails, or that the caller marks ``discard``, is closed instead of reused.
@@ -82,6 +86,7 @@ class Pool:
         "_backend",
         "loop",
         "max_read_connections",
+        "max_write_connections",
         "_read_slots",
         "_write_slot",
         "_idle_read",
@@ -99,9 +104,14 @@ class Pool:
         self.loop = loop
         self.max_read_connections = db.max_read_connections
         self._read_slots = asyncio.Semaphore(self.max_read_connections)
-        self._write_slot = asyncio.Lock()
+        self.max_write_connections = _write_limit(self._backend, self.max_read_connections)
+        self._write_slot: asyncio.Lock | asyncio.Semaphore = (
+            asyncio.Lock()
+            if self.max_write_connections == 1
+            else asyncio.Semaphore(self.max_write_connections)
+        )
         self._idle_read: list[_Entry] = []
-        self._idle_write: _Entry | None = None
+        self._idle_write: list[_Entry] = []
         self._in_use: dict[int, _Entry] = {}
         self._generation = 0
         self._closed = False
@@ -190,19 +200,14 @@ class Pool:
                 self._check_empty()
 
     def _check_in(self, entry: _Entry) -> None:
-        if entry.write:
-            self._idle_write = entry
-        else:
-            self._idle_read.append(entry)
+        (self._idle_write if entry.write else self._idle_read).append(entry)
 
     def _reusable(self, entry: _Entry) -> bool:
         return not self._closed and entry.generation == self._generation
 
     def _take_idle(self, write: bool) -> _Entry | None:
-        if write:
-            entry, self._idle_write = self._idle_write, None
-            return entry
-        return self._idle_read.pop() if self._idle_read else None
+        idle = self._idle_write if write else self._idle_read
+        return idle.pop() if idle else None
 
     def _check_empty(self) -> None:
         if self.open == 0 and self.users == 0:
@@ -215,11 +220,9 @@ class Pool:
     # -- shutdown ------------------------------------------------------------
 
     def _take_all_idle(self) -> list[_Entry]:
-        entries = self._idle_read
+        entries = self._idle_read + self._idle_write
         self._idle_read = []
-        if self._idle_write is not None:
-            entries.append(self._idle_write)
-            self._idle_write = None
+        self._idle_write = []
         return entries
 
     async def close_idle(self) -> int:
@@ -261,7 +264,7 @@ class Pool:
     def stats(self) -> PoolStats:
         in_use_write = sum(1 for e in self._in_use.values() if e.write)
         in_use_read = len(self._in_use) - in_use_write
-        idle_write = 1 if self._idle_write is not None else 0
+        idle_write = len(self._idle_write)
         return PoolStats(
             open_read=len(self._idle_read) + in_use_read,
             open_write=idle_write + in_use_write,
@@ -272,6 +275,15 @@ class Pool:
             opened_total=self._db._opened_total,
             closed_total=self._db._closed_total,
         )
+
+
+def _write_limit(backend: Backend, max_read_connections: int) -> int:
+    if not backend.capabilities.concurrent_writers:
+        return 1
+    n = getattr(backend, "max_write_connections", None) or max_read_connections
+    if n < 1:
+        raise ValueError("max_write_connections must be at least 1")
+    return n
 
 
 def _should_discard(exc: BaseException) -> bool:
