@@ -93,7 +93,7 @@ jobs:
   cworker-sanitizers:
     name: C worker under ASan + UBSan, and TSan
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.4.0
@@ -116,16 +116,19 @@ jobs:
           tests/worker tests/faults tests/conformance
       # The multi-tenant C worker (--multi) is a threaded server: its own
       # tests under ThreadSanitizer. Ubuntu's 32-bit mmap randomisation
-      # breaks TSan's memory layout, hence the sysctl.
+      # breaks TSan's memory layout, hence the sysctl. These steps run even
+      # when the ASan step failed, so both sanitizers report.
       - name: Build the C worker with -fsanitize=thread
+        if: ${{ !cancelled() }}
         run: make -C cworker SANITIZE=thread && sudo sysctl vm.mmap_rnd_bits=28
       - name: Run the multi-tenant C worker's tests under ThreadSanitizer
+        if: ${{ !cancelled() }}
         env:
           DBLAYER_CWORKER: ${{ github.workspace }}/cworker/build-tsan/dblayer-cworker
           TSAN_OPTIONS: halt_on_error=1 suppressions=${{ github.workspace }}/cworker/tsan.supp
         run: >-
           uv run --all-extras pytest -ra -k "(cpool or c-pool or cworker_multi) and not rlimit"
-          tests/worker/test_cworker_multi.py tests/worker/test_cpool.py tests/faults
+          tests/worker/test_cworker_multi.py tests/worker/test_cpool.py tests/faults tests/conformance
 
   duckdb-rs-worker:
     # The experimental Rust DuckDB worker (duckdb-rs-worker/): the pinned
