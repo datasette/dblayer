@@ -1426,3 +1426,64 @@ Interim report from the subagent. Quick mode at commit `6e409fa` on a `performan
 - **Wake cost, reported separately from query cost as asked:** in-process SQLite 0.31 ms; WebAssembly 1.4 ms; multi-tenant C 1.67 ms; multi-tenant Rust 1.64 ms; single-tenant C worker 2.3 ms; DuckDB 21 ms (6.7 ms on the Mac); Node.js worker 162 ms.
 - **Linux commits are cheap next to macOS.** A one-row update is about 1 ms in-process and 1.6 to 2 ms on the Node.js worker, which took 19 to 20 ms on the Mac. The Node worker's slow writes were a macOS `F_FULLFSYNC` effect, as suspected.
 - **A measurement artifact to remember:** the Python worker took 660 ms to start, because the uv-managed standard library had no compiled `.pyc` files and the unprivileged user could not write them (`python -c pass` took 138 ms). Fixed in the Dockerfile for the next run. Any deployment with a read-only Python install would hit the same cost for real.
+
+## 2026-11-24: Rust multi-tenant SQLite worker, final report; C against Rust
+
+Subagent-reported. Timings at load 9 to 30 on the Mac; provisional, with single runs swinging 2 to 15 times. No CI result covers it yet. The Fly.io run should replace these figures.
+
+### Built
+
+- `sqlite-rs-worker/`: a Rust port of the multi-tenant C worker, with no crate dependencies at all. Its build script compiles the same pinned SQLite amalgamation, reading the compile options out of the C worker's Makefile, so the two run the same SQLite by construction.
+- `SqliteRustPool`, registered as `sqlite-rspool`: 435 passed, 10 skipped, identical to the C pool. The C worker's own tests now run on both binaries. Full suite: 7,418 passed, 2,841 skipped, 4 expected failures.
+- Native export implemented (not socket handoff). A Rust load generator (`examples/loadgen.rs`) that drives a worker without Python. An interleaved benchmark (`benchmarks/rspool_interleaved.py`).
+- Clippy fixes for the DuckDB Rust worker, in a separate commit.
+
+### Found
+
+| Measure | C worker | Rust worker |
+| --- | --- | --- |
+| One-row read, interleaved, p50 | 73 µs | 71 µs |
+| One-row update, interleaved, p50 | 410 µs | 404 µs |
+| Worker CPU per request, one connection (no Python) | 14.0 µs | 14.3 µs |
+| Footprint per open database | 188 KB | 186 KB |
+| Process base footprint | 1.38 MB | 1.41 MB |
+| Native export of 1M rows, CSV | 1.26 to 1.50 s | 1.07 to 1.30 s |
+| Native export of 1M rows, JSON | 1.53 to 1.75 s | 1.13 to 1.20 s |
+| Binary, stripped | 1.64 MB | 2.12 MB |
+| Clean build | 15.8 s | 23.0 s |
+| Code lines | about 4,950 | about 4,720 |
+| `unsafe` | the whole program | 57 blocks in one file |
+
+- **C and Rust are level on speed and memory.** Rust is ahead only on export (about 15% on CSV, 30% on JSON), probably from its float formatting. The cost of a native worker is SQLite, not the language.
+- **Both workers have the same scaling flaw: a single global state mutex taken about 8 times per request.** CPU per request rises from about 14 µs on one connection to 42 to 56 µs at 16 or more, with threads waiting on that mutex. This is a property of the multi-tenant design, and it is the next thing to fix: the earlier conclusion that "the Python parent is the limit" was true through Python but hid this.
+- **Would Rust have prevented each bug the native workers have had?**
+
+| Bug | Prevented by Rust? |
+| --- | --- |
+| `qsort(NULL, 0)` undefined behaviour | Yes: no null slices. |
+| Use-after-free in the watchdog at shutdown | Yes: the job is reference-counted. |
+| C++ worker's `-1` "no limit" sentinel going negative | Yes: an `Option`. |
+| Interrupt flag left set by a leaked stream | No: SQLite semantics. |
+| `last_pk` with a reused rowid | No: a semantic choice. |
+| Cancel lost just after a stream's last frame | No: a logic race both designs shared; the Rust port had it too. |
+
+- **Rust brought one hazard of its own:** a self-deadlock from locking the same mutex twice in one expression, because the guard lives through argument evaluation. Caught by review, not by the compiler.
+- **Tooling results:** clippy clean; Miri found nothing in 12 pure-Rust tests (it cannot run the SQLite calls); ThreadSanitizer with SQLite instrumented ran 540 tests with no reports, and its positive control gives the same five known SQLite reports the C side gets; fuzz of 300,000 inputs with no panics.
+- **Binding 32,000 named parameters takes 1.4 to 2 s in both workers,** from SQLite's own named-variable lookup at prepare time.
+- **`sqlite3_prepare` can itself return `SQLITE_INTERRUPT`** when an interrupt arrives during parsing. Relevant to any "repeat the interrupt until the call returns" loop.
+
+### Decision
+
+- **Recommendation from the subagent: Rust, not urgently, and not for speed.** It rules out three of the six bugs by construction, confines `unsafe` to one 600-line file, and makes the one-thread-per-connection rule a compile-time check. Its costs: a larger binary, a slower clean build, and no socket handoff or WebAssembly build yet.
+- What should decide it: whether the WebAssembly build of the C worker must share one source tree with the native worker. The wasmtime backend is the C worker compiled to WebAssembly; a Rust worker would need its own route to that.
+
+### Idea: to discuss
+
+- **Per-connection queue locks and atomic state in place of the global mutex,** for both workers. Measure with the Rust load generator. This could raise multi-tenant throughput well beyond the current figures once the Python parent is no longer the only limit.
+- A pinned-nightly sanitizer job in CI for the Rust worker, mirroring the C worker's.
+- Compile SQLite in a path crate so it builds in parallel with the Rust code.
+
+### Upstream suggestions
+
+- **Datasette, issue 1270, a caveat to earlier entries:** a loop that repeats `interrupt()` until the query returns must expect `sqlite3_prepare` itself to fail with `SQLITE_INTERRUPT`, not only the step. Verified by the subagent in an FFI test on SQLite 3.53.1.
+- **Datasette and sqlite-utils, weak:** statements with tens of thousands of named parameters are slow to prepare in SQLite itself (1.4 to 2 s for 32,000). Measured only through these workers.
