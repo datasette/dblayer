@@ -58,7 +58,7 @@ SQLITE_DEFS := -DSQLITE_THREADSAFE=0 -DSQLITE_OS_OTHER=1 -DSQLITE_OMIT_LOAD_EXTE
 	-DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_DBSTAT_VTAB \
 	-DSQLITE_DQS=3 -DSQLITE_DEFAULT_MEMSTATUS=1
 
-SRC := src/worker.c src/codec.c src/sqlutil.c src/schema.c src/wasm_vfs.c
+SRC := src/worker.c src/codec.c src/sqlutil.c src/schema.c src/wasm_vfs.c src/wasm_libc.c
 HDR := src/codec.h src/sqlutil.h src/errnames.h src/wasm_host.h
 OBJ := $(patsubst src/%.c,$(BUILD)/%.o,$(SRC))
 
@@ -74,6 +74,10 @@ $(OUT): $(OBJ) $(BUILD)/sqlite3.o
 
 $(BUILD)/%.o: src/%.c $(HDR) wasm.mk $(SQLITE_DIR)/sqlite3.h | $(BUILD) $(WASI_CC)
 	$(WASI_CC) $(TARGET) $(OPT) $(WARN) -DCWORKER_WASM -DCWORKER_NO_LOAD_EXTENSION -I$(SQLITE_DIR) -c -o $@ $<
+
+# 16-byte SIMD memcmp in place of wasi-libc's byte loop (see the file).
+$(BUILD)/wasm_libc.o: src/wasm_libc.c wasm.mk | $(BUILD) $(WASI_CC)
+	$(WASI_CC) $(TARGET) $(OPT) -msimd128 -fno-builtin -c -o $@ $<
 
 $(BUILD)/sqlite3.o: $(SQLITE_DIR)/sqlite3.c | $(BUILD) $(WASI_CC)
 	$(WASI_CC) $(TARGET) $(OPT) $(SQLITE_DEFS) -c -o $@ $<
