@@ -1356,3 +1356,7 @@ Subagent-reported. Timings at load 18 to 22 for the main run (up to 80 at times)
 ### Found: process
 
 - Another scratchpad collision: this subagent overwrote two files that may have belonged to another. Briefs now give each subagent its own scratch subdirectory.
+
+### Found: Rust tooling installed (2026-11-24)
+
+At Simon's request I installed the missing Rust components with rustup: `clippy` on the stable toolchain (0.1.94), and `miri` on the existing nightly toolchain (rustc 1.98.0-nightly, 2026-06-11; `rust-src` was already there). No toolchain was added or updated. This removes the limit recorded above: the Rust multi-tenant SQLite worker subagent has been told to run clippy, Miri over the pure-Rust code, and ThreadSanitizer and AddressSanitizer on nightly, with a positive control, and to run clippy over the DuckDB Rust worker, which its author could not.
