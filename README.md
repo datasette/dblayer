@@ -70,6 +70,20 @@ are `sqlite-cpool`, `c-pool`, `tests/worker/test_cworker_multi.py`,
 `make -C cworker SANITIZE=thread` builds a ThreadSanitizer binary in
 `cworker/build-tsan/`.
 
+A Rust port of that worker, `sqlite-rs-worker/` (experimental; Rust and
+cargo, no crates: it compiles the same pinned amalgamation with the C
+worker's own compile options), runs under the same pool code as
+`SqliteRustPool(path)` (`sqlite-rspool`, `dblayer/backends/sqlite_rspool.py`):
+
+```bash
+make -C sqlite-rs-worker          # also: test, clippy; nightly: tsan, asan, miri
+```
+
+`DBLAYER_RSWORKER` points at another build. The C worker's own tests
+(`test_cworker.py`, `test_cworker_multi.py`, `test_cpool.py`, the blast
+radius tests) run on both binaries through `tests/native_impl.py`;
+`benchmarks/rspool_bench.py` compares the two.
+
 ### Exports: `db.export()` (experimental)
 
 `db.export(sql, format="csv"|"tsv"|"json"|"ndjson")` streams a result as

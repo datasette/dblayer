@@ -186,6 +186,25 @@ Used by `dblayer.backends.sqlite_cpool` (`SqliteCPool`, `CPool`). Options:
   would change every tenant's limit); heap limits come from the command
   line. A fatal error exits the whole process.
 
+### Rust SQLite worker (`sqlite-rs-worker/`)
+
+`sqlite-rs-worker/target/release/dblayer-sqlite-rsworker`, used by
+`dblayer.backends.sqlite_rspool` (`SqliteRustPool`, `RustPool`): a port of
+the C worker to Rust, request for request, with the same command line
+(single-tenant, and `--multi` with every option above) and the same SQLite
+(the pinned amalgamation, compiled by its `build.rs` with the `SQLITE_DEFS`
+and `OPT` of `cworker/Makefile`). Differences:
+
+- `hello` says `"implementation": "rust"`.
+- `export` has the `frames`, `raw` and `fifo` transports, not `socket`
+  (`hello` lists what it has; a `socket` request gets `NotSupported`).
+- `--version` prints `dblayer-sqlite-rsworker protocol 1, SQLite ...` and
+  the compile options.
+- A connection (`Db`) is not `Send`: the compiler keeps it on its lane's
+  thread, the rule `SQLITE_CONFIG_MULTITHREAD` relies on. Other threads
+  reach a connection only through an interrupt handle that is emptied
+  before the connection closes.
+
 ### Node worker (`nodeworker/`, SQLite-WASM)
 
 `node nodeworker/src/main.mjs [--memory-limit-mb N] [--debug] [--version]`,
