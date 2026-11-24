@@ -40,15 +40,19 @@ def make(pool, path):
 
 
 async def test_slow_queries_on_different_databases_run_in_parallel(tmp_path, pool):
-    """Eight CPU-bound queries on eight databases sharing one process take
-    about as long as one; on the single-tenant shared placement (one
-    request at a time per process) they take eight times as long."""
+    """N CPU-bound queries on N databases sharing one process (N = the
+    CPU count, at most 8) take about as long as one; on the single-tenant
+    shared placement (one request at a time per process) they take N times
+    as long. Bounds are loose (CI runners have 4 vCPUs and the sanitizer
+    builds share allocator locks); test_cworker_multi proves concurrency
+    without depending on CPUs."""
     from dblayer.backends.sqlite_cpool import CPool
 
     one_proc = CPool(1, linger=0)
-    dbs = [make(one_proc, tmp_path / f"p{i}.db") for i in range(8)]
+    n = max(2, min(8, os.cpu_count() or 2))
+    dbs = [make(one_proc, tmp_path / f"p{i}.db") for i in range(n)]
     group = c_shared_workers(1, linger=0)
-    serial = [Database(SqliteCWorker(tmp_path / f"s{i}.db", workers=group)) for i in range(8)]
+    serial = [Database(SqliteCWorker(tmp_path / f"s{i}.db", workers=group)) for i in range(n)]
     try:
         for d in dbs + serial:
             await d.execute("select 1")
@@ -64,12 +68,12 @@ async def test_slow_queries_on_different_databases_run_in_parallel(tmp_path, poo
         await asyncio.gather(*(d.execute(COUNTING) for d in serial))
         eight_serial = time.perf_counter() - t0
         print(
-            f"\n[cpool] one query {one * 1000:.0f} ms; eight on eight databases, one multi-tenant process "
-            f"{eight * 1000:.0f} ms; eight on one single-tenant shared process {eight_serial * 1000:.0f} ms "
+            f"\n[cpool] one query {one * 1000:.0f} ms; {n} on {n} databases, one multi-tenant process "
+            f"{eight * 1000:.0f} ms; {n} on one single-tenant shared process {eight_serial * 1000:.0f} ms "
             f"(load {os.getloadavg()[0]:.1f}, {os.cpu_count()} CPUs)"
         )
-        assert eight < 4 * one  # one at a time would be 8x
-        assert eight_serial > 4 * one
+        assert eight < 0.75 * n * one  # one at a time would be n x
+        assert eight_serial > 0.75 * n * one
     finally:
         for d in dbs + serial:
             await d.close()
