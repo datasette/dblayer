@@ -101,8 +101,12 @@ SQLITE_FLAVOR = SqlFlavor("sqlite", bracket_identifiers=True)
 POSTGRES_FLAVOR = SqlFlavor(
     "postgres", dollar_quotes=True, nested_block_comments=True, escape_strings=True
 )
-# DuckDB rules are from memory and must be verified in milestone 6.
-DUCKDB_FLAVOR = SqlFlavor("duckdb", dollar_quotes=True, escape_strings=True)
+# Checked against DuckDB 2.0.1 (scripts/duckdb_verify.py): $$/$tag$ quotes,
+# E'' strings, nested /* */ comments and `backtick` identifiers; [ ] is a
+# list literal or slice, never an identifier quote.
+DUCKDB_FLAVOR = SqlFlavor(
+    "duckdb", dollar_quotes=True, escape_strings=True, nested_block_comments=True
+)
 
 _DEFAULT_FLAVOR = {
     ParamStyle.NAMED_COLON: SQLITE_FLAVOR,
@@ -361,6 +365,15 @@ def _template(sql: str, style: ParamStyle, flavor: SqlFlavor, mode: str) -> _Tem
             else:  # NAMED_DOLLAR
                 parts.append("$" + p.name)
                 if p.name not in order:
+                    # DuckDB matches $name case-insensitively, so :a and :A
+                    # would silently bind the same value.
+                    clash = [o for o in order if o.casefold() == p.name.casefold()]
+                    if clash:
+                        raise ParameterError(
+                            f"parameters :{clash[0]} and :{p.name} differ only in case, "
+                            "which this backend cannot tell apart",
+                            code="AMBIGUOUS_PARAMETER",
+                        )
                     order.append(p.name)
             pos = p.end
         parts.append(sql[pos:])

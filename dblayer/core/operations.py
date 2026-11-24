@@ -522,17 +522,18 @@ async def alter_table(
     if not (rename or drop_list or types_map or pk is not UNSET):
         return OperationResult()
 
-    if rename and "rename" in d.native_alter:
+    native = d.native_alter_for(info, rename=rename, drop=drop_list, types=types_map)
+    if rename and "rename" in native:
         for old, new in rename.items():
             await tx.execute(d.rename_column_sql(table, old, new))
         drop_list = [rename.get(c, c) for c in drop_list]
         types_map = {rename.get(k, k): v for k, v in types_map.items()}
         rename = {}
-    if types_map and "types" in d.native_alter:
+    if types_map and "types" in native:
         for c, t in types_map.items():
             await tx.execute(d.alter_column_type_sql(table, c, t))
         types_map = {}
-    if drop_list and "drop" in d.native_alter:
+    if drop_list and "drop" in native:
         for c in drop_list:
             await tx.execute(d.drop_column_sql(table, c))
         drop_list = []

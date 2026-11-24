@@ -35,7 +35,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from ..core.params import SQLITE_FLAVOR, ParamStyle, SqlFlavor
 from ..core.results import Column, Results, WriteResult
-from ..core.schema import ColumnDef, ForeignKey, Schema
+from ..core.schema import ColumnDef, ForeignKey, Schema, TableInfo
 from ..errors import DblayerError
 
 _SIMPLE_DEFAULT = re.compile(
@@ -142,6 +142,21 @@ class Dialect:
     Any other requested change is done by rebuilding the table, the way
     sqlite-utils ``transform`` does. Native changes are applied first, then
     the rebuild."""
+
+    def native_alter_for(
+        self,
+        info: TableInfo,
+        *,
+        rename: Mapping[str, str],
+        drop: Sequence[str],
+        types: Mapping[str, str],
+    ) -> frozenset[str]:
+        """``native_alter`` for this particular table and change. A dialect
+        whose engine refuses some ``ALTER`` forms depending on the table
+        (DuckDB: any ``CREATE INDEX`` on it) returns a smaller set, so those
+        changes go to the rebuild instead of failing (a failed statement may
+        abort the whole transaction, so trying first is not an option)."""
+        return self.native_alter
 
     rowid_column: str | None = None
     """Name of the implicit row id (``"rowid"`` on SQLite), used to address
