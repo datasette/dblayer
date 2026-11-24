@@ -141,7 +141,7 @@ async def seed(db: Database) -> bool:
         },
         pk="id",
         not_null=["title"],
-        foreign_keys=[("author_id", "authors", "id")],
+        foreign_keys=[("author_id", "authors", "id")] if db.capabilities.foreign_keys else [],
         if_not_exists=True,
     )
     await db.create_table(
@@ -155,7 +155,7 @@ async def seed(db: Database) -> bool:
             "comment": "text",
         },
         pk="id",
-        foreign_keys=[("book_id", "books", "id")],
+        foreign_keys=[("book_id", "books", "id")] if db.capabilities.foreign_keys else [],
         if_not_exists=True,
     )
     data = rows()
@@ -167,7 +167,7 @@ async def seed(db: Database) -> bool:
     # No named operation creates a view; this is plain DDL on the write path.
     await db.execute_write(
         f"create view {q(VIEW_NAME)} as "
-        "select b.id, b.title, a.name as author, count(r.id) as reviews, "
+        "select b.id as id, b.title as title, a.name as author, count(r.id) as reviews, "
         "round(avg(r.rating), 2) as avg_rating "
         "from books b join authors a on a.id = b.author_id "
         "left join reviews r on r.book_id = b.id "

@@ -296,6 +296,23 @@ def pglite_backend(path: Path, **options: object) -> Backend:
     return PGliteWorker(path, memory_limit_mb=512, **options)  # type: ignore[arg-type]
 
 
+def _clickhouse(config: DemoConfig) -> Backend:
+    # Experimental: ClickHouse embedded in-process (chDB, the 'clickhouse'
+    # extra; wheels for Python 3.12-3.14 only). One chDB data directory per
+    # process; this database is one ClickHouse database in it.
+    try:
+        from dblayer.backends.clickhouse import ClickHouse, chdb_unavailable
+    except ImportError as e:
+        raise Unavailable(f"the ClickHouse backend is not available here ({e})") from e
+    if chdb_unavailable():
+        raise Unavailable(
+            "chdb is not installed: run the demo with "
+            "uv run --python 3.14 --all-extras --group demo python -m dblayer_demo "
+            "(chDB has no wheels for Python 3.15 yet)"
+        )
+    return ClickHouse(config.data_dir / "clickhouse", database="demo")
+
+
 DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite", "SQLite, in process", "SqliteInProcess", _sqlite),
     DemoSpec("sqlite-apsw", "SQLite, in process (apsw)", "SqliteApsw", _sqlite_apsw),
@@ -323,6 +340,7 @@ DEMO_SPECS: list[DemoSpec] = [
         check=_postgres_check,
         after="postgres",
     ),
+    DemoSpec("clickhouse", "ClickHouse, in process (chDB)", "ClickHouse", _clickhouse),
 ]
 
 

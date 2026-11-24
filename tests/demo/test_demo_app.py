@@ -49,6 +49,7 @@ SLOW_SQL["duckdb-rsworker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["duckdb-cppworker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["postgres-psycopg"] = SLOW_SQL["postgres"]
 SLOW_SQL["pglite"] = SLOW_SQL["postgres"]
+SLOW_SQL["clickhouse"] = "select count() from system.numbers"
 
 
 @pytest.fixture(scope="session")
@@ -147,7 +148,9 @@ async def test_table_page_and_pagination(client: httpx.AsyncClient) -> None:
     assert "NULL" in r.text  # pages and cover have NULLs
     assert "&lt;blob:" in r.text
     assert "characters)" in r.text  # a long blurb, cut short
-    assert "Foreign keys" in r.text and "Indexes" in r.text
+    assert "Indexes" in r.text
+    if slug != "clickhouse":  # capabilities.foreign_keys is false there
+        assert "Foreign keys" in r.text
 
     r2 = await client.get(f"/{slug}/books?_offset=100")
     rows2 = _rows(r2.text)
@@ -168,7 +171,7 @@ async def test_table_definition(client: httpx.AsyncClient) -> None:
     if client.slug in ("postgres", "postgres-psycopg", "pglite"):  # type: ignore[attr-defined]
         assert "cannot supply CREATE statements" in r.text
     else:
-        assert re.search(r'<pre class="sql">CREATE TABLE (&#34;)?authors', r.text, re.I)
+        assert re.search(r'<pre class="sql">CREATE TABLE (\w+\.)?(&#34;)?authors', r.text, re.I)
 
 
 async def test_sql_query(client: httpx.AsyncClient) -> None:

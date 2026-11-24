@@ -112,6 +112,7 @@ def chdb_unavailable() -> str | None:
 # -- dialect -------------------------------------------------------------------------
 
 _PORTABLE = {"integer": "Int64", "float": "Float64", "text": "String", "blob": "String"}
+_SQL_TYPES = {"date": "Date32", "timestamp": "DateTime64(6)", "datetime": "DateTime64(6)"}
 _CODE = re.compile(r"Code: (\d+)\.")
 _NAME = re.compile(r"\(([A-Z][A-Z0-9_]+)\)\s*(?:\(version [^)]*\))?\.?\s*$")
 
@@ -144,6 +145,11 @@ class ClickHouseDialect(Dialect):
         if col.type.lower() in _PORTABLE:
             t = _PORTABLE[col.type.lower()]
             return t if (col.not_null or key) else f"Nullable({t})"
+        if col.type.lower() in _SQL_TYPES:
+            # ClickHouse's DATE / TIMESTAMP aliases are Date (1970-2149) and
+            # DateTime (seconds); SQL's types hold any year and fractions.
+            t = _SQL_TYPES[col.type.lower()]
+            return t if (col.not_null or key) else f"Nullable({t})"
         if key and col.type.startswith("Nullable(") and col.type.endswith(")"):
             return col.type[len("Nullable(") : -1]
         return col.type
@@ -151,7 +157,9 @@ class ClickHouseDialect(Dialect):
     def column_sql(self, col: ColumnDef, *, key: bool = False) -> str:
         t = self._column_type(col, key=key)
         parts = [self.quote_identifier(col.name), t]
-        if not _nullable(t) and (col.not_null or key or col.type.lower() in _PORTABLE):
+        if not _nullable(t) and (
+            col.not_null or key or col.type.lower() in _PORTABLE or col.type.lower() in _SQL_TYPES
+        ):
             # Sessions run with data_type_default_nullable=1, which would
             # make the type Nullable; a native type without NOT NULL is
             # left to that default, as other engines' columns are nullable.
@@ -673,6 +681,9 @@ _SESSION: dict[str, Any] = {
     "create_table_empty_primary_key_by_default": 1,
     "data_type_default_nullable": 1,
     "max_recursive_cte_evaluation_depth": 100_000_000,
+    # SQL's outer joins: an unmatched side is NULL, not the type's default
+    # (count(r.id) over a LEFT JOIN counted the 0s).
+    "join_use_nulls": 1,
     "max_query_size": 64 << 20,
     "max_ast_elements": 1 << 22,
     # Native export (db.export) formats.
