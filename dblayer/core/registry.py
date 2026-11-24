@@ -13,6 +13,7 @@ costs only its own small ``Database`` object.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
@@ -22,11 +23,40 @@ from .executor import DEFAULT_MAX_THREADS
 from .hub import DEFAULT_IDLE_TIMEOUT, Hub, LifecycleHook
 from .database import Database
 
-__all__ = ["Registry", "Resolver", "DEFAULT_MAX_OPEN_CONNECTIONS"]
+__all__ = ["Registry", "RegistryStats", "Resolver", "DEFAULT_MAX_OPEN_CONNECTIONS"]
 
 DEFAULT_MAX_OPEN_CONNECTIONS = 200
 
 type Resolver = Callable[[str], Awaitable[Database | None]]
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryStats:
+    """A snapshot from ``Registry.stats()``. Counting is O(1) apart from
+    ``idle_connections`` (one step per distinct idle timeout)."""
+
+    databases: int
+    """Registered."""
+    awake: int
+    """Databases with connections open (or opening)."""
+    cold: int
+    """Databases evicted from local disk."""
+    open_connections: int
+    """Open, opening or closing, across every database (bounded by
+    ``max_open_connections``)."""
+    idle_connections: int
+    waiting: int
+    """Callers waiting for a place under the cap."""
+    wakes: int
+    sleeps: int
+    evictions: int
+    """Databases made cold by ``evict()``."""
+    cap_evictions: int
+    """Idle connections closed to make room under the cap."""
+    idle_closes: int
+    """Connections closed by the idle timeout."""
+    max_open_connections: int | None
+    max_threads: int
 
 
 class Registry:
@@ -218,6 +248,26 @@ class Registry:
             return db
         finally:
             del self._resolving[name]
+
+    # -- introspection ---------------------------------------------------------
+
+    def stats(self) -> RegistryStats:
+        hub = self._hub
+        return RegistryStats(
+            databases=len(self._dbs),
+            awake=hub.awake,
+            cold=hub.cold,
+            open_connections=hub.open,
+            idle_connections=hub.idle_count,
+            waiting=hub.waiting,
+            wakes=hub.wakes,
+            sleeps=hub.sleeps,
+            evictions=hub.evictions,
+            cap_evictions=hub.cap_evictions,
+            idle_closes=hub.idle_closes,
+            max_open_connections=hub.max_open_connections,
+            max_threads=self.max_threads,
+        )
 
     # -- eviction --------------------------------------------------------------
 

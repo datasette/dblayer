@@ -1,7 +1,7 @@
 """dblayer: an asyncio database layer that never hands out a raw connection."""
 
 from .core.database import DEFAULT, Database
-from .core.registry import Registry
+from .core.registry import Registry, RegistryStats
 from .core.operations import OperationResult
 from .core.transactions import Transaction
 from .core.results import Column, Results, Row, WriteResult
@@ -27,6 +27,7 @@ from .errors import (
 __all__ = [
     "Database",
     "Registry",
+    "RegistryStats",
     "UnknownDatabase",
     "Transaction",
     "OperationResult",
