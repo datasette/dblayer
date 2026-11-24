@@ -480,3 +480,46 @@ def test_random_payloads_never_crash_the_worker(codec, tmp_path):
         if code != 0:
             failures.append((i, code, err.decode(errors="replace")[-1500:]))
     assert not failures, failures[:3]
+
+
+# -- value types ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("codec", CODECS)
+async def test_value_type_params_match_the_python_worker(tmp_path, codec):
+    """Registered value types (protocol.STANDARD_VALUE_TYPES) arrive as
+    ext values / ``$x``. Python's sqlite3 binds datetime and date through
+    its default adapters and refuses the rest; the C worker must agree."""
+    import datetime as dt
+    import decimal
+    import uuid
+    from zoneinfo import ZoneInfo
+
+    from dblayer.backends.sqlite_worker import SqliteWorker
+
+    values = [
+        dt.datetime(2020, 1, 2, 3, 4, 5),
+        dt.datetime(2020, 1, 2, 3, 4, 5, 123456, tzinfo=dt.timezone.utc),
+        dt.datetime(2020, 6, 1, 12, 0, tzinfo=ZoneInfo("Europe/London")),
+        dt.date(2020, 1, 2),
+        dt.time(1, 2, 3),
+        decimal.Decimal("1.50"),
+        uuid.UUID(int=5),
+        dt.timedelta(days=1, seconds=2),
+        (1, 2),
+    ]
+    out = {}
+    for name, backend in (("py", SqliteWorker(tmp_path / "p.db", codec=codec)), ("c", SqliteCWorker(tmp_path / "c.db", codec=codec))):
+        conn = await backend.open(write=False)
+        try:
+            res = []
+            for v in values:
+                try:
+                    r = await conn.execute("select ?", [v], time_limit_ms=None, max_rows=None)
+                    res.append(r.rows[0][0])
+                except Exception as e:  # noqa: BLE001
+                    res.append((type(e).__name__, str(e)))
+            out[name] = res
+        finally:
+            await conn.close()
+    assert out["py"] == out["c"]

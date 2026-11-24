@@ -10,7 +10,8 @@
 enum { CODEC_JSON = 0, CODEC_MSGPACK = 1 };
 
 typedef enum {
-    V_NIL, V_BOOL, V_INT, V_BIGINT, V_FLOAT, V_STR, V_BIN, V_ARR, V_MAP
+    V_NIL, V_BOOL, V_INT, V_BIGINT, V_FLOAT, V_STR, V_BIN, V_ARR, V_MAP,
+    V_EXT /* a registered value type (protocol.STANDARD_VALUE_TYPES): ext code + payload */
 } vtype;
 
 typedef struct val val;
@@ -22,6 +23,7 @@ struct val {
         double d;
         struct { const char *p; size_t n; } s;   /* V_STR, V_BIN, V_BIGINT (decimal text) */
         struct { val *v; size_t n; } a;          /* V_ARR: n items; V_MAP: n pairs, v has 2n */
+        struct { int code; val *inner; } x;      /* V_EXT: code 16-127, inner = to_wire(value) */
     } u;
 };
 
@@ -40,6 +42,8 @@ const val *map_get(const val *m, const char *key);
 int val_is_str(const val *v, const char *s);
 /* Integer or bool value of an optional field; `dflt` when absent or nil. */
 int64_t get_int(const val *m, const char *key, int64_t dflt, int *present);
+/* The ext code of a value type tag ("datetime" -> 16 ...), -1 if unknown. */
+int value_type_code(const char *tag, size_t n);
 
 /* -- writer --------------------------------------------------------------- */
 

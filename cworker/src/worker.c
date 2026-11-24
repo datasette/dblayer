@@ -512,6 +512,30 @@ static int bind_value(conn *wc, sqlite3_stmt *st, int i, const val *v, int trans
     case V_BIN:
         rc = v->u.s.n ? sqlite3_bind_blob64(st, i, v->u.s.p, v->u.s.n, d) : sqlite3_bind_zeroblob(st, i, 0);
         break;
+    case V_EXT: {
+        /* Python's sqlite3 still has default adapters for datetime
+         * (isoformat(" ")) and date (isoformat()); every other value type
+         * is a binding error naming the Python type. */
+        const val *in = v->u.x.inner;
+        if (v->u.x.code == 16 && in->t == V_ARR && in->u.a.n == 2)
+            in = &in->u.a.v[0]; /* [isoformat, zone name] */
+        if ((v->u.x.code == 16 || v->u.x.code == 17) && in->t == V_STR) {
+            char *s = xstrndup(in->u.s.p, in->u.s.n);
+            if (v->u.x.code == 16 && in->u.s.n > 10 && s[10] == 'T')
+                s[10] = ' ';
+            rc = sqlite3_bind_text64(st, i, s, in->u.s.n, SQLITE_TRANSIENT, SQLITE_UTF8);
+            free(s);
+            break;
+        }
+        static const char *const NAMES[] = {"datetime.datetime", "datetime.date", "datetime.time",
+                                            "decimal.Decimal", "UUID", "datetime.timedelta", "dict", "tuple"};
+        int k = v->u.x.code - 16;
+        if (k >= 0 && k < 8)
+            err_prog(e, "Error binding parameter %d: type '%s' is not supported", i, NAMES[k]);
+        else
+            err_prog(e, "Error binding parameter %d: type 'ext %d' is not supported", i, v->u.x.code);
+        return -1;
+    }
     default:
         err_prog(e, "Error binding parameter %d: type '%s' is not supported", i, v->t == V_ARR ? "list" : "dict");
         return -1;

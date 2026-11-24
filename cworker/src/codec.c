@@ -54,6 +54,17 @@ static void seterr(char *err, size_t errlen, const char *fmt, ...) {
     va_end(ap);
 }
 
+static const char *const VALUE_TYPE_TAGS[] = {
+    "datetime", "date", "time", "decimal", "uuid", "timedelta", "map", "tuple",
+};
+
+int value_type_code(const char *tag, size_t n) {
+    for (size_t i = 0; i < sizeof VALUE_TYPE_TAGS / sizeof VALUE_TYPE_TAGS[0]; i++)
+        if (strlen(VALUE_TYPE_TAGS[i]) == n && memcmp(VALUE_TYPE_TAGS[i], tag, n) == 0)
+            return 16 + (int)i;
+    return -1;
+}
+
 const val *map_get(const val *m, const char *key) {
     if (m == NULL || m->t != V_MAP)
         return NULL;
@@ -267,6 +278,23 @@ static int mp_ext(dctx *d, val *out, size_t n) {
         return -1;
     int8_t type = (int8_t)d->p[0];
     d->p++;
+    if (type >= 16) {
+        /* A registered value type: its to_wire() form, packed. Decoded so
+         * that binding can treat it as Python's sqlite3 would. */
+        val *inner = arena_alloc(d->a, sizeof(val));
+        if (inner == NULL) {
+            seterr(d->err, d->errlen, "out of memory");
+            return -1;
+        }
+        dctx sub = {d->p, d->p + n, d->a, d->err, d->errlen, d->depth};
+        if (mp_value(&sub, inner) < 0)
+            return -1;
+        d->p += n;
+        out->t = V_EXT;
+        out->u.x.code = type;
+        out->u.x.inner = inner;
+        return 0;
+    }
     if (type != 1) {
         seterr(d->err, d->errlen, "unsupported MessagePack ext type %d", type);
         return -1;
@@ -630,8 +658,13 @@ static int j_object(dctx *d, val *out) {
             out->u.a.v = v->u.a.v;
             out->u.a.n = 1;
         } else if (val_is_str(k, "$x")) {
-            seterr(d->err, d->errlen, "extension value types ($x) are not supported by this worker");
-            return -1;
+            if (v->t != V_ARR || v->u.a.n != 2 || v->u.a.v[0].t != V_STR) {
+                seterr(d->err, d->errlen, "invalid $x value");
+                return -1;
+            }
+            out->t = V_EXT;
+            out->u.x.code = value_type_code(v->u.a.v[0].u.s.p, v->u.a.v[0].u.s.n);
+            out->u.x.inner = &v->u.a.v[1];
         }
     }
     return 0;
@@ -1072,6 +1105,9 @@ void w_val(wbuf *w, const val *v) {
         w_map(w, (uint32_t)v->u.a.n);
         for (size_t i = 0; i < 2 * v->u.a.n; i++) w_val(w, &v->u.a.v[i]);
         w_end(w);
+        break;
+    case V_EXT:
+        w_nil(w); /* never echoed */
         break;
     }
 }
