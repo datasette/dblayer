@@ -155,3 +155,69 @@ Kept from 2026-11-23 on. Each entry is a credible bug fix or feature change for 
 ### Idea
 
 - CI gives a Linux machine for the worker backend's hard-limit tests (`RLIMIT_AS`, kill), which cannot run on this Mac. Milestone 4's fault tests should be written to run there.
+
+## 2026-11-23: DuckDB backend done (milestone 6)
+
+Subagent-reported; I have not yet re-run the combined suite, because milestone 3 and PostgreSQL are still landing in the same tree.
+
+### Built
+
+- Ten commits, `24f9499` to `ecabbf6`. `dblayer/backends/duckdb.py`, a `DuckDBDialect`, a native `insert_rows` using the appender, and the backend registered in the conformance suite.
+- Reported result with all extras: 1,726 passed, 46 skipped. DuckDB alone: 404 passed, 8 skipped, every skip from a capability flag.
+- `scripts/duckdb_verify.py` holds the experiments behind the table below; `scripts/bench_duckdb_insert.py` holds the insert benchmark.
+
+### Found: the spec's "to verify" items, on DuckDB 2.0.1
+
+| Spec assumption | Observed |
+| --- | --- |
+| One process cannot hold a file read-only and read-write at once | True. Another process cannot open the file in either mode while it is open. Closing the parent connection releases the lock; closing a cursor does not. |
+| Optimistic concurrency; conflicts abort | True. Two transactions updating the same row: the second fails at once. Different rows and appends do not conflict. |
+| DDL is transactional | Yes, including CREATE INDEX, CREATE VIEW and ALTER. |
+| `interrupt()` from another thread | Lands in about 5 ms. On an idle cursor it does nothing. It aborts the open transaction. |
+| `SET memory_limit` / `SET threads` | Work, but apply to the whole instance. Defaults on this Mac were 102 GiB and 18 threads. |
+| Some ALTER forms fail with dependent indexes | Worse than assumed: with any `CREATE INDEX` on the table, every ALTER except ADD COLUMN and SET DEFAULT fails, including RENAME TO. |
+| CREATE statements recoverable | Yes, from the `sql` column of `duckdb_tables()`, `duckdb_indexes()` and `duckdb_views()`. |
+| `$name` parameters | Work, but names are case-insensitive and extra keys are an error. |
+| WAL file name | `<file>.wal`, removed by the checkpoint on close. |
+
+Other facts: no savepoints, no triggers, no partial indexes; table names are case-insensitive; block comments nest; there is no catalog version counter.
+
+- **DuckDB turns COMMIT of an aborted transaction into a silent rollback.** Any error aborts the transaction, even a parse error. Without a guard, a caller who catches an `IntegrityError` and exits the block cleanly loses every write and is told it committed. Verified with minimal scripts; worth reporting to DuckDB.
+- **A time limit or cancel aborts the whole write transaction** on DuckDB, since interrupt does.
+- **`executemany` costs about 0.2 ms a row.** Insert of 10,000 five-column rows: executemany 1,448 ms, multi-row VALUES 200 ms, appender 8.0 ms, Arrow table 4.4 ms.
+- **Interrupt lands 2 to 6 ms after the time limit**, well inside the spec's 100 ms.
+- **Conflict rate with the write queue off** (8 writers, 25 transactions each): 0 of 200 for appends and for updates spread over 1,000 rows; 162 to 166 of 200 for one hot row. No update was lost.
+- **An awake DuckDB instance costs about 5 MB of resident memory.** Sleeping returned only about a quarter of that to the OS, though repeated wake and sleep cycles stay flat.
+- **Without `enable_external_access=false`, arbitrary SQL can read local files** (`read_csv`, `COPY`, `ATTACH`).
+
+### Decision: departures from the spec
+
+- **Read-only is enforced twice:** read calls accept only SELECT, EXPLAIN, PRAGMA and CALL, and each runs inside `BEGIN TRANSACTION READ ONLY` (about 40 µs), which also blocks writes hidden in a SELECT such as `nextval()`.
+- **COMMIT after an earlier error raises** `QueryError` with code `TRANSACTION_ABORTED` and rolls back, so the silent-rollback case above cannot happen through dblayer.
+- **New capability flags:** `statement_errors_abort_transaction` (true on DuckDB) and `replace_keeps_views`.
+- **Native insert uses the appender**, not Arrow: as fast at the default batch size and needs no pyarrow.
+- **Dialect decides per table whether native ALTER is possible** (`native_alter_for`), because trying the ALTER and catching the failure would abort the transaction.
+- **Defaults:** `memory_limit="256MB"`, `threads=2`, external access off, configuration locked after open.
+- **One shared interrupter thread with a heap** enforces time limits, in place of a timer per call.
+- **Portable `integer` maps to BIGINT** on DuckDB, whose INTEGER is 32-bit.
+- **The rewriter refuses parameters that differ only in case** (`:a` with `:A`).
+- **One statement per call:** DuckDB would run `a; b` as two statements, so the backend rejects it.
+
+### Idea: to discuss
+
+- **"A failed statement aborts the transaction" is now true of two of four backends** (PostgreSQL and DuckDB), and DuckDB has no savepoints to paper over it. The portable contract for `tx` may have to be "after any error, the transaction is dead", with SQLite made stricter to match, not the other backends made looser.
+- **A time limit inside a transaction kills the transaction on DuckDB.** Same question: should that be the contract everywhere?
+- **Arrow path for large staged imports** when pyarrow is installed (twice as fast at 100,000 rows).
+- **Appender upsert for `upsert_rows`**, declined for batches with duplicate keys, where it keeps the first row and `executemany` keeps the last.
+- **Queue-off mode needs a "writers wait for row locks" capability** if it is ever more than an experiment: hot-row updates conflict on DuckDB where PostgreSQL waits.
+
+### Unverified or fragile
+
+- Index columns are parsed from `CREATE INDEX` text; `WriteConflict` mapping matches on message text.
+- Appender value conversion was not checked for every type (datetimes, decimals).
+- One timing failure was seen once under load in the SQLite cancel test (138 ms against its 50 ms bound). That bound comes from the spec's fault table and may be too tight for a shared CI machine.
+
+### Upstream suggestions (added to the log above)
+
+- **Datasette, design note:** a DuckDB backend that accepts arbitrary SQL must open with `enable_external_access=false` and `lock_configuration=true`, or SQL can read local files. Verified by the subagent on DuckDB 2.0.1.
+- **DuckDB itself (not sqlite-utils or Datasette):** COMMIT of an aborted transaction reports success while rolling back. Verified with minimal scripts.
