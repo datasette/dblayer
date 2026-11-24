@@ -1,4 +1,7 @@
-"""DuckDB in a worker process that the database owns (``DuckDBWorker``)."""
+"""DuckDB in a worker process that the database owns (``DuckDBWorker``).
+
+The placement and sleep tests also run against the C++ and Rust workers
+(``Worker`` fixture; skipped when their binaries are not built)."""
 
 from __future__ import annotations
 
@@ -16,6 +19,20 @@ from dblayer.backends.duckdb_worker import DuckDBWorker  # noqa: E402
 from dblayer.backends.sqlite_worker import live_worker_pids  # noqa: E402
 
 
+@pytest.fixture(params=["duckdb-worker", "duckdb-cppworker", "duckdb-rsworker"])
+def Worker(request: pytest.FixtureRequest) -> type[DuckDBWorker]:
+    if request.param == "duckdb-worker":
+        return DuckDBWorker
+    if request.param == "duckdb-cppworker":
+        from dblayer.backends import duckdb_cppworker as mod
+    else:
+        from dblayer.backends import duckdb_rsworker as mod  # type: ignore[no-redef]
+    reason = mod.binary_unavailable()
+    if reason:
+        pytest.skip(reason)
+    return mod.DuckDBCppWorker if request.param == "duckdb-cppworker" else mod.DuckDBRustWorker  # type: ignore[attr-defined]
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -25,8 +42,8 @@ def _alive(pid: int) -> bool:
     return True
 
 
-async def test_every_connection_of_a_database_shares_one_process(tmp_path):
-    b = DuckDBWorker(tmp_path / "a.duckdb")
+async def test_every_connection_of_a_database_shares_one_process(tmp_path, Worker):
+    b = Worker(tmp_path / "a.duckdb")
     db = Database(b)
     try:
         await db.execute_write("create table t (i bigint)")
@@ -42,8 +59,8 @@ async def test_every_connection_of_a_database_shares_one_process(tmp_path):
     assert live_worker_pids() == []
 
 
-async def test_concurrent_first_opens_start_one_process(tmp_path):
-    b = DuckDBWorker(tmp_path / "c.duckdb")
+async def test_concurrent_first_opens_start_one_process(tmp_path, Worker):
+    b = Worker(tmp_path / "c.duckdb")
     db = Database(b)
     try:
         await asyncio.gather(db.execute("select 1"), db.execute("select 2"), db.execute_write("create table t (i int)"))
@@ -52,9 +69,9 @@ async def test_concurrent_first_opens_start_one_process(tmp_path):
         await db.close()
 
 
-async def test_process_exits_when_the_database_sleeps(tmp_path):
+async def test_process_exits_when_the_database_sleeps(tmp_path, Worker):
     path = tmp_path / "s.duckdb"
-    b = DuckDBWorker(path)
+    b = Worker(path)
     db = Database(b)
     try:
         await db.execute_write("create table t as select range i from range(1000)")
@@ -80,8 +97,8 @@ async def test_process_exits_when_the_database_sleeps(tmp_path):
     assert live_worker_pids() == []
 
 
-async def test_sleep_then_immediate_wake_waits_for_the_old_process(tmp_path):
-    b = DuckDBWorker(tmp_path / "w.duckdb")
+async def test_sleep_then_immediate_wake_waits_for_the_old_process(tmp_path, Worker):
+    b = Worker(tmp_path / "w.duckdb")
     db = Database(b)
     try:
         await db.execute_write("create table t (i int)")
@@ -126,8 +143,8 @@ def test_options_reach_the_engine(tmp_path):
     assert repr(b).startswith("DuckDBWorker(")
 
 
-async def test_memory_limit_and_threads_apply_inside_the_worker(tmp_path):
-    db = Database(DuckDBWorker(tmp_path / "m.duckdb", memory_limit="64MB", threads=1))
+async def test_memory_limit_and_threads_apply_inside_the_worker(tmp_path, Worker):
+    db = Database(Worker(tmp_path / "m.duckdb", memory_limit="64MB", threads=1))
     try:
         r = await db.execute("select current_setting('memory_limit'), current_setting('threads')")
         limit, threads = r.rows[0]
