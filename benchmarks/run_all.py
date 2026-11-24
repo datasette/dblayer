@@ -151,6 +151,15 @@ TOPICS: list[Topic] = [
     Topic("export", "db.export(): native serialisation against the Python fallback",
           ["benchmarks.export", "--out", "{jsonl}"], quick=["--quick", "--sizes", "10000,100000"],
           module=True, timeout=(900, 5400)),
+    Topic("loadgen", "Multi-tenant SQLite workers under a non-Python load generator (C against Rust)",
+          ["benchmarks/loadgen_bench.py", "--json", "{json}"], quick=["--quick"], timeout=(600, 1800),
+          requires=all_of(cworker, rsworker, lambda: None if (ROOT / "sqlite-rs-worker/target/release/examples/loadgen").exists()
+                          else "load generator not built: cargo build --release --example loadgen "
+                               "--manifest-path sqlite-rs-worker/Cargo.toml")),
+    Topic("rlimit", "Memory limits (RLIMIT_AS, heap limits) for each worker that claims them",
+          ["-m", "pytest", "tests/faults", "tests/worker", "tests/test_sqlite_apsw.py", "tests/test_clickhouse_backend.py",
+           "-k", "rlimit or memory_limit or heap_limit", "-v", "-rA", "-p", "no:cacheprovider", "--timeout=300"],
+          timeout=(900, 1800), pytest=True),
     Topic("scale_wake_query", "Scale backends: wake cost and query cost, separately",
           ["benchmarks/scale_wake_query.py", "--json", "{json}"], quick=["--n", "100"], full=["--n", "1000"],
           timeout=(900, 3600)),
@@ -388,6 +397,10 @@ def measurements(t: Topic, out: Path) -> tuple[list[tuple[str, Any]], str]:
         body.append("```\n" + ("\n\n".join(blocks) or "(no figures printed)") + "\n```")
         if tail:
             body.append("pytest: `" + tail[-1].strip("= ") + "`")
+        outcomes = re.findall(r"^(tests/\S+::\S+) (PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS)", text, re.M)
+        if outcomes and not blocks:
+            ms += [(tid, outcome) for tid, outcome in outcomes]
+            body[0] = "| test | outcome |\n| --- | --- |\n" + "\n".join(f"| `{tid}` | {o} |" for tid, o in outcomes)
         skips = [line for line in text.splitlines() if line.startswith("SKIPPED")]
         if skips:
             body.append("\n".join(f"- {s}" for s in skips))
@@ -407,6 +420,37 @@ def measurements(t: Topic, out: Path) -> tuple[list[tuple[str, Any]], str]:
     return ms, "\n\n".join(body)
 
 
+def write_markdown(out: Path, context: dict[str, Any], label: str, summary: list[dict[str, Any]],
+                   sections: list[str], pending: list[str]) -> None:
+    """results.md, rewritten after every topic so a run cut short keeps what it measured."""
+    m, g, v = context["machine"], context["git"], context["versions"]
+    md = [f"# dblayer benchmarks: {out.name}", ""]
+    if label:
+        md += [f"**{label}**", ""]
+    md += [
+        f"- Mode: {context['run']['mode']}; started {context['run']['started']}",
+        f"- Commit: `{g['commit']}` ({g['describe']}){' (dirty tree)' if g['dirty'] else ''}",
+        f"- Machine: {m.get('cpu_model')}, {m.get('cpu_count')} CPUs, {m.get('memory_gb')} GB, "
+        f"kernel {m.get('kernel')}, {m.get('arch')}"
+        + (f", Fly {m.get('fly_vm_size')} in {m.get('fly_region')}" if m.get("fly_region") else ""),
+        f"- Data filesystem: `{m.get('filesystem')}`; temporary files: `{m.get('tmp_filesystem', '')}`",
+        "- Versions: " + "; ".join(f"{k} {val}" for k, val in v.items() if val),
+        "",
+        "Every topic ran alone, one after another, in this one session. Compare figures within this file only.",
+        "",
+        "| topic | status | seconds | load before | load after | reason |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for r in summary:
+        reason = (r.get("reason") or "").strip().splitlines()
+        md.append(f"| {r['topic']} | {r['status']} | {r.get('seconds', '')} | {r.get('load1_before', '')} | "
+                  f"{r.get('load1_after', '')} | {(reason[-1] if reason else '')[:200].replace('|', '/')} |")
+    for name in pending:
+        md.append(f"| {name} | not run yet | | | | |")
+    md += ["", *("\n".join([s, ""]) for s in sections)]
+    (out / "results.md").write_text("\n".join(md))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--quick", action="store_true", help="a few-minute trial of the mechanism")
@@ -417,11 +461,11 @@ def main() -> None:
     ap.add_argument("--label", default="", help="free text recorded in every line, e.g. 'trial'")
     ap.add_argument("--settle", type=float, default=None,
                     help="before each topic, wait up to this many seconds for the 1-minute load average to fall "
-                         "below --settle-load (default: 0 with --quick, 90 otherwise)")
+                         "below --settle-load (default: 0 with --quick, 60 otherwise)")
     ap.add_argument("--settle-load", type=float, default=0.5)
     a = ap.parse_args()
     if a.settle is None:
-        a.settle = 0 if a.quick else 90
+        a.settle = 0 if a.quick else 60
     if a.list:
         for t in TOPICS:
             print(f"{t.name:18} {t.title}")
@@ -475,31 +519,10 @@ def main() -> None:
             reason = rec["reason"].strip().replace("\n", "\n    ")
             head += f"\n\nReason:\n\n    {reason[-1500:]}"
         sections.append(head + ("\n\n" + body if body else ""))
+        names = [x.name for x in TOPICS if only is None or x.name in only]
+        write_markdown(out, context, a.label, summary, sections, names[names.index(t.name) + 1:])
     jsonl.close()
-    m, g, v = context["machine"], context["git"], context["versions"]
-    md = [f"# dblayer benchmarks: {out.name}", ""]
-    if a.label:
-        md += [f"**{a.label}**", ""]
-    md += [
-        f"- Mode: {context['run']['mode']}; started {context['run']['started']}",
-        f"- Commit: `{g['commit']}` ({g['describe']}){' (dirty tree)' if g['dirty'] else ''}",
-        f"- Machine: {m.get('cpu_model')}, {m.get('cpu_count')} CPUs, {m.get('memory_gb')} GB, "
-        f"kernel {m.get('kernel')}, {m.get('arch')}"
-        + (f", Fly {m.get('fly_vm_size')} in {m.get('fly_region')}" if m.get("fly_region") else ""),
-        f"- Data filesystem: `{m.get('filesystem')}`; temporary files: `{m.get('tmp_filesystem', '')}`",
-        "- Versions: " + "; ".join(f"{k} {val}" for k, val in v.items() if val),
-        "",
-        "Every topic ran alone, one after another, in this one session. Compare figures within this file only.",
-        "",
-        "| topic | status | seconds | load before | load after | reason |",
-        "| --- | --- | --- | --- | --- | --- |",
-    ]
-    for r in summary:
-        reason = (r.get("reason") or "").strip().splitlines()
-        md.append(f"| {r['topic']} | {r['status']} | {r.get('seconds', '')} | {r.get('load1_before', '')} | "
-                  f"{r.get('load1_after', '')} | {(reason[-1] if reason else '')[:200].replace('|', '/')} |")
-    md += ["", *("\n".join([s, ""]) for s in sections)]
-    (out / "results.md").write_text("\n".join(md))
+    write_markdown(out, context, a.label, summary, sections, [])
     print(f"\nwrote {out}/results.md and results.jsonl", flush=True)
     print(f"RESULTS_DIR={out}", flush=True)
 

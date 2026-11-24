@@ -43,6 +43,57 @@ from tests.scale.harness import SCALE_BACKENDS, ScaleBackend  # noqa: E402
 SQL = "select count(*) from t"
 
 
+def _extra_backends() -> list[tuple[ScaleBackend, int | None]]:
+    """Backends not in ``SCALE_BACKENDS`` (the scale test's list), measured
+    here too: the three DuckDB workers and PGlite. The int caps ``--n``
+    (PGlite: 40 MB of disk per database)."""
+    from tests.scale.harness import duckdb_files
+
+    def duck(module: str, cls: str, check: str | None) -> tuple[Any, Any]:
+        def make(p: Path) -> Any:
+            m = __import__(f"dblayer.backends.{module}", fromlist=[cls])
+            return getattr(m, cls)(p)
+
+        def available() -> str | None:
+            try:
+                import duckdb  # noqa: F401
+            except ImportError:
+                return "duckdb is not installed"
+            if check is None:
+                return None
+            m = __import__(f"dblayer.backends.{module}", fromlist=[check])
+            return getattr(m, check)()
+
+        return make, available
+
+    out: list[tuple[ScaleBackend, int | None]] = []
+    for sid, module, cls, check in (
+        ("duckdb-worker", "duckdb_worker", "DuckDBWorker", None),
+        ("duckdb-cppworker", "duckdb_cppworker", "DuckDBCppWorker", "binary_unavailable"),
+        ("duckdb-rsworker", "duckdb_rsworker", "DuckDBRustWorker", "binary_unavailable"),
+    ):
+        make, available = duck(module, cls, check)
+        out.append((ScaleBackend(sid, duckdb_files, make, 0, available=available), None))
+
+    def pglite_available() -> str | None:
+        from dblayer.backends.pglite_worker import unavailable
+
+        return unavailable()
+
+    def pglite_files(root: Path, n: int) -> list[Path]:
+        from tests.scale.test_pglite_scale import pglite_dirs
+
+        return pglite_dirs(root, n)
+
+    def pglite_make(p: Path) -> Any:
+        from dblayer.backends.pglite_worker import PGliteWorker
+
+        return PGliteWorker(p)
+
+    out.append((ScaleBackend("pglite", pglite_files, pglite_make, 0, available=pglite_available), 30))
+    return out
+
+
 def _pct(xs: list[float], q: float) -> float:
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(q * len(xs)))]
@@ -99,9 +150,10 @@ async def measure(spec: ScaleBackend, root: Path, n: int, repeat: int) -> dict[s
 async def main_async(n: int, repeat: int, only: list[str] | None) -> dict[str, Any]:
     results: dict[str, Any] = {}
     with tempfile.TemporaryDirectory(prefix="dblayer-wake-query-") as tmp:
-        for spec in SCALE_BACKENDS:
+        for spec, cap in [(s, None) for s in SCALE_BACKENDS] + _extra_backends():
             if only and spec.id not in only:
                 continue
+            n_here = min(n, cap) if cap else n
             reason = spec.available()
             if reason:
                 results[spec.id] = {"skipped": reason}
@@ -109,7 +161,7 @@ async def main_async(n: int, repeat: int, only: list[str] | None) -> dict[str, A
                 continue
             before = os.getloadavg()[0]
             try:
-                r = await measure(spec, Path(tmp), n, repeat)
+                r = await measure(spec, Path(tmp), n_here, repeat)
             except Exception as e:  # one backend failing must not lose the others
                 r = {"error": f"{type(e).__name__}: {e}"}
             r["load1_before"] = before

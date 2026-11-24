@@ -102,6 +102,7 @@ cd "$SRC" 2>/dev/null || cd /data
 stage build-cworker 900 make -C cworker
 stage build-wasm 900 make -C cworker wasm
 stage build-sqlite-rs-worker 1200 make -C sqlite-rs-worker
+stage build-loadgen 900 cargo build --release --locked --example loadgen --manifest-path sqlite-rs-worker/Cargo.toml
 stage build-duckdb-rs-worker 1200 make -C duckdb-rs-worker
 stage build-duckdb-cpp-worker 900 make -C duckdb-cpp-worker
 stage build-nodeworker 600 npm ci --prefix nodeworker
@@ -112,7 +113,7 @@ if [ "$MODE" != tests-only ]; then
 mode_flag=""; [ "$MODE" = quick ] && mode_flag="--quick"
 status "running benchmarks"
 t0=$(date +%s)
-timeout -k 60 $((MAX - HOLD - 1200)) \
+timeout -k 60 $((MAX - HOLD - 600 - ($(date +%s) - STARTED))) \
     uv run --python "$PY" --all-extras --group demo python benchmarks/run_all.py $mode_flag \
         --out "$OUT/results" --label "$LABEL" 2>&1 | tee "$OUT/logs/run_all.log" | grep -E '^(===|RESULTS_DIR)'
 rc=${PIPESTATUS[0]}; outcome=ok; [ "$rc" != 0 ] && outcome=failed; [ "$rc" = 124 ] && outcome=timeout
