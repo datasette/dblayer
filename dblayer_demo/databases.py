@@ -163,6 +163,19 @@ def sqlite_worker_backend(path: Path) -> Backend:
     return SqliteWorker(path)
 
 
+def _sqlite_apsw(config: DemoConfig) -> Backend:
+    # Experimental: in-process SQLite on apsw (extra "apsw"), with the user's
+    # SQL locked down (untrusted) and cheap reads run without a thread hop.
+    try:
+        from dblayer.backends.sqlite_apsw import SqliteApsw, apsw_unavailable
+    except ImportError as e:
+        raise Unavailable(f"the SqliteApsw backend is not available here ({e})") from e
+    reason = apsw_unavailable()
+    if reason:
+        raise Unavailable(reason)
+    return SqliteApsw(config.data_dir / "sqlite-apsw.db", untrusted=True, inline_reads=True)
+
+
 def _sqlite_cworker(config: DemoConfig) -> Backend:
     # Experimental: the same worker protocol, served by a C program.
     return sqlite_cworker_backend(config.data_dir / "sqlite-cworker.db")
@@ -205,6 +218,7 @@ def duckdb_worker_backend(path: Path, **options: object) -> Backend:
 
 DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite", "SQLite, in process", "SqliteInProcess", _sqlite),
+    DemoSpec("sqlite-apsw", "SQLite, in process (apsw)", "SqliteApsw", _sqlite_apsw),
     DemoSpec("sqlite-worker", "SQLite, in a worker process", "SqliteWorker", _sqlite_worker),
     DemoSpec("sqlite-cworker", "SQLite, in a C worker process", "SqliteCWorker", _sqlite_cworker),
     DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),

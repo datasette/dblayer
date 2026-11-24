@@ -40,6 +40,7 @@ SLOW_SQL = {
 }
 SLOW_SQL["sqlite-worker"] = SLOW_SQL["sqlite"]
 SLOW_SQL["sqlite-cworker"] = SLOW_SQL["sqlite"]
+SLOW_SQL["sqlite-apsw"] = SLOW_SQL["sqlite"]
 SLOW_SQL["duckdb-worker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["postgres-psycopg"] = SLOW_SQL["postgres"]
 
