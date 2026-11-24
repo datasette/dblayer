@@ -1,10 +1,12 @@
 #!/bin/bash
 # Start the benchmark machine:
 #
-#   fly/launch.sh [REF] [quick|full] [tests]
+#   fly/launch.sh [REF] [quick|full|tests-only] [tests]
 #
 # REF: git ref of the public repository to clone (default main). "tests"
-# also runs the test suite after the benchmarks (hang hunting).
+# also runs the test suite after the benchmarks (hang hunting);
+# "tests-only tests" runs only the suite. BENCH_TESTS_TIMEOUT_S caps the
+# suite (default 2400 s).
 #
 # The machine is created with --rm (auto_destroy: destroyed when it stops)
 # and --restart no (never restarted, so a stopped machine costs nothing),
@@ -28,5 +30,6 @@ fly machine run "$IMAGE" \
     --env BENCH_REF="$REF" --env BENCH_MODE="$MODE" --env BENCH_RUN_TESTS="$TESTS" \
     --env BENCH_LABEL="$LABEL" --env MAX_LIFETIME_S="$MAX_LIFETIME_S" --env HOLD_S="$HOLD_S" \
     --env REPO_URL="$REPO_URL" --env FLY_VM_SIZE="$FLY_VM_SIZE" \
+    --env BENCH_TESTS_TIMEOUT_S="${BENCH_TESTS_TIMEOUT_S:-2400}" \
     --detach
 fly machines list -a "$FLY_APP"

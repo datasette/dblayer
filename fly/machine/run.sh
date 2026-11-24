@@ -8,9 +8,11 @@
 #   3. builds every backend, each step with its own timeout; a failed build
 #      is recorded and the run carries on (the runner then records the
 #      backend as skipped, with the reason);
-#   4. runs benchmarks/run_all.py ($BENCH_MODE: quick or full);
+#   4. runs benchmarks/run_all.py ($BENCH_MODE: quick or full; "tests-only"
+#      skips it);
 #   5. optionally ($BENCH_RUN_TESTS=1) runs the test suite with per-test
-#      timeouts and stack dumps, to catch a hang;
+#      timeouts and stack dumps, to catch a hang, for at most
+#      $BENCH_TESTS_TIMEOUT_S (default 2400) seconds;
 #   6. packs everything into /data/out/results.tar.gz, prints results.md and
 #      the tarball (base64) to the log between marker lines, then waits up
 #      to $HOLD_S seconds for fly/fetch.sh to copy it and touch
@@ -106,6 +108,7 @@ stage build-nodeworker 600 npm ci --prefix nodeworker
 stage build-pglite 600 npm ci --prefix pglite-worker
 stage python-env 900 uv sync --python "$PY" --all-extras --group demo
 
+if [ "$MODE" != tests-only ]; then
 mode_flag=""; [ "$MODE" = quick ] && mode_flag="--quick"
 status "running benchmarks"
 t0=$(date +%s)
@@ -115,11 +118,13 @@ timeout -k 60 $((MAX - HOLD - 1200)) \
 rc=${PIPESTATUS[0]}; outcome=ok; [ "$rc" != 0 ] && outcome=failed; [ "$rc" = 124 ] && outcome=timeout
 printf '{"stage": "benchmarks", "status": "%s", "returncode": %d, "seconds": %d}\n' \
     "$outcome" "$rc" $(( $(date +%s) - t0 )) >> "$OUT/stages.jsonl"
+fi
 
 if [ "$RUN_TESTS" = 1 ]; then
     # What is left of the lifetime, keeping the hold and a margin: never past it.
     left=$(( MAX - HOLD - 600 - ($(date +%s) - STARTED) ))
-    [ $left -gt 2400 ] && left=2400
+    cap="${BENCH_TESTS_TIMEOUT_S:-2400}"
+    [ $left -gt "$cap" ] && left=$cap
     if [ $left -gt 300 ]; then
         export DBLAYER_HANG_DUMP_S=240 DBLAYER_HANG_DUMP_FILE="$OUT/hang-dump.txt"
         # Memory every 5 s while the suite runs: "time used_mb available_mb swap_used_mb".
