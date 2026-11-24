@@ -1583,3 +1583,9 @@ One-row read and update, medians:
 - **Fix the global lock in the C worker before judging C against Rust on throughput,** then re-run the load generator. The Rust port may simply hold the lock for less time.
 - **A repeat mode in the runner** that interleaves two sessions, to put error bars on these figures.
 - **Inline reads matter more on Linux than the Mac numbers suggested:** five times on a one-row read. Porting them to the default SQLite backend is probably the cheapest large win available.
+
+### Built: the findings report (2026-11-24)
+
+`dblayer-findings-report.md`, written by me at Simon's request after he stopped the CI repair subagent. It covers the spec's deliverable: answers to the six questions, the goals, the capability matrix read from the code, the Linux benchmark tables, a verdict on each of the sixteen backends, the bugs and hazards found, the recommended API for Datasette, a migration map from Datasette's current `Database` methods, and what was not done.
+
+State of things it records honestly: no green CI run exists for the final code (the last completed run passed 10 of 15 jobs, fixes were pushed, and the repair was stopped before confirmation; the GitHub API was rate-limited again when I tried to check); the code has not had a line-by-line review; the benchmark is a single run.
