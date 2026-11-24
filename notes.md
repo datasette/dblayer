@@ -1096,3 +1096,54 @@ Python server CPU for exporting 1,000,000 wide rows:
 - **Datasette JSON: NaN would be emitted as bare `NaN`, which is invalid JSON.** `remove_infinites` handles infinities only. SQLite stores NaN as NULL, so this bites only with other backends or plugins. Verified by reading the code.
 - **Datasette JSON: stream rows instead of one `json.dumps`** if the row limit is ever raised. Measured in this project's harness, not in Datasette.
 - **psycopg (not Datasette or sqlite-utils):** a batched `Copy.read`. The prototype measured a 4 times gain.
+
+## 2026-11-24: ClickHouse backend, final report
+
+Subagent-reported. Measurements at load 19 to 25; provisional. CI not confirmed. The full suite was not rerun after the last fix. The interim section above covers the two security holes.
+
+### Built
+
+- `dblayer/backends/clickhouse.py` on chDB 4.5.1 (ClickHouse 26.11 embedded in-process), optional extra `clickhouse`, Python 3.12 to 3.14 only. Registered as `clickhouse`: 485 passed, 38 skipped, every skip by a capability flag.
+- New capability flags, all defaulting to true so no other backend changed: `transactions`, `unique_constraints`, `foreign_keys`, `distinct_blob_type`, `duplicate_column_names`.
+- `core/emulated_keys.py`: primary-key checks done by dblayer, since the engine enforces none.
+- A featured demo database, a benchmark (`benchmarks/clickhouse.py`) and a README section. Four commits, `557f09f` to `b5f035d`.
+
+### Found
+
+| Measure | ClickHouse | DuckDB | SQLite |
+| --- | --- | --- | --- |
+| Group by, 10M rows | 48 ms | 24 ms | 3,165 ms |
+| Join and group by, 10M rows | 82 ms | 64 ms | 2,962 ms |
+| Point read, median | 4.0 ms | 0.9 to 1.5 ms | 0.6 to 0.8 ms |
+| Insert 1M rows | 6.4 to 8.1 s | 1.07 s | 1.35 s |
+| Disk, 10M rows | 156 MB | 107 MB | 238 MB |
+
+- **The interface survived an engine with no transactions,** but only by redefining what the calls mean. `db.transaction()` just holds the write slot; every statement applies as it runs; rollback keeps the writes and logs a warning; `batch()` is not atomic. Staged replace is still atomic (`EXCHANGE TABLES`). Upsert is a delete followed by an insert, so a reader can see the gap and a failure in between loses rows.
+- **Key checks are what make ClickHouse inserts slow** (6 to 8 s per million rows), and they are exact only against other dblayer writers; a plain SQL INSERT can add duplicates.
+- **ClickHouse is 4 times slower than SQLite on a point read and about 60 times faster on a 10M-row aggregate.** DuckDB was faster than ClickHouse on every analytical query here, on 2 threads.
+- **Databases in one process are not isolated from each other.** chDB allows one embedded server and one data directory per process, so every dblayer database is a ClickHouse database inside it. A read-only connection can read every other database, and `system.processes` shows other connections' SQL text.
+- **Sleep does not return memory:** 329 MB resident after a 1M-row insert and aggregate, and still 329 MB after sleep. `import chdb` alone takes 1.36 s and adds about 140 MB.
+- **`max_memory_usage` is per query,** not per database or process.
+- **Cancellation is by `KILL QUERY`, repeated until the statement returns.** A single long step only notices when it finishes: `select sleep(2)` with a 100 ms limit returned after 1.35 s.
+- **Engine-native export is parse-equal, not byte-identical:** ClickHouse quotes every CSV string and writes `2` for `2.0`. At 1M rows it is 0.12 s against 1.02 s through Python.
+- Dialect traps: ClickHouse's `Date` covers only 1970 to 2149; an unmatched LEFT JOIN side is 0, not NULL, unless `join_use_nulls=1`; joined columns are named `b.id`.
+- A task cancelled while its connection was opening leaked the connection, so the shared server never stopped. Fixed.
+- A remaining, unverified gap: an escaped function name inside `INSERT ... VALUES` data on a write connection is not seen by the second parser check.
+
+### Decision
+
+- Host access is denied by an allowlist of safe table functions and engines, kept in step with the installed ClickHouse by a test that compares it with `system.table_functions` and `system.table_engines`, so a new version's additions fail a test.
+- Engine-native export stays opt-in, because it does not meet byte parity.
+
+### Idea: what the interface would need to make ClickHouse first-class
+
+- **A declared atomicity and isolation level per operation,** replacing the single `transactions` flag: staged replace is atomic here, upsert is not.
+- **Statement checks by the engine's own parser,** never a shared SQL scanner.
+- **A "shared server" capability** saying databases in one process are not isolated from each other.
+- **An "analytical engine" hint** so callers avoid pages built from many point reads.
+- **A native batch-insert hook.**
+
+### Upstream suggestions
+
+- None credible for sqlite-utils or Datasette. The general lesson (filtering SQL needs the engine's own lexer) applies to any regex-based read-only check; not tested against Datasette.
+- **chDB (not Datasette or sqlite-utils):** `file()` is not stopped by `readonly=1` and is not confined by `user_files_path`. Reproduced on 4.5.1.
