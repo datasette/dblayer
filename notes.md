@@ -1519,3 +1519,67 @@ A slip of mine on the way: running `uv run python` without `--python 3.14` in th
 Subagent-reported from the full benchmark run's memory-limit topic. Under a 128 MB `RLIMIT_AS`, the Rust multi-tenant worker aborts at open instead of reporting `ResourceLimitExceeded`: Rust's standard library maps an alternate signal stack for every new thread, that mapping fails under the limit, and the crate is built to abort on panic. The C pool passes the same test. In a multi-tenant process an abort takes down every database on it. The other 42 memory-limit tests passed. The fix has been passed to the CI repair subagent.
 
 This is a count against Rust in the C against Rust comparison, and one that could not have been seen on macOS, where `RLIMIT_AS` is not enforced. It also shows why "abort on panic" needs care in a process that serves many tenants.
+
+## 2026-11-24: the full benchmark run on Fly.io
+
+Subagent-reported; I watched the run's progress from the machine and verified the teardown myself. Commit `5d8e474`, full mode, on a `performance-8x` machine: 8 dedicated AMD EPYC CPUs, 15.6 GB, kernel 6.12, ext4 volume, Debian 13, PostgreSQL 18.7 in the same machine. Load 0.5 to 0.8 before each topic. 64 minutes of benchmarks; 13 of 14 topics clean. Results are in `benchmarks/results/2026-11-24T1959Z-5d8e474779/`. These replace the provisional Mac figures above. One caution carries over: each topic is its own session, so compare within a table, not across tables.
+
+### Built
+
+- `fly/`: Dockerfile, machine config and scripts. `fly/bench.sh <ref> full` creates the app, volume and machine, builds every backend from a fresh clone at that ref, runs the benchmarks, fetches results and tears everything down. No secrets; the machine clones the public repo.
+- `benchmarks/run_all.py`: one runner over every benchmark script, each in its own subprocess with a timeout, recording machine, commit, tool versions and load; results rewritten after every topic.
+- Safeguards: a 3-hour maximum lifetime inside the machine with a power-off watchdog behind it, auto-destroy, no restart, idempotent teardown.
+- Cost: seven machines, one at a time, about 3.1 machine-hours, roughly $1.20 by the subagent's estimate (about $0.36 an hour; the `sjc` price was not verified). Everything is destroyed: I confirmed the app is gone and the org lists 19 apps, none of them ours.
+
+### Found
+
+One-row read and update, medians:
+
+| Backend | Read | Update |
+| --- | --- | --- |
+| In-process SQLite | 220 µs | 1,583 µs |
+| apsw | 246 µs | 1,478 µs |
+| apsw, inline reads | 44 µs | 1,382 µs |
+| C worker | 119 µs | 1,016 µs |
+| Multi-tenant C worker | 131 µs | 1,094 µs |
+| Python worker | 466 µs | 1,690 µs |
+| Node.js worker | 444 µs | 1,812 µs |
+
+- **The thread hop costs more on Linux than on the Mac.** In-process SQLite reads one row in 220 µs; inline reads take 44 µs, a factor of five; and the C worker in another process takes 119 µs, nearly twice as fast as in-process.
+- **Wake and warm query, separately** (1,000 databases, one session): in-process SQLite 0.42 / 0.21 ms; WebAssembly 1.5 / 0.34; C worker 1.75 / 0.14; multi-tenant C 2.15 / 0.18; multi-tenant Rust 2.65 / 0.19; DuckDB 22.9 / 1.27; DuckDB Rust worker 51.7 / 1.37; DuckDB C++ worker 55.8 / 1.39; Python worker 130 / 0.48; Node.js worker 174 / 1.03; Python DuckDB worker 230 / 1.71. PGlite wakes in 422 ms.
+- **Without Python in the way, the Rust multi-tenant worker scales and the C one collapses.** Requests per second from the non-Python load generator, with worker CPU per request:
+
+| Clients | C worker | Rust worker |
+| --- | --- | --- |
+| 1 | 24,700 (29 µs) | 24,800 (30 µs) |
+| 4 | 58,000 (44 µs) | 84,000 (33 µs) |
+| 16 | 65,000 (70 µs) | 104,000 (50 µs) |
+| 64 | 35,000 (93 µs) | 113,000 (55 µs) |
+
+  The C worker falls back at 64 clients while using only 3.2 cores: lock contention. This differs from the Mac, where the two looked level, and it changes the C against Rust picture on the platform that matters.
+- **Through Python the parent is the limit:** in-process 3,500 requests/s, C worker 5,900 to 8,300, multi-tenant C 4,900 to 10,800.
+- **Scale test:** multi-tenant Rust 6,011 requests/s, multi-tenant C 5,727, C worker 951, WebAssembly 592, DuckDB 236, Python worker 63, Node.js worker 47, all at 1,000 databases. In-process SQLite ran at 10,000 databases and got 1,963, so it is not comparable with the others in this table.
+- **Native export of 1M wide rows as CSV, server CPU:** C worker 0.47 s native against 7.15 s through Python (15 times), and 0.17 s with socket handoff; DuckDB 2.6 s against 11.0 s; PostgreSQL 2.7 s against 9.1 s.
+- **In-process DuckDB gives back about 70% of its memory on sleep on Linux** (476 MB peak to 143 MB for 150 databases), far more than appeared on the Mac. The allocator settings and `malloc_trim` each bring it a little lower, to about 120 MB.
+- **Memory per awake database:** multi-tenant C 171 KB; Node.js worker 332 MB; PGlite 504 MB (1.93 GB for 20). Forty DuckDB worker processes peak at 3.7 GB in Python, 2.9 GB in Rust and 2.85 GB in C++; the pool design peaks at 1.08 GB.
+- **PostgreSQL drivers are level on a quiet machine:** one-row read 139 µs on asyncpg, 151 µs on psycopg, 134 µs on psycopg with prepared statements. The large gap seen on the loaded Mac was noise. The case for psycopg rests on correctness and features, not speed.
+- **Linux commits are cheap:** one-row updates are 1 to 1.8 ms on every backend, including the Node.js worker (19 to 20 ms on the Mac).
+- **Worker start-up:** C worker 1.7 ms in total; Python worker 139 ms; Node.js worker 162 ms. Python and Node wakes are slower here than on the Mac (60 to 85 ms); cause not found.
+- **ClickHouse point read 7.0 ms,** against DuckDB 2.4 ms and SQLite 0.20 ms.
+- **Memory limits:** 42 tests passed, 5 skipped, 1 failed: the Rust multi-tenant worker's abort under `RLIMIT_AS`, recorded above.
+- **Build races:** `make -j` breaks two Makefiles (the C worker unzips the SQLite source twice; the C++ DuckDB worker compiles before its header is fetched).
+- **Python start-up triples when the standard library's `.pyc` files are missing and cannot be written,** which is the case in any image where the runtime user differs from the installing user. It inflated the first trial's Python worker start to 620 ms.
+- The partial test-suite run on the same machine reached 56% with 5,704 passed and none failed before it was stopped for the benchmark.
+
+### Unverified or fragile
+
+- PGlite is missing from the wake table and the scale test because of two bugs in the new runner, fixed after the run and not re-run on Linux.
+- `duckdb_memory` marked some rows provisional because its own parallel wakes raised the load.
+- One ClickHouse descriptor-leak test failed once on Linux and passed later.
+- A single run: no measure of run-to-run variance yet.
+
+### Idea: to discuss
+
+- **Fix the global lock in the C worker before judging C against Rust on throughput,** then re-run the load generator. The Rust port may simply hold the lock for less time.
+- **A repeat mode in the runner** that interleaves two sessions, to put error bars on these figures.
+- **Inline reads matter more on Linux than the Mac numbers suggested:** five times on a one-row read. Porting them to the default SQLite backend is probably the cheapest large win available.
