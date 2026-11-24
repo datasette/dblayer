@@ -228,10 +228,12 @@ async def test_time_limits_use_statement_timeout_and_do_not_leak(db):
 
     from dblayer import QueryInterrupted
 
+    from ..helpers import check_latency
+
     start = time.monotonic()
     with pytest.raises(QueryInterrupted):
         await db.execute("select pg_sleep(2)", time_limit_ms=100)
-    assert time.monotonic() - start < 1
+    check_latency("PostgreSQL time limit -> interrupted (overshoot)", time.monotonic() - start - 0.1, 0.9)
     assert (await db.execute("show statement_timeout")).rows == [("0",)]
     async with db.transaction() as tx:
         with pytest.raises(QueryInterrupted):
@@ -422,6 +424,7 @@ async def test_server_rolls_back_a_transaction_whose_client_is_suspended(make_pg
     await db.execute_write("create table t (id integer primary key, n integer)")
     await db.execute_write("insert into t values (1, 0)")
     released_after: list[float] = []
+    released = threading.Event()
 
     async def other_client(start: float) -> None:
         conn = await pg.connect()
@@ -430,6 +433,7 @@ async def test_server_rolls_back_a_transaction_whose_client_is_suspended(make_pg
             await conn.execute("set lock_timeout = '3s'")
             await conn.execute("update t set n = 100 where id = 1")
             released_after.append(time.monotonic() - start)
+            released.set()
         finally:
             await conn.close()
 
@@ -439,7 +443,9 @@ async def test_server_rolls_back_a_transaction_whose_client_is_suspended(make_pg
             start = time.monotonic()
             thread = threading.Thread(target=lambda: pg.run_sync(other_client(start)))
             thread.start()
-            time.sleep(1.5)  # the whole client is suspended
+            # The whole client is suspended (the event loop blocks) until
+            # the other client gets the row lock, or for 10 s at most.
+            released.wait(10)
             frozen_for = time.monotonic() - start
             thread.join(5)
             await tx.execute("select 1")

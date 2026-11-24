@@ -13,6 +13,8 @@ from dblayer import (
     Results,
 )
 
+from ..helpers import check_latency
+
 UNBOUNDED = (
     "with recursive c(x) as (select 1 union all select x + 1 from c) "
     "select count(*) from c"
@@ -160,7 +162,7 @@ async def test_time_limit_interrupts(db):
     start = time.perf_counter()
     with pytest.raises(QueryInterrupted):
         await db.execute(UNBOUNDED, time_limit_ms=50)
-    assert time.perf_counter() - start < 2
+    check_latency("time limit -> interrupted (overshoot)", time.perf_counter() - start - 0.05, 1.95)
 
 
 async def test_time_limit_default_from_database(make_db):
