@@ -52,9 +52,11 @@ from __future__ import annotations
 
 import contextlib
 import heapq
+import importlib.util
 import itertools
 import os
 import re
+import sys
 import threading
 import time
 from collections import Counter
@@ -145,11 +147,10 @@ class DuckDBDialect(Dialect):
         return "'" + "".join(f"\\x{b:02x}" for b in value) + "'::BLOB"
 
     def map_exception(self, exc: BaseException) -> DblayerError | None:
-        try:
-            import duckdb
-        except ImportError:  # pragma: no cover
-            return None
-        if not isinstance(exc, duckdb.Error):
+        # A process that never imported duckdb (the parent of a DuckDB
+        # worker, which uses this dialect) cannot hold a duckdb error.
+        duckdb = sys.modules.get("duckdb")
+        if duckdb is None or not isinstance(exc, duckdb.Error):
             return None
         message = str(exc)
         code = type(exc).__name__.removesuffix("Exception") or type(exc).__name__
@@ -301,7 +302,11 @@ class DuckDB:
         executor: Executor | None = None,
         max_write_connections: int | None = None,
     ) -> None:
-        import duckdb  # noqa: F401  (fail early when the extra is missing)
+        # Fail early when the extra is missing, without importing duckdb:
+        # a DuckDB worker's parent builds one of these only for its dialect
+        # and capabilities, and should not pay for the library.
+        if importlib.util.find_spec("duckdb") is None:
+            raise ImportError("DuckDB backend needs the duckdb package (the 'duckdb' extra)")
 
         self.path = Path(path).absolute()
         self.max_write_connections = max_write_connections
