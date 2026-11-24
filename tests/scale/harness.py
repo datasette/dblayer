@@ -40,6 +40,12 @@ class ScaleBackend:
     """Bytes per database a wake/sleep cycle may leave behind; ``None``
     reports the figure without asserting it."""
     available: Callable[[], str | None] = lambda: None
+    open_at_once: int = 1_000
+    """How many databases ``test_threads`` holds open at once with no
+    registry to cap them. A backend with one OS process per database holds
+    that many processes, so fewer: 1,000 Python workers measured 38 GB of
+    summed RSS on macOS and 1,000 Node workers 62 GB, more than a 16 GB CI
+    runner has (the runner thrashed, then hung or was killed)."""
 
 
 def sqlite_files(root: Path, n: int) -> list[Path]:
@@ -176,6 +182,7 @@ SCALE_BACKENDS: list[ScaleBackend] = [
     # asserted.
     ScaleBackend(
         "sqlite-worker", sqlite_files, _worker_backend, 1_000, requests=2_000, growth_limit=None,
+        open_at_once=100,
     ),
     # The C worker starts in a few ms instead of ~80, so the same 1,000
     # databases take a longer load. Growth reported, as for the Python one.
@@ -187,7 +194,7 @@ SCALE_BACKENDS: list[ScaleBackend] = [
     # Python worker), so the Python worker's shorter load.
     ScaleBackend(
         "sqlite-nodeworker", sqlite_files, _nodeworker_backend, 1_000, requests=2_000, growth_limit=None,
-        available=_nodeworker_available,
+        available=_nodeworker_available, open_at_once=100,
     ),
     # The multi-tenant C pool: two processes for all 1,000 databases, so a
     # wake is one open round trip on a running process; fast enough that a
