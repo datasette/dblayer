@@ -173,6 +173,37 @@ the `node-worker` fault tests) skip until the packages are installed;
 including what a time limit can stop inside the process, are in
 [docs/worker-protocol.md](docs/worker-protocol.md#node-worker-nodeworker-sqlite-wasm).
 
+### PostgreSQL in WebAssembly: PGlite (experimental)
+
+`PGliteWorker(path)` (`dblayer/backends/pglite_worker.py`) is a real
+PostgreSQL (PGlite 0.5.17, PostgreSQL 18.7) with no server: `path` is a data
+directory, opened by a Node.js worker process (`pglite-worker/`) when the
+database wakes and released when it sleeps. Install its pinned npm package
+once:
+
+```bash
+npm ci --prefix pglite-worker
+```
+
+PGlite is one PostgreSQL backend in single-user mode, so a database has one
+session: its pooled connections are names for it, and while one has a
+transaction open the others wait (capability `concurrent_sessions` false; a
+statement through `db` from the task holding the transaction raises
+`NestedWriteError`). Nothing can stop a running query (it blocks Node's only
+thread; `statement_timeout` never fires), so a time limit or cancel kills
+the process: the open transaction is lost, requests queued behind it run on
+the next process, and WAL recovery runs on the next open. An `flock` on
+`path/dblayer.lock` keeps a second process out. Pass `template=` (a data
+directory to copy) to create new databases in about 0.3 s instead of 1 s of
+initdb. An awake database costs about 115 MB (more after big queries;
+WebAssembly memory never shrinks), an empty one 40 MB of disk.
+
+Its tests (`pglite`, `tests/worker/test_pglite_worker.py`, the `pglite` fault
+and scale tests) skip until the packages are installed; `DBLAYER_NODE` and
+`DBLAYER_PGLITE_WORKER` point at another `node` or script.
+`benchmarks/pglite_bench.py` compares it with the psycopg backend and the
+SQLite Node and C workers; the module docstring has the details.
+
 ## Demo app
 
 `dblayer_demo/` is a small Datasette-like Starlette app built only on
