@@ -113,7 +113,16 @@ async def test_differential_against_in_process(tmp_path, codec):
             "select percentile(value, 50), median(value) from json_each('[1, 2, 3, 10]')",
             "select json_object('a', 1.5, 'b', x'00'), jsonb('[1]'), unhex('ff00'), format('%q', 'it''s')",
         ):
-            assert await _run(lc, sql, None, {"max_rows": None}) == await _run(rc, sql, None, {"max_rows": None}), sql
+            a = await _run(lc, sql, None, {"max_rows": None})
+            b = await _run(rc, sql, None, {"max_rows": None})
+            if "percentile" in sql and a[:3] == ("error", "QueryError", "no such function: percentile"):
+                # The in-process reference is the interpreter's SQLite: on
+                # Ubuntu's Python that is the system libsqlite3, built
+                # without SQLITE_ENABLE_PERCENTILE. Check the wasm build's
+                # own answer instead (the median of 1, 2, 3, 10).
+                assert b[1] == [(2.5, 2.5)], b
+                continue
+            assert a == b, sql
     finally:
         await lc.close()
         await rc.close()
