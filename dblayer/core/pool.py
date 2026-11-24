@@ -175,11 +175,13 @@ class Pool:
         await self._db._ensure_awake()
         if self._closed:
             raise DatabaseClosed("database is closed")
+        await self.hub.reserve()  # global cap: may close an idle connection
         self.open += 1
         try:
             conn = await self._backend.open(write=write)
         except BaseException:
             self.open -= 1
+            self.hub.release()
             raise
         self._db._opened_total += 1
         return _Entry(conn, write, self._generation, self)
@@ -199,7 +201,7 @@ class Pool:
                     reuse = False
         finally:
             try:
-                if reuse and self._reusable(entry):
+                if reuse and self._reusable(entry) and not self.hub.wants_connection_closed():
                     entry.last_used = time.monotonic()
                     self._check_in(entry)
                 else:
@@ -276,12 +278,17 @@ class Pool:
         self._closed = True
         await self.close_idle()
 
-    async def _close_entry(self, entry: _Entry) -> None:
+    async def _close_entry(self, entry: _Entry, *, release: bool = True) -> None:
+        """Close a connection this pool no longer lists (not idle, not in
+        use). ``release=False`` keeps its place under the hub's cap for the
+        caller (eviction hands it to the one who needed it)."""
         try:
             await entry.conn.close()
         except Exception:
             pass
         finally:
+            if release:
+                self.hub.release()
             self.open -= 1
             self._db._closed_total += 1
             self._check_empty()

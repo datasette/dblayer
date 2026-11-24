@@ -235,6 +235,7 @@ class Database(IntrospectionMixin, OperationsMixin):
                 except Exception:
                     pass
                 self._closed_total += 1
+                old.hub.release()
             if was_awake and (self._closed or self.capabilities.sleep_releases_everything):
                 try:
                     await self._backend.close()

@@ -22,7 +22,9 @@ from .executor import DEFAULT_MAX_THREADS
 from .hub import DEFAULT_IDLE_TIMEOUT, Hub
 from .database import Database
 
-__all__ = ["Registry", "Resolver"]
+__all__ = ["Registry", "Resolver", "DEFAULT_MAX_OPEN_CONNECTIONS"]
+
+DEFAULT_MAX_OPEN_CONNECTIONS = 200
 
 type Resolver = Callable[[str], Awaitable[Database | None]]
 
@@ -39,6 +41,7 @@ class Registry:
     def __init__(
         self,
         *,
+        max_open_connections: int | None = DEFAULT_MAX_OPEN_CONNECTIONS,
         max_threads: int = DEFAULT_MAX_THREADS,
         idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT,
         resolver: Resolver | None = None,
@@ -52,7 +55,7 @@ class Registry:
         """The shared thread pool. Threads start on demand, up to
         ``max_threads``, and are reused; databases added here run their
         blocking calls on it (see ``UsesExecutor``)."""
-        self._hub = Hub(idle_timeout=idle_timeout)
+        self._hub = Hub(idle_timeout=idle_timeout, max_open_connections=max_open_connections)
         self.resolver = resolver
         self._dbs: dict[str, Database] = {}
         self._resolving: dict[str, asyncio.Future[Database | None]] = {}
@@ -64,6 +67,16 @@ class Registry:
     @property
     def idle_timeout(self) -> float | None:
         return self._hub.idle_timeout
+
+    @property
+    def max_open_connections(self) -> int | None:
+        """Cap on connections open across every database here. At the cap
+        the least recently used idle connection anywhere is closed; if none
+        is idle, the caller waits. A task that holds one connection and
+        waits for another can deadlock when every place is held that way, so
+        the cap should exceed the number of concurrent requests that hold a
+        connection while asking for a second."""
+        return self._hub.max_open_connections
 
     # -- membership ----------------------------------------------------------
 
