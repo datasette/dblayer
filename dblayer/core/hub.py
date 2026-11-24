@@ -34,14 +34,18 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import OrderedDict, deque
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from .common import spawn
 
 if TYPE_CHECKING:
+    from .database import Database
     from .pool import _Entry
 
-__all__ = ["Hub", "default_hub", "DEFAULT_IDLE_TIMEOUT"]
+__all__ = ["Hub", "default_hub", "DEFAULT_IDLE_TIMEOUT", "LifecycleHook"]
+
+type LifecycleHook = Callable[["Database"], Awaitable[object]]
 
 DEFAULT_IDLE_TIMEOUT = 30.0
 
@@ -64,6 +68,16 @@ class Hub:
         self._waiters: deque[asyncio.Future[None]] = deque()
         self.cap_evictions = 0
         """Idle connections closed to make room under the cap."""
+        self.on_wake: LifecycleHook | None = None
+        """Async ``(db) -> None``, run before a database's first connection
+        opens (under its wake lock)."""
+        self.on_sleep: LifecycleHook | None = None
+        """Async ``(db) -> None``, run after a database's last connection
+        (and, where allowed, its backend) has closed."""
+        self.wakes = 0
+        self.sleeps = 0
+        self.awake = 0
+        """Databases awake now."""
         """Default for databases that do not set their own."""
         self._idle: dict[float | None, OrderedDict[_Entry, None]] = {}
         self._timer: asyncio.TimerHandle | None = None

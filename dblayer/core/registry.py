@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from ..backends.base import UsesExecutor
 from ..errors import UnknownDatabase
 from .executor import DEFAULT_MAX_THREADS
-from .hub import DEFAULT_IDLE_TIMEOUT, Hub
+from .hub import DEFAULT_IDLE_TIMEOUT, Hub, LifecycleHook
 from .database import Database
 
 __all__ = ["Registry", "Resolver", "DEFAULT_MAX_OPEN_CONNECTIONS"]
@@ -31,6 +31,17 @@ type Resolver = Callable[[str], Awaitable[Database | None]]
 
 class Registry:
     """Databases by name, with lazy lookup through ``resolver``.
+
+    Lifecycle hooks, each ``async (db) -> None``:
+
+    * ``on_wake`` runs before an asleep database opens its first
+      connection. Concurrent first requests trigger it once (the wake
+      lock); the others wait, and share its exception if it raises (the
+      next request tries again).
+    * ``on_sleep`` runs after the last connection, and where the backend
+      allows the backend itself, has closed (idle timeout, cap eviction,
+      ``db.sleep()``, ``db.close()``). A wake waits for it to finish.
+      Exceptions are logged to the ``dblayer`` logger, not raised.
 
     ``resolver`` (async, ``name -> Database | None``) is called by ``get()``
     for a name the registry does not know; a returned database is added
@@ -45,6 +56,8 @@ class Registry:
         max_threads: int = DEFAULT_MAX_THREADS,
         idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT,
         resolver: Resolver | None = None,
+        on_wake: LifecycleHook | None = None,
+        on_sleep: LifecycleHook | None = None,
     ) -> None:
         if max_threads < 1:
             raise ValueError("max_threads must be at least 1")
@@ -56,6 +69,8 @@ class Registry:
         ``max_threads``, and are reused; databases added here run their
         blocking calls on it (see ``UsesExecutor``)."""
         self._hub = Hub(idle_timeout=idle_timeout, max_open_connections=max_open_connections)
+        self._hub.on_wake = on_wake
+        self._hub.on_sleep = on_sleep
         self.resolver = resolver
         self._dbs: dict[str, Database] = {}
         self._resolving: dict[str, asyncio.Future[Database | None]] = {}
@@ -67,6 +82,22 @@ class Registry:
     @property
     def idle_timeout(self) -> float | None:
         return self._hub.idle_timeout
+
+    @property
+    def on_wake(self) -> LifecycleHook | None:
+        return self._hub.on_wake
+
+    @on_wake.setter
+    def on_wake(self, hook: LifecycleHook | None) -> None:
+        self._hub.on_wake = hook
+
+    @property
+    def on_sleep(self) -> LifecycleHook | None:
+        return self._hub.on_sleep
+
+    @on_sleep.setter
+    def on_sleep(self, hook: LifecycleHook | None) -> None:
+        self._hub.on_sleep = hook
 
     @property
     def max_open_connections(self) -> int | None:

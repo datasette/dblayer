@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping, Sequence
@@ -25,6 +26,8 @@ from .transactions import Transaction, active_transaction
 __all__ = ["Database", "RowStream", "DEFAULT", "map_errors"]
 
 DEFAULT_DEADLINE_MS = 5000
+
+logger = logging.getLogger("dblayer")
 
 # Old private names, kept for modules that imported them.
 _Opt = Opt
@@ -236,11 +239,8 @@ class Database(IntrospectionMixin, OperationsMixin):
                     pass
                 self._closed_total += 1
                 old.hub.release()
-            if was_awake and (self._closed or self.capabilities.sleep_releases_everything):
-                try:
-                    await self._backend.close()
-                except Exception:
-                    pass
+            if was_awake:
+                await self._release_everything(old.hub)
         finally:
             if self._transition is transition:
                 self._transition = None
@@ -250,18 +250,51 @@ class Database(IntrospectionMixin, OperationsMixin):
     # -- lifecycle internals -----------------------------------------------------
 
     async def _ensure_awake(self) -> None:
-        """Called by the pool before it opens a connection. Waits for a
-        sleep in progress to finish, then marks the database awake."""
+        """Called by the pool before it opens a connection while the
+        database is not awake. The wake lock: the first caller runs the
+        hub's ``on_wake`` hook while every concurrent caller waits for it
+        (and shares its error, if it fails). A sleep or eviction in progress
+        is waited for first."""
         while not self._awake:
             t = self._transition
             if t is not None:
-                try:
-                    await asyncio.shield(t[1])
-                except Exception:
-                    pass
+                kind, fut = t
+                if kind == "wake":
+                    await asyncio.shield(fut)  # the waker's error is ours too
+                else:
+                    try:
+                        await asyncio.shield(fut)
+                    except Exception:
+                        pass
                 continue
             self._check_open()
-            self._awake = True
+            hub = self._get_hub()
+            if hub.on_wake is None:
+                self._mark_awake(hub)
+                return
+            fut = asyncio.get_running_loop().create_future()
+            transition = ("wake", fut)
+            self._transition = transition
+            try:
+                await hub.on_wake(self)
+            except asyncio.CancelledError:
+                fut.set_result(None)  # not an error: a waiter takes over
+                raise
+            except BaseException as e:
+                fut.set_exception(e)
+                fut.exception()  # retrieved, even if nobody was waiting
+                raise
+            else:
+                self._mark_awake(hub)
+                fut.set_result(None)
+            finally:
+                if self._transition is transition:
+                    self._transition = None
+
+    def _mark_awake(self, hub: Hub) -> None:
+        self._awake = True
+        hub.wakes += 1
+        hub.awake += 1
 
     def _pool_empty(self, pool: Pool) -> None:
         """The pool has no connections and no users: go to sleep."""
@@ -271,18 +304,13 @@ class Database(IntrospectionMixin, OperationsMixin):
         fut = asyncio.get_running_loop().create_future()
         transition = ("sleep", fut)
         self._transition = transition
-        spawn(self._sleep_job(transition))
+        spawn(self._sleep_job(transition, pool.hub))
 
-    async def _sleep_job(self, transition: tuple[str, asyncio.Future[Any]]) -> None:
-        """Release everything once the last connection has closed: the
-        backend (where it allows that, or for good on close) and the pool
-        object itself."""
+    async def _sleep_job(self, transition: tuple[str, asyncio.Future[Any]], hub: Hub) -> None:
+        """Runs once the last connection has closed: release the backend,
+        run ``on_sleep``, drop the pool object. A wake waits for this."""
         try:
-            if self._closed or self.capabilities.sleep_releases_everything:
-                try:
-                    await self._backend.close()
-                except Exception:
-                    pass
+            await self._release_everything(hub)
         finally:
             if self._transition is transition:
                 self._transition = None
@@ -290,6 +318,20 @@ class Database(IntrospectionMixin, OperationsMixin):
             if pool is not None and pool.empty and not self._awake:
                 self._pool = None
             transition[1].set_result(None)
+
+    async def _release_everything(self, hub: Hub) -> None:
+        hub.sleeps += 1
+        hub.awake -= 1
+        if self._closed or self.capabilities.sleep_releases_everything:
+            try:
+                await self._backend.close()
+            except Exception:
+                logger.exception("closing the backend of %r failed", self)
+        if hub.on_sleep is not None:
+            try:
+                await hub.on_sleep(self)
+            except Exception:
+                logger.exception("on_sleep hook failed for %r", self)
 
     async def _wait_transition(self) -> None:
         t = self._transition

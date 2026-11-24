@@ -153,6 +153,10 @@ class Pool:
             raise DatabaseClosed("database is closed")
         self.users += 1
         try:
+            if not self._db._awake:
+                # Wake before queueing for a slot, so that every concurrent
+                # first request shares one wake (and one on_wake).
+                await self._db._ensure_awake()
             slot = self._write_slot if write else self._read_slots
             await slot.acquire()
             try:
