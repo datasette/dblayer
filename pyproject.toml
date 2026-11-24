@@ -11,6 +11,8 @@ postgres = ["asyncpg"]
 duckdb = ["duckdb"]
 msgpack = ["msgpack"]
 psycopg = ["psycopg[binary]"]
+# Experimental in-process SQLite on apsw (bundles its own SQLite).
+apsw = ["apsw>=3.50"]
 
 [dependency-groups]
 demo = [
