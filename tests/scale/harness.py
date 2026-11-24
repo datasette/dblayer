@@ -89,6 +89,17 @@ def _cworker_backend(path: Path) -> Backend:
     return SqliteCWorker(path)  # type: ignore[return-value]
 
 
+_cpools: list = []
+
+
+def _cpool_backend(path: Path) -> Backend:
+    from dblayer.backends.sqlite_cpool import CPool, SqliteCPool
+
+    if not _cpools:  # every database shares two multi-tenant processes
+        _cpools.append(CPool(2, linger=0))
+    return SqliteCPool(path, pool=_cpools[0])  # type: ignore[return-value]
+
+
 def _cworker_available() -> str | None:
     from dblayer.backends.sqlite_cworker import binary_unavailable
 
@@ -124,6 +135,13 @@ SCALE_BACKENDS: list[ScaleBackend] = [
     # databases take a longer load. Growth reported, as for the Python one.
     ScaleBackend(
         "sqlite-cworker", sqlite_files, _cworker_backend, 1_000, requests=10_000, growth_limit=None,
+        available=_cworker_available,
+    ),
+    # The multi-tenant C pool: two processes for all 1,000 databases, so a
+    # wake is one open round trip on a running process; fast enough that a
+    # longer load is needed for the descriptor sampler to see it.
+    ScaleBackend(
+        "sqlite-cpool", sqlite_files, _cpool_backend, 1_000, requests=50_000, growth_limit=None,
         available=_cworker_available,
     ),
 ]
