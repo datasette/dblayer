@@ -868,3 +868,18 @@ Interim report from the relaunched subagent; a fix is in progress.
 - Provisional numbers at load 46 to 48: open to first result 75 ms (Python worker 77 ms); idle footprint 37 MB (Python worker 24 MB); one-row read 248 µs against 156 µs for the C worker. One-row update 19 to 20 ms against under 1 ms for the others, because libuv's fsync on macOS is `F_FULLFSYNC`, a full drive flush on every commit.
 - So far it is no better than the Python worker on start-up or memory, and worse on writes and on locking.
 - CI: one run's three Linux jobs appeared hung at about twice their normal time; cause unknown.
+
+### Found: SQLite in WebAssembly under wasmtime, interim (2026-11-24)
+
+Interim report from the relaunched subagent; measurements at load about 18, provisional; full table still to come.
+
+- **The hypothesis holds on containment.** With a 200 ms limit and 50 ms grace, `glob`, `instr` and `like` on long strings and `randomblob(1e8)` over 30 rows, the queries nothing in-process could stop, were all stopped by a WebAssembly trap at 251 to 255 ms. No process was killed. The instance is replaced and the next request gets a fresh one in under 1 ms. `printf` with a width of 1e9 and `randomblob(1e9)` hit the memory cap as `SQLITE_NOMEM` in 1 to 2 ms. 300 random-point cancels all returned, worst case 1.2 ms.
+- **Locking design:** the module has no WASI filesystem. Every VFS call (open, read, write, sync, lock, unlock) is a host import into Python, and Python applies SQLite's own unix locking logic as real `fcntl` locks on the same byte ranges native SQLite uses. So other processes and native SQLite see and respect the locks. An allow-list restricts each instance to its own database file, its journal and anonymous temporary files, so ATTACH and VACUUM INTO fail.
+- **No WAL:** `journal_mode=WAL` stays "delete", and opening a WAL-mode file gives `SQLITE_CANTOPEN`. That rules this backend out for any database another tool keeps in WAL mode.
+- **A real locking bug was found and fixed** (`643b7f6`): opening a new instance opened and closed an extra descriptor, and closing any descriptor drops every classic POSIX lock the process holds on that file. That silently dropped native SQLite's EXCLUSIVE lock held elsewhere in the same process, on Linux as well as macOS. Fixed with open-file-description locks (macOS has them at private fcntl numbers 90 and 92), finding already-open files by `stat`, and parking descriptors that cannot be closed safely.
+- **Cost of the host VFS:** about 1.5 µs per page read. A full scan of 4,010 pages took 6.7 ms through the host against 2.4 ms for native SQLite with a tiny cache. A one-row read makes 6 host calls.
+- Tests: 479 passed, 7 skipped for this backend.
+
+### Upstream suggestions
+
+- **sqlite-utils and Datasette, general hazard worth a documentation note:** in one process, opening and closing a second file descriptor on a SQLite database file releases the POSIX locks SQLite itself holds on it. Any code that opens the database file directly (to hash it, copy it, check its header or size) while a connection is open in the same process can silently drop that connection's locks. SQLite's documentation describes this; the subagent reproduced it here. Worth checking Datasette's own code for direct opens of database files (for example hashing for `inspect`, or file copies in publish paths) while connections are live. Not checked against Datasette.
