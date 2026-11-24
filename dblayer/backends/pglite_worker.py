@@ -258,6 +258,12 @@ class LocalPGlite:
 # -- the process: one session, held by one connection at a time --------------------------
 
 
+class NotSent(WorkerCrashed):
+    """The process died before this request was sent (it waited behind
+    another connection's request or hold): nothing of it ran, so a
+    connection with no open transaction retries it on a new process."""
+
+
 class PGliteProcess(WorkerProcess):
     """A PGlite worker process: one request in flight (the worker runs them
     one at a time anyway, so a time limit counts from when it is sent), and
@@ -402,7 +408,8 @@ class PGliteProcess(WorkerProcess):
                 continue
             break
         try:
-            self._check()
+            if self.dead is not None:
+                raise NotSent(str(self.dead))
             mid = msg["id"] = msg.get("id") or next(self._ids)
             if expect_frames is not None and msg.get("type") == "more":
                 del msg["id"]  # a ``more`` has no id of its own: frames carry the stream's
@@ -461,10 +468,15 @@ class PGliteProcess(WorkerProcess):
         without killing, which would leave the query running and the next
         request queued behind it)."""
         try:
-            return await asyncio.shield(fut)
+            # asyncio.wait, not shield: a cancelled shield logs the kill's
+            # WorkerCrashed landing later ("exception in shielded future").
+            await asyncio.wait({fut})
+            return fut.result()
         except asyncio.CancelledError:
             if fut.done() or self.dead is not None:
                 raise
+            # Nobody awaits it now: retrieve the kill's WorkerCrashed when it lands.
+            fut.add_done_callback(lambda f: f.cancelled() or f.exception())
             try:
                 self.send({"type": "cancel", "target": mid})
             except Exception:
@@ -572,6 +584,19 @@ class PGliteConnection(WorkerConnection):
     """A dblayer connection: a name for the database's one PGlite session,
     with a mode. ``schema()`` and ``schema_version()`` run the shared
     catalog queries through the worker."""
+
+    async def _call(self, msg: dict[str, Any], *, limit_ms: float | None = None) -> dict[str, Any]:
+        """A request that never reached the worker because the process was
+        killed while it waited (another connection's query overran its time
+        limit, or was cancelled) is sent again, once, to a new process,
+        unless this connection had a transaction open (lost with the
+        process). Its time limit starts again."""
+        try:
+            return await super()._call(dict(msg), limit_ms=limit_ms)
+        except NotSent:
+            if self._tx is not None or self._in_tx or self._closed:
+                raise
+            return await super()._call(msg, limit_ms=limit_ms)
 
     async def _open(self) -> None:
         reply = await self._proc.call(self._backend._open_message(self.write), owner=self)
@@ -812,14 +837,23 @@ class PGliteWorker(WorkerBackend):
         return p.pid if p is not None else None
 
     async def open(self, *, write: bool) -> WorkerConnection:
-        proc = await self.placement_group.acquire()
-        conn = PGliteConnection(self, proc, write=write, shared=True)
-        try:
-            await conn._open()
-        except BaseException:
-            await conn.close()
-            raise
-        return conn
+        for attempt in (1, 2):
+            proc = await self.placement_group.acquire()
+            conn = PGliteConnection(self, proc, write=write, shared=True)
+            try:
+                await conn._open()
+            except NotSent:
+                # The process was killed while this open waited behind
+                # another connection's request: open on a new one.
+                await conn.close()
+                if attempt == 2:
+                    raise
+                continue
+            except BaseException:
+                await conn.close()
+                raise
+            return conn
+        raise AssertionError("unreachable")
 
     def change_hint(self) -> object:
         return data_dir_hint(self._path)

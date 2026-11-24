@@ -69,6 +69,49 @@ async def test_kill_mid_query_time_limit(tmp_path):
         await db.close()
 
 
+@pytest.mark.parametrize("hold", [False, True])
+async def test_requests_waiting_behind_a_killed_query_run_on_the_next_process(tmp_path, hold):
+    """A kill for one connection's time limit takes the process: another
+    task's read that was waiting (for the send, or in the gate behind a
+    transaction) never reached it, so it runs on a new process instead of
+    failing with it."""
+    db = Database(make(tmp_path))
+    try:
+        await setup_table(db)
+
+        async def victim() -> None:
+            if hold:
+                async with db.transaction() as tx:
+                    await tx.execute("insert into t values (-1, 'lost')")
+                    await tx.execute(ENDLESS, time_limit_ms=300)
+            else:
+                await db.execute(ENDLESS, time_limit_ms=300)
+
+        slow = asyncio.create_task(victim())
+        await asyncio.sleep(0.1)
+        bystander = asyncio.create_task(db.execute("select count(*) n from t"))
+        with pytest.raises(QueryInterrupted):
+            await slow
+        assert (await bystander).rows[0]["n"] == 100  # the lost transaction's row is not there
+    finally:
+        await db.close()
+
+
+async def test_cancelled_query_is_killed_quietly(tmp_path, caplog):
+    db = Database(make(tmp_path))
+    try:
+        task = asyncio.create_task(db.execute(ENDLESS))
+        await asyncio.sleep(0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert (await db.execute("select 1 x")).rows[0]["x"] == 1
+        await asyncio.sleep(0.05)
+        assert "shielded future" not in caplog.text and "never retrieved" not in caplog.text
+    finally:
+        await db.close()
+
+
 async def test_pg_sleep_is_not_interruptible_either(tmp_path):
     db = Database(make(tmp_path))
     try:
