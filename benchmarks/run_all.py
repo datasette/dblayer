@@ -290,6 +290,9 @@ def json_table(obj: Any) -> str | None:
                 cols.append(k)
     if len(cols) > 14:
         return None
+    filled = sum(1 for v in obj.values() for c in cols if not isinstance(v.get(c), (dict, list, type(None))))
+    if filled < 0.6 * len(cols) * len(obj):  # sparse: nested JSON, not a table; the output is shown instead
+        return None
 
     def cell(x: Any) -> str:
         if x is None:
