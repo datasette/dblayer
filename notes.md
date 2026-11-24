@@ -458,3 +458,68 @@ Two psycopg problems turned up, both worked around:
 ### Found: process
 
 - Running five subagents' test suites at once pushed this machine's load average above 200. A full-suite run that takes about two minutes took 22. Benchmarks and timing tests are meaningless in that state; the final benchmark milestone must run alone.
+
+## 2026-11-23: milestone 4 done (SQLite in a worker process)
+
+Subagent-reported unless marked. I have used the backend through the demo (featured database and 20 fleet members browse, a 500-way fan-out succeeded), but have not yet re-run the full suite on a quiet machine.
+
+### Built
+
+- Twelve commits, `6ca6fd9` to `b49d56c`: `dblayer/worker/protocol.py`, `dblayer/worker/__main__.py`, `dblayer/worker/engines.py`, `dblayer/backends/sqlite_worker.py`, `docs/worker-protocol.md` (with a recorded session, regenerated from a test), `benchmarks/worker_overhead.py`, `tests/worker/`, `tests/faults/`.
+- The conformance suite runs on `sqlite-worker` (JSON) and `sqlite-worker-msgpack`: 768 tests, skipping only what in-process SQLite skips.
+- Both placement policies: dedicated (a process per connection) and shared (a process serving many databases).
+- CI run 45339370936: Linux 3.12 green with 3,084 passed; macOS and stdlib-only green. The Linux-only `RLIMIT_AS` tests ran and passed there. Linux 3.13 and 3.14 failed on two timing tests in other backends.
+
+### Found: answers to the spec's questions
+
+- **Can interactive transactions work across a process boundary without stalling other writers? Yes.** The deadline is enforced on both sides: with the parent's event loop blocked, the worker still rolled back at its 200 ms deadline and another process could write at once. A statement that ignores interrupts at the deadline is killed, and the caller gets `TransactionExpired` about 800 ms after a 300 ms deadline.
+- **Does a hard kill ever corrupt a database or leave a lock? No,** in rollback-journal or WAL mode: `integrity_check` is ok, an independent `BEGIN IMMEDIATE` succeeds at once, no partial write is visible. One real problem found, next item.
+- **A writer killed mid-transaction in rollback-journal mode leaves a hot journal that `mode=ro` readers cannot roll back.** Every read then fails with `SQLITE_READONLY_ROLLBACK` until a read-write connection opens the file. Fixed in `SqliteInProcess`: a read connection that finds a `-journal` file first opens briefly read-write.
+- **Is the worker fast enough to be the default for untrusted SQL? For running queries, probably; for starting, no.** Provisional numbers (1-minute load about 17 on 18 cores; to be re-run alone):
+
+| Measure | In-process | Worker, JSON | Worker, MessagePack |
+| --- | --- | --- | --- |
+| One-row read, median | 95 µs | 322 µs | 316 µs |
+| One-row update | 538 µs | 790 µs | 906 µs |
+| Per row, 100,000-row read | 0.58 µs | 1.90 µs | 1.12 µs |
+| Insert with alter: interactive / one `op` | 1,520 / 1,492 µs | 2,916 / 2,217 µs | 2,832 / 2,128 µs |
+| Open to first result | 0.44 ms | 86.6 ms | 86.2 ms |
+
+  The spec's hypothesis "well under a millisecond for a small query" holds once a worker is running (about 0.2 to 0.3 ms added). Starting one costs about 85 ms: roughly 20 ms of Python startup and 50 ms of imports. On shared placement, later databases on a running process open in 0.76 ms.
+
+- **Queries that neither the progress handler nor `interrupt()` can stop** (each is one long C function call; SQLite 3.53.1). All were killed by the parent at about 450 ms with a 200 ms limit:
+
+| Query | Runs for |
+| --- | --- |
+| `instr(printf('%.*c', 2000000,'a'), printf('%.*c',100000,'a')\|\|'b')` | 2.6 to 4.6 s |
+| A 200,000-character string `like` a 40,000-character pattern | about 4.8 s |
+| The same with `glob` | about 2.2 s at 120,000 |
+| `length(randomblob(1000000000))` | 1.0 to 1.5 s, 1 GB |
+| `length(printf('%*d', 1000000000, 1))` | 0.9 to 2 s, 1 GB |
+
+  A different class evades only the progress handler: `sum(length(randomblob(1e8)))` over 30 rows runs fewer than 1,000 VDBE opcodes, so a handler at n=1000 never fires, though `interrupt()` stops it in 95 ms.
+
+- **Scale test at 1,000 worker databases:** 884 B per asleep database; 86 requests/s at saturation, because nearly every request starts a process; descriptors peak at 201 (3 per place).
+- **DuckDB locks its file per process,** so a database's read and write workers cannot be separate processes. All of one database's connections must share a worker.
+
+### Decision: departures from the spec
+
+- **`subprocess.Popen` with `loop.add_reader` on non-blocking pipes,** not `asyncio.create_subprocess_exec`. asyncio uses a thread per child to wait for it on macOS, which breaks the constant-thread-count guarantee, and its transports cannot be closed from another event loop.
+- **The worker is engine-pluggable.** `open` names an engine (`module:callable`) and its config; the worker drives it only through the `Backend` protocols. The worker runs an event loop on its main thread with the engine's blocking calls on one executor thread, where the spec had statements on the main thread and a reader thread.
+- **Extra messages:** `close`, `batch`, an unsolicited `expired` notice, and `in_tx` on replies so the pool's reset-on-return costs no round trip. `schema` always returns the whole schema.
+- **A value-type registry in the codec** (`register_value_type`) for dates, decimals and UUIDs; nothing registered by default.
+- **`dblayer/__init__.py` imports lazily** so a worker start does not import the whole library.
+- **The parent closes a worker by closing its stdin;** the `sleep` message exists but is unused.
+
+### Idea: to discuss
+
+- **A small pool of pre-started spare workers** would take the 85 ms out of each wake. This looks necessary before the worker can be the default for a fleet of mostly asleep databases.
+- **Trim worker start-up:** 50 ms of it is imports. A worker that does not import asyncio, or a zygote that forks per connection, could get near the 20 ms interpreter floor or below.
+- **Pool health check in the core** for connections whose worker has died while idle.
+- **Shared placement keyed by database** as the default for DuckDB and for cold fleets.
+
+### Upstream suggestions
+
+- **Datasette: hot journal with read-only connections.** Datasette opens mutable databases for reading with `?mode=ro` (`datasette/database.py`). If a write is killed mid-transaction in rollback-journal mode, every read fails with `SQLITE_READONLY_ROLLBACK` until something opens the file read-write. Verified by the subagent with a minimal script on SQLite 3.53.1; not reproduced through Datasette itself.
+- **Datasette issue 1270 (use `interrupt()` instead of the progress handler):** `interrupt()` fixes the low-opcode-count case above, but the single-call queries in the table evade both. Only a separate process bounds them. Worth adding those queries to that issue as evidence. Verified on SQLite 3.53.1 outside Datasette.
+- **Datasette `sql_time_limit_ms` documentation** could say plainly that it does not bound single long function calls.
