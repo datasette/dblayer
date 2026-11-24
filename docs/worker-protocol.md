@@ -71,7 +71,10 @@ engine reports any; the first `stream` frame does too.
 Every request carries an `id` (an integer, unique per worker); every reply
 repeats it. Requests on one worker are executed one at a time in arrival
 order; the parent sends the next request only after the previous reply
-(so a time limit is measured from when the request is sent). `cancel` and
+(so a time limit is measured from when the request is sent). The exception
+is a multi-tenant C worker (below): there, requests for *different*
+connections run concurrently and replies arrive in any order, matched by
+`id`; requests for one connection still run in order, one at a time. `cancel` and
 `more` are control messages: they have no reply of their own and are acted on
 as soon as they arrive.
 
@@ -144,6 +147,36 @@ as an (unbindable) dict, in either worker. MessagePack has no such case.
 | `SQLITE_NOMEM` (heap limit) | `MemoryError`: `ResourceLimitExceeded` with `fatal: true`, the worker exits | `ResourceLimitExceeded`, the worker carries on |
 | Value-type params | decoded, then bound by `sqlite3` (default adapters for `datetime` and `date`) | the same results: `datetime`/`date` bound as ISO text, others a binding error |
 | Start-up to `hello` | ~55 ms (interpreter and imports) | ~3 ms |
+| Concurrency | one request at a time | one at a time; with `--multi`, one at a time *per connection* |
+
+### Multi-tenant C worker (`dblayer-cworker --multi`)
+
+Used by `dblayer.backends.sqlite_cpool` (`SqliteCPool`, `CPool`). Options:
+`--max-connections N` (default 256), `--heap-limit-mb N` and
+`--soft-heap-limit-mb N` (process-wide SQLite heap limits), `--cache-kb N`
+(each connection's page cache), plus the usual `--memory-limit-mb` and
+`--debug`.
+
+- `hello` adds `"multi": true`, `max_connections` and `"threading":
+  "multi-thread"`.
+- Every `open` starts a thread that owns the new connection and runs its
+  requests in arrival order. An `open` past `--max-connections` gets
+  `ResourceLimitExceeded` at once. A connection's thread exits after its
+  `close`.
+- Connection-scoped requests are routed by `conn` (or to the only
+  connection when there is exactly one, as in single-tenant mode); a
+  request naming no open connection gets a `PROTOCOL` error. Requests with
+  no connection (`sleep`, `_debug` without `conn`) run on the main thread.
+- `cancel`, `more`, time limits, the backstop, transaction deadlines and
+  the `expired` notice act on the one connection they concern. Replies are
+  written whole, under one lock, so frames from different connections
+  never interleave mid-frame.
+- SQLite runs in multi-thread mode (`SQLITE_CONFIG_MULTITHREAD`): each
+  connection is used by one thread only, so per-connection mutexes are
+  off; `sqlite3_interrupt()` from the watchdog is safe in any mode.
+- The per-database `memory_limit_mb` in `open`'s `config` is ignored (it
+  would change every tenant's limit); heap limits come from the command
+  line. A fatal error exits the whole process.
 
 Errors are reproduced as Python's `sqlite3` raises them: the same exception
 class in `cause.type`, the same `sqlite_errorname` as `code`, and the
