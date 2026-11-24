@@ -45,6 +45,14 @@ jobs:
       # amalgamation and builds one binary, so the sqlite-cworker tests run.
       - name: Build the C worker
         run: make -C cworker
+      # SQLite in WebAssembly (sqlite-wasm): a cached, checksummed wasi-sdk
+      # plus about 10 s of compiling.
+      - uses: actions/cache@v4
+        with:
+          path: cworker/vendor/wasi-sdk-34.0-*-*/
+          key: wasi-sdk-34-${{ runner.os }}-${{ runner.arch }}
+      - name: Build the SQLite WebAssembly module
+        run: make -C cworker wasm
       # The demo group (starlette, httpx, ...) runs tests/demo against every
       # backend, PostgreSQL included; without it those tests skip.
       - name: Run tests with every optional backend and the demo app installed
@@ -63,6 +71,14 @@ jobs:
       # amalgamation and builds one binary, so the sqlite-cworker tests run.
       - name: Build the C worker
         run: make -C cworker
+      # SQLite in WebAssembly (sqlite-wasm): a cached, checksummed wasi-sdk
+      # plus about 10 s of compiling.
+      - uses: actions/cache@v4
+        with:
+          path: cworker/vendor/wasi-sdk-34.0-*-*/
+          key: wasi-sdk-34-${{ runner.os }}-${{ runner.arch }}
+      - name: Build the SQLite WebAssembly module
+        run: make -C cworker wasm
       # No PostgreSQL server here: those tests skip themselves.
       - name: Run tests
         run: uv run --all-extras pytest -ra

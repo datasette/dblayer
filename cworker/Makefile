@@ -4,7 +4,7 @@
 #   make -C cworker SQLITE=system    # link the system libsqlite3 instead
 #   make -C cworker SANITIZE=1       # build-asan/dblayer-cworker with ASan + UBSan
 #   make -C cworker SANITIZE=thread  # build-tsan/dblayer-cworker with ThreadSanitizer
-#   make -C cworker wasm             # build-wasm/dblayer-sqlite.wasm (see Makefile.wasm)
+#   make -C cworker wasm             # build-wasm/dblayer-sqlite.wasm (see wasm.mk)
 #
 # The amalgamation is downloaded once into vendor/ (git-ignored) and checked
 # against a pinned SHA-256. Python finds the binary through an explicit
@@ -103,6 +103,6 @@ distclean: clean
 # SQLite compiled to WebAssembly, for dblayer.backends.sqlite_wasm. Downloads
 # a pinned wasi-sdk into vendor/ (checksummed) on first use.
 wasm: $(SQLITE_DIR)/sqlite3.c
-	$(MAKE) -f Makefile.wasm SQLITE_DIR=$(SQLITE_DIR)
+	$(MAKE) -f wasm.mk SQLITE_DIR=$(SQLITE_DIR)
 
 .PHONY: all clean distclean wasm

@@ -72,7 +72,7 @@ all: $(OUT)
 $(OUT): $(OBJ) $(BUILD)/sqlite3.o
 	$(WASI_CC) $(TARGET) $(OPT) $(LDFLAGS) -o $@ $^
 
-$(BUILD)/%.o: src/%.c $(HDR) Makefile.wasm $(SQLITE_DIR)/sqlite3.h | $(BUILD) $(WASI_CC)
+$(BUILD)/%.o: src/%.c $(HDR) wasm.mk $(SQLITE_DIR)/sqlite3.h | $(BUILD) $(WASI_CC)
 	$(WASI_CC) $(TARGET) $(OPT) $(WARN) -DCWORKER_WASM -DCWORKER_NO_LOAD_EXTENSION -I$(SQLITE_DIR) -c -o $@ $<
 
 $(BUILD)/sqlite3.o: $(SQLITE_DIR)/sqlite3.c | $(BUILD) $(WASI_CC)
@@ -81,7 +81,10 @@ $(BUILD)/sqlite3.o: $(SQLITE_DIR)/sqlite3.c | $(BUILD) $(WASI_CC)
 $(BUILD):
 	mkdir -p $(BUILD)
 
-$(WASI_CC): $(WASI_TGZ)
+# The unpacked toolchain does not depend on the tarball, so a restored
+# copy of vendor/$(WASI_NAME) alone (CI's cache) is enough.
+$(WASI_CC):
+	$(MAKE) -f wasm.mk $(WASI_TGZ)
 	cd vendor && tar xzf $(WASI_NAME).tar.gz
 	touch $@
 
