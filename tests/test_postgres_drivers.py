@@ -335,8 +335,10 @@ async def test_round_trips_per_statement_in_a_transaction(schema, driver):
     # DELAY is the number of round trips it made.
     from .latency_proxy import latency_proxy
 
-    async with latency_proxy(DELAY) as dsn:
+    turns = [0]
+    async with latency_proxy(DELAY, turns) as dsn:
         figures = {}
+        counted = {}
         for savepoints in (True, False):
             db = Database(pg.make(driver, dsn=dsn, schema=schema, statement_savepoints=savepoints))
             try:
@@ -346,23 +348,29 @@ async def test_round_trips_per_statement_in_a_transaction(schema, driver):
                 async with db.transaction() as tx:
                     await tx.execute(f"insert into t_{driver} values (0) on conflict do nothing")
                     start = time.perf_counter()
+                    before = turns[0]
                     for i in range(10):
                         await tx.execute(
                             f"insert into t_{driver} values (:i) on conflict do nothing",
                             {"i": i + 100 * savepoints},
                         )
+                    counted[savepoints] = (turns[0] - before) / 10
                     figures[savepoints] = (time.perf_counter() - start) / 10 / DELAY
             finally:
                 await db.close()
     print(
         f"{driver}: round trips per tx.execute: with statement savepoints "
-        f"{figures[True]:.2f}, without {figures[False]:.2f}"
+        f"{counted[True]:.2f} counted ({figures[True]:.2f} timed), "
+        f"without {counted[False]:.2f} counted ({figures[False]:.2f} timed)"
     )
-    assert figures[False] < 1.6  # one round trip per statement on both
+    # Asserted on the proxy's count, not the timing: on a loaded machine
+    # scheduling delay alone made a one-round-trip call time at 2.05.
+    # (asyncpg prepares the first statement: one extra round trip in ten.)
+    assert counted[False] < 1.6  # one round trip per statement on both
     if driver == "psycopg":
-        assert figures[True] < 1.6  # SAVEPOINT, statement, RELEASE: one pipeline
+        assert counted[True] < 1.6  # SAVEPOINT, statement, RELEASE: one pipeline
     else:
-        assert figures[True] > 1.6  # "RELEASE; SAVEPOINT", then the statement
+        assert counted[True] > 1.6  # "RELEASE; SAVEPOINT", then the statement
 
 
 # -- 9. COPY value conversion -----------------------------------------------------------------

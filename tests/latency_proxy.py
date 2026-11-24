@@ -1,7 +1,9 @@
 """A proxy in front of the PostgreSQL test server that delays everything the
 server sends by a fixed time, so each client/server round trip costs about
 that much. Counting round trips then needs no driver internals: time a call
-and divide by the delay.
+and divide by the delay. Timing is only a rough figure on a loaded machine,
+so the proxy also counts round trips directly (``turns``): a client send
+that follows a server reply on the same connection starts a new round trip.
 
 The proxy listens on a Unix socket in a temporary directory (libpq's
 ``host=<dir>``) and forwards to the server named by ``tests.pg.DSN`` (Unix
@@ -44,15 +46,22 @@ def _proxied_dsn(dsn: str, socket_dir: str, port: int) -> str:
 
 
 @contextlib.asynccontextmanager
-async def latency_proxy(delay: float) -> AsyncIterator[str]:
+async def latency_proxy(delay: float, turns: list[int] | None = None) -> AsyncIterator[str]:
     """Run the proxy on the current event loop; yields a DSN that goes
-    through it."""
+    through it. If ``turns`` is given, ``turns[0]`` is incremented for
+    every round trip (on any proxied connection)."""
     unix_dir, tcp_host, port = _upstream(pg.DSN)
     tmp = tempfile.mkdtemp(prefix="dblpx")
     loop = asyncio.get_running_loop()
     tasks: set[asyncio.Task[None]] = set()
 
-    async def pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, lag: float) -> None:
+    async def pump(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        lag: float,
+        side: str,
+        last: list[str],
+    ) -> None:
         queue: asyncio.Queue[tuple[float, bytes | None]] = asyncio.Queue()
 
         async def send() -> None:
@@ -70,6 +79,9 @@ async def latency_proxy(delay: float) -> AsyncIterator[str]:
         sender = asyncio.ensure_future(send())
         try:
             while data := await reader.read(65536):
+                if side == "client" and last[0] != "client" and turns is not None:
+                    turns[0] += 1
+                last[0] = side
                 queue.put_nowait((loop.time(), data))
         except (ConnectionError, OSError):
             pass
@@ -85,7 +97,11 @@ async def latency_proxy(delay: float) -> AsyncIterator[str]:
             )
         else:
             s_reader, s_writer = await asyncio.open_connection(tcp_host, port)
-        both = asyncio.gather(pump(c_reader, s_writer, 0.0), pump(s_reader, c_writer, delay))
+        last = ["server"]  # who sent last on this connection
+        both = asyncio.gather(
+            pump(c_reader, s_writer, 0.0, "client", last),
+            pump(s_reader, c_writer, delay, "server", last),
+        )
         task = asyncio.ensure_future(both)
         tasks.add(task)  # type: ignore[arg-type]
         with contextlib.suppress(Exception):
