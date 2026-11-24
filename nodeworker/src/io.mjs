@@ -13,19 +13,54 @@ const pause = new Int32Array(new SharedArrayBuffer(4));
 
 export class ParentGone extends Error {}
 
-export function writeAll(buf, fd = OUT_FD) {
-  let off = 0;
-  while (off < buf.length) {
-    try {
-      off += fs.writeSync(fd, buf, off, buf.length - off);
-    } catch (e) {
-      if (e.code === 'EAGAIN') {
-        Atomics.wait(pause, 0, 0, 1);
-        continue;
+// Every thread writes whole frames under one lock (shared memory), so
+// frames from different connections never interleave.
+let writeLock = null;
+
+export function newWriteLock() {
+  return new Int32Array(new SharedArrayBuffer(4));
+}
+
+export function setWriteLock(lock) {
+  writeLock = lock;
+}
+
+/** Take the write lock. `force` after `timeoutMs`: for the main thread
+ * when the holder may have been terminated mid-write (the process is about
+ * to exit anyway). */
+function acquire(timeoutMs = Infinity) {
+  if (writeLock === null) return;
+  const end = timeoutMs === Infinity ? Infinity : performance.now() + timeoutMs;
+  while (Atomics.compareExchange(writeLock, 0, 0, 1) !== 0) {
+    if (performance.now() > end) return;
+    Atomics.wait(writeLock, 0, 1, 5);
+  }
+}
+
+function release() {
+  if (writeLock === null) return;
+  Atomics.store(writeLock, 0, 0);
+  Atomics.notify(writeLock, 0, 1);
+}
+
+export function writeAll(buf, { fd = OUT_FD, lockTimeoutMs = Infinity } = {}) {
+  acquire(lockTimeoutMs);
+  try {
+    let off = 0;
+    while (off < buf.length) {
+      try {
+        off += fs.writeSync(fd, buf, off, buf.length - off);
+      } catch (e) {
+        if (e.code === 'EAGAIN') {
+          Atomics.wait(pause, 0, 0, 1);
+          continue;
+        }
+        if (e.code === 'EINTR') continue;
+        throw new ParentGone(e.code);
       }
-      if (e.code === 'EINTR') continue;
-      throw new ParentGone(e.code);
     }
+  } finally {
+    release();
   }
 }
 

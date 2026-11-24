@@ -4,49 +4,34 @@
 // Files are real files: other processes and native SQLite can open them.
 // Locking is NOT shared with other processes. Node has no API for the
 // POSIX advisory (fcntl) locks native SQLite uses, so this VFS keeps
-// SQLite's lock states (SHARED, RESERVED, PENDING, EXCLUSIVE) in memory,
-// per file, exactly as os_unix.c's in-process bookkeeping does: the
-// connections inside one worker exclude each other correctly, and nothing
-// outside the process sees them. Hence the backend's rule that one Node
-// process owns a database file while it is open (see
-// dblayer/backends/sqlite_nodeworker.py and docs/worker-protocol.md).
+// SQLite's lock states (SHARED, RESERVED, PENDING, EXCLUSIVE) in a table in
+// shared memory (locks.mjs), with os_unix.c's in-process rules: the
+// connections of one worker process (one executor thread each) exclude
+// each other correctly, and nothing outside the process sees them. Hence
+// the backend's rule that one Node process owns a database file while it
+// is open (see dblayer/backends/sqlite_nodeworker.py).
 //
-// No shared memory (xShm*), so WAL mode is unavailable: `journal_mode=wal`
-// leaves the database in rollback-journal mode, and a database already in
-// WAL mode cannot be opened (unless with locking_mode=exclusive).
+// No shared memory for WAL (xShm*), so WAL mode is unavailable:
+// `journal_mode=wal` leaves the database in rollback-journal mode, and a
+// database already in WAL mode cannot be read.
 
 import fs from 'node:fs';
 import os from 'node:os';
 import nodePath from 'node:path';
 import { randomFillSync } from 'node:crypto';
+import { openHandle, closeHandle, lock as lockH, unlock as unlockH, reserved, dump } from './locks.mjs';
 
-const NONE = 0;
-const SHARED = 1;
-const RESERVED = 2;
-const PENDING = 3;
-const EXCLUSIVE = 4;
-
-export function installNodeVfs(sqlite3, name = 'nodefs') {
+export function installNodeVfs(sqlite3, { name = 'nodefs', lockTable, threadId }) {
   const { capi, wasm } = sqlite3;
   const C = capi;
   const mem = () => wasm.heap8u();
   const files = new Map(); // pFile -> file
-  const inodes = new Map(); // resolved path -> lock state shared by its files
   const sleeper = new Int32Array(new SharedArrayBuffer(4));
   let lastError = 0;
 
   const ioErr = (e, code) => {
     lastError = e?.errno ? -e.errno : 0;
     return code;
-  };
-
-  const inodeFor = (path) => {
-    let n = inodes.get(path);
-    if (n === undefined) {
-      n = { path, level: NONE, nShared: 0, files: 0 };
-      inodes.set(path, n);
-    }
-    return n;
   };
 
   const syncDir = (path) => {
@@ -65,9 +50,7 @@ export function installNodeVfs(sqlite3, name = 'nodefs') {
       const f = files.get(pFile);
       if (!f) return 0;
       files.delete(pFile);
-      unlock(f, NONE);
-      f.inode.files--;
-      if (f.inode.files === 0 && f.inode.level === NONE) inodes.delete(f.inode.path);
+      if (f.lock) closeHandle(f.lock);
       try {
         fs.closeSync(f.fd);
         if (f.deleteOnClose) fs.rmSync(f.path, { force: true });
@@ -139,13 +122,16 @@ export function installNodeVfs(sqlite3, name = 'nodefs') {
       return 0;
     },
     xLock(pFile, level) {
-      return lock(files.get(pFile), level);
+      const f = files.get(pFile);
+      return f.lock ? lockH(f.lock, level) : 0;
     },
     xUnlock(pFile, level) {
-      return unlock(files.get(pFile), level);
+      const f = files.get(pFile);
+      return f.lock ? unlockH(f.lock, level) : 0;
     },
     xCheckReservedLock(pFile, pOut) {
-      wasm.poke32(pOut, files.get(pFile).inode.level > SHARED ? 1 : 0);
+      const f = files.get(pFile);
+      wasm.poke32(pOut, f.lock && reserved(f.lock) ? 1 : 0);
       return 0;
     },
     xFileControl() {
@@ -158,46 +144,6 @@ export function installNodeVfs(sqlite3, name = 'nodefs') {
       return C.SQLITE_IOCAP_POWERSAFE_OVERWRITE;
     },
   };
-
-  // os_unix.c's unixLock(), without the fcntl() half.
-  function lock(f, level) {
-    const n = f.inode;
-    if (f.level >= level) return 0;
-    if (f.level !== n.level && (n.level >= PENDING || level > SHARED)) return C.SQLITE_BUSY;
-    if (level === SHARED && (n.level === SHARED || n.level === RESERVED)) {
-      f.level = SHARED;
-      n.nShared++;
-      return 0;
-    }
-    if (level === SHARED) {
-      n.nShared = 1;
-      n.level = SHARED;
-      f.level = SHARED;
-      return 0;
-    }
-    if (level === EXCLUSIVE && n.nShared > 1) {
-      // another connection in this process still reads: hold PENDING, so
-      // no new reader starts, and let the busy handler retry
-      f.level = PENDING;
-      n.level = PENDING;
-      return C.SQLITE_BUSY;
-    }
-    f.level = level;
-    n.level = level;
-    return 0;
-  }
-
-  function unlock(f, level) {
-    const n = f.inode;
-    if (f.level <= level) return 0;
-    if (f.level > SHARED) n.level = SHARED;
-    if (level === NONE) {
-      n.nShared--;
-      if (n.nShared === 0) n.level = NONE;
-    }
-    f.level = level;
-    return 0;
-  }
 
   const vfs = new C.sqlite3_vfs();
   vfs.$iVersion = 2;
@@ -238,16 +184,16 @@ export function installNodeVfs(sqlite3, name = 'nodefs') {
         return ioErr(e, C.SQLITE_CANTOPEN);
       }
       const isJournal = !!(flags & (C.SQLITE_OPEN_MAIN_JOURNAL | C.SQLITE_OPEN_SUPER_JOURNAL | C.SQLITE_OPEN_WAL));
-      const key = nodePath.resolve(path);
-      const f = {
-        fd,
-        path,
-        level: NONE,
-        deleteOnClose,
-        syncDir: create && isJournal,
-        inode: inodeFor(key),
-      };
-      f.inode.files++;
+      let handle = null;
+      if (flags & C.SQLITE_OPEN_MAIN_DB) {
+        handle = openHandle(lockTable, nodePath.resolve(path), threadId);
+        if (handle === null) {
+          fs.closeSync(fd);
+          console.error('dblayer-nodeworker: the lock table is full');
+          return C.SQLITE_CANTOPEN;
+        }
+      }
+      const f = { fd, path, deleteOnClose, syncDir: create && isJournal, lock: handle };
       files.set(pFile, f);
       wasm.poke32(pFile, io.pointer);
       if (pOutFlags) wasm.poke32(pOutFlags, outFlags);
@@ -317,6 +263,6 @@ export function installNodeVfs(sqlite3, name = 'nodefs') {
   return {
     name,
     /** Lock levels held, by path (for tests and debugging). */
-    locks: () => [...inodes.values()].map((n) => ({ path: n.path, level: n.level, nShared: n.nShared })),
+    locks: () => dump(lockTable),
   };
 }

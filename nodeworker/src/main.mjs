@@ -8,35 +8,43 @@
 //
 // Threads
 //   main      (this file) reads and decodes frames; answers `hello`; acts on
-//             `cancel` at once; queues everything else and hands the
-//             executor one job at a time; owns the timers: transaction
-//             deadlines (`expired`), and the hard stop that terminates the
-//             executor when a statement does not reach a progress check.
-//   executor  (executor.mjs) SQLite and every request that touches it; it
-//             writes its own replies to fd 1.
+//             `cancel` at once; routes every other request to the executor
+//             of its connection, one job at a time per connection; owns the
+//             timers: transaction deadlines (`expired`), and the hard stop
+//             that terminates an executor whose statement does not reach a
+//             progress check.
+//   executor  (executor.mjs) one per connection, each with its own
+//             WebAssembly instance of SQLite; writes its own replies to
+//             fd 1. Connections run at the same time (as threads do for
+//             in-process SQLite); the parent may have one request in flight
+//             per connection. A spare executor is kept started, so an
+//             `open` does not wait for a WebAssembly instance.
 //
 // Cancellation reaches a running statement through shared memory
-// (flags[0], read by SQLite's progress handler): 1 cancelled, 2 time
-// limit, 3 transaction deadline.
+// (flags[0] of its executor, read by SQLite's progress handler): 1
+// cancelled, 2 time limit, 3 transaction deadline.
 
 import fs from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { createRequire } from 'node:module';
 import { decode, encode } from './codec.mjs';
-import { writeAll, ParentGone, consoleToStderr } from './io.mjs';
+import { writeAll, ParentGone, consoleToStderr, newWriteLock, setWriteLock } from './io.mjs';
+import { newLockTable, releaseThread } from './locks.mjs';
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_MAX_FRAME = 256 * 1024 * 1024;
 const SHUTDOWN_GRACE_MS = 5000;
-/** How long after its time limit (or a cancel) a statement may keep the
- * executor busy before the executor thread is terminated: well inside the
- * parent's kill_grace_ms (250 ms by default), so the worker stops it first
- * and says why. */
+/** How long after its time limit (or a cancel, or a deadline) a statement
+ * may keep running before its executor thread is terminated: well inside
+ * the parent's kill_grace_ms (250 ms by default), so the worker stops it
+ * first and says why. */
 const HARD_STOP_MS = Number(process.env.DBLAYER_NODEWORKER_HARD_STOP_MS || 100);
+const SPARES = process.env.DBLAYER_NODEWORKER_SPARES === '0' ? 0 : 1;
 
 const require = createRequire(import.meta.url);
 const WASM_PACKAGE = require('@sqlite.org/sqlite-wasm/package.json').version;
 const SQLITE_VERSION = WASM_PACKAGE.split('-')[0];
+const WASM_PATH = require.resolve('@sqlite.org/sqlite-wasm/sqlite3.wasm');
 
 // -- arguments --------------------------------------------------------------------
 
@@ -60,208 +68,390 @@ for (let i = 0; i < argv.length; i++) {
 process.on('SIGINT', () => {});
 consoleToStderr();
 
-// -- the executor thread ---------------------------------------------------------
+const lockTable = newLockTable();
+const writeLock = newWriteLock();
+setWriteLock(writeLock);
 
-const flags = new Int32Array(new SharedArrayBuffer(16));
 let maxFrame = DEFAULT_MAX_FRAME;
 let codec = 'json';
-let ready = false;
-let executor = null;
-let terminating = false;
-
-function startExecutor() {
-  const resourceLimits = memoryLimitMb ? { maxOldGenerationSizeMb: Math.max(64, memoryLimitMb) } : undefined;
-  const w = new Worker(new URL('./executor.mjs', import.meta.url), {
-    workerData: { flags, debug, memoryLimitMb, maxFrameBytes: maxFrame },
-    resourceLimits,
-    stdout: true, // the worker's stdout is not our fd 1
-    stderr: false,
-  });
-  w.stdout.on('data', (d) => process.stderr.write(d));
-  w.on('message', onExecutorMessage);
-  w.on('error', onExecutorError);
-  w.on('exit', (code) => {
-    if (!terminating) {
-      console.error(`dblayer-nodeworker: executor thread exited (${code})`);
-      failCurrent({ type: 'QueryError', message: `worker error: the SQLite thread exited (${code})`, code: 'WORKER' }, true);
-      exit(70);
-    }
-  });
-  return w;
-}
-
-function onExecutorError(e) {
-  if (terminating) return;
-  terminating = true;
-  const oom = e && e.code === 'ERR_WORKER_OUT_OF_MEMORY';
-  console.error(`dblayer-nodeworker: executor thread failed: ${e?.stack || e}`);
-  failCurrent(
-    oom
-      ? { type: 'ResourceLimitExceeded', message: 'worker ran out of memory (memory limit)' }
-      : { type: 'QueryError', message: `worker error: ${e?.name}: ${e?.message}`, code: 'WORKER' },
-    true,
-  );
-  exit(oom ? 0 : 70);
-}
-
-/** Reply an error for the current job from this thread (the executor is
- * gone, so nothing else is writing). */
-function failCurrent(error, fatal) {
-  const job = current;
-  if (!job || job.id === undefined || job.kind === 'expire' || job.kind === 'shutdown') return;
-  const msg = { id: job.id, error };
-  if (fatal) msg.fatal = true;
-  try {
-    sendFrame(encode(codec, msg));
-  } catch {
-    // parent gone
-  }
-}
+let exiting = false;
 
 function exit(code) {
-  try {
-    fs.fsyncSync(2);
-  } catch {
-    // not a file
-  }
+  if (exiting) return;
+  exiting = true;
   process.exit(code);
 }
 
-function sendFrame(payload) {
+function sendFrame(payload, lockTimeoutMs = Infinity) {
   const hdr = Buffer.alloc(4);
   hdr.writeUInt32BE(payload.length);
-  writeAll(Buffer.concat([hdr, payload]));
+  writeAll(Buffer.concat([hdr, payload]), { lockTimeoutMs });
 }
 
-// -- jobs ----------------------------------------------------------------------------
-
-const queue = [];
-let current = null;
-let hardStop = null;
-const conns = new Map(); // conn id -> { tx, timer }
-const streams = new Map(); // stream id -> conn id
-let eof = false;
-
-function enqueue(job, front = false) {
-  if (front) queue.unshift(job);
-  else queue.push(job);
-  pump();
+/** An error reply from this thread. */
+function replyError(id, error, extra = {}) {
+  try {
+    sendFrame(encode(codec, { id: id ?? null, error, ...extra }), 1000);
+  } catch (e) {
+    if (e instanceof ParentGone) exit(0);
+    throw e;
+  }
 }
 
-function jobConn(job) {
-  if (job.kind === 'more' || job.kind === 'close_stream') return streams.get(job.stream);
-  const c = job.msg?.conn;
-  if (c === undefined || c === null) return conns.size === 1 ? conns.keys().next().value : undefined;
-  return c;
-}
+// -- executors -----------------------------------------------------------------------
 
-function pump() {
-  if (!ready || current || queue.length === 0 || terminating) return;
-  const job = (current = queue.shift());
-  Atomics.store(flags, 0, job.cancelled ? 1 : 0);
-  const m = job.msg;
-  if (m && m.type === 'commit') {
-    // A commit that has started is not cut short by the deadline.
-    const c = conns.get(jobConn(job));
-    if (c && c.timer && (m.tx === undefined || m.tx === null || m.tx === c.tx)) {
-      clearTimeout(c.timer);
-      c.timer = null;
+// Compiled once; every executor instantiates the same module.
+let wasmModule = null;
+const compiled = WebAssembly.compile(fs.readFileSync(WASM_PATH)).then((m) => (wasmModule = m));
+
+class Executor {
+  constructor() {
+    this.flags = new Int32Array(new SharedArrayBuffer(16));
+    this.queue = [];
+    this.current = null;
+    this.ready = false;
+    this.conn = null; // the connection id it serves
+    this.tx = null; // open transaction ("tN"), as far as the timers care
+    this.timer = null; // its deadline
+    this.hardStop = null;
+    this.dead = false;
+    this.worker = new Worker(new URL('./executor.mjs', import.meta.url), {
+      workerData: {
+        flags: this.flags, debug, memoryLimitMb, maxFrameBytes: maxFrame, lockTable, writeLock, wasmModule,
+      },
+      resourceLimits: memoryLimitMb ? { maxOldGenerationSizeMb: Math.max(64, memoryLimitMb) } : undefined,
+      stdout: true, // the worker's stdout is not our fd 1
+      stderr: false,
+    });
+    this.worker.stdout.on('data', (d) => process.stderr.write(d));
+    this.worker.on('message', (m) => this.onMessage(m));
+    this.worker.on('error', (e) => this.onError(e));
+    this.worker.on('exit', (code) => {
+      if (this.dead) return;
+      this.dead = true;
+      console.error(`dblayer-nodeworker: executor thread exited (${code})`);
+      this.failCurrent({ type: 'QueryError', message: `worker error: the SQLite thread exited (${code})`, code: 'WORKER' });
+      exit(70);
+    });
+  }
+
+  enqueue(job, front = false) {
+    if (front) this.queue.unshift(job);
+    else this.queue.push(job);
+    this.pump();
+  }
+
+  pump() {
+    if (!this.ready || this.current || this.queue.length === 0 || this.dead) return;
+    const job = (this.current = this.queue.shift());
+    Atomics.store(this.flags, 0, job.cancelled ? 1 : 0);
+    const m = job.msg;
+    if (m && m.type === 'commit' && this.timer && (m.tx === undefined || m.tx === null || m.tx === this.tx)) {
+      // A commit that has started is not cut short by the deadline.
+      clearTimeout(this.timer);
+      this.timer = null;
     }
+    if (m && m.type === 'execute' && typeof m.time_limit_ms === 'number') {
+      this.armHardStop(job, m.time_limit_ms + HARD_STOP_MS, 'time limit');
+    }
+    const { msg, ...wire } = job;
+    void msg;
+    wire.codec = codec;
+    this.worker.postMessage(wire, wire.payload ? [wire.payload.buffer] : []);
   }
-  if (m && m.type === 'execute' && typeof m.time_limit_ms === 'number') {
-    armHardStop(job, m.time_limit_ms + HARD_STOP_MS, 'time limit');
-  }
-  const { msg, ...wire } = job;
-  void msg;
-  executor.postMessage(wire, wire.payload ? [wire.payload.buffer] : []);
-}
 
-function onExecutorMessage(m) {
-  if (m.ready) {
-    ready = true;
-    if (m.sqliteVersion !== SQLITE_VERSION) console.error(`dblayer-nodeworker: SQLite ${m.sqliteVersion}, package says ${SQLITE_VERSION}`);
-    pump();
-    return;
-  }
-  if (!m.done) return;
-  const job = current;
-  current = null;
-  if (hardStop) {
-    clearTimeout(hardStop);
-    hardStop = null;
-  }
-  if (m.opened) conns.set(m.opened, { tx: null, timer: null });
-  if (m.closed) {
-    endTx(m.closed);
-    conns.delete(m.closed);
-    for (const [sid, c] of streams) if (c === m.closed) streams.delete(sid);
-  }
-  if (m.txEnded) endTx(m.txEnded);
-  if (m.txBegun) {
-    const c = conns.get(m.txBegun.conn);
-    if (c) {
-      endTx(m.txBegun.conn);
-      c.tx = `t${m.txBegun.tx}`;
+  onMessage(m) {
+    if (m.ready) {
+      this.ready = true;
+      if (m.sqliteVersion !== SQLITE_VERSION) console.error(`dblayer-nodeworker: SQLite ${m.sqliteVersion}, package says ${SQLITE_VERSION}`);
+      this.pump();
+      return;
+    }
+    if (!m.done) return;
+    const job = this.current;
+    this.current = null;
+    if (this.hardStop) {
+      clearTimeout(this.hardStop);
+      this.hardStop = null;
+    }
+    if (m.txEnded || m.closed) this.endTx();
+    if (m.txBegun) {
+      this.endTx();
+      this.tx = `t${m.txBegun.tx}`;
       if (m.txBegun.deadline_ms !== null) {
-        const tx = c.tx;
-        c.timer = setTimeout(() => onDeadline(m.txBegun.conn, tx), Math.max(0, m.txBegun.deadline_ms));
+        const tx = this.tx;
+        this.timer = setTimeout(() => this.onDeadline(tx), Math.max(0, m.txBegun.deadline_ms));
       }
     }
+    if (m.streamOpen) streams.set(m.streamOpen.id, this);
+    else if (m.streamClosed !== undefined && job && (job.kind === 'more' || job.kind === 'close_stream' || job.msg?.type === 'stream')) {
+      streams.delete(m.streamClosed);
+    }
+    if (m.exit !== undefined) {
+      exit(m.exit);
+      return;
+    }
+    if (m.finished) {
+      this.retire();
+      return;
+    }
+    this.pump();
   }
-  if (m.streamOpen) streams.set(m.streamOpen.id, m.streamOpen.conn);
-  else if (m.streamClosed !== undefined && job && (job.kind === 'more' || job.kind === 'close_stream' || job.msg?.type === 'stream')) {
-    streams.delete(m.streamClosed);
+
+  onError(e) {
+    if (this.dead) return;
+    this.dead = true;
+    const oom = e && e.code === 'ERR_WORKER_OUT_OF_MEMORY';
+    console.error(`dblayer-nodeworker: executor thread failed: ${e?.stack || e}`);
+    this.failCurrent(
+      oom
+        ? { type: 'ResourceLimitExceeded', message: 'worker ran out of memory (memory limit)' }
+        : { type: 'QueryError', message: `worker error: ${e?.name}: ${e?.message}`, code: 'WORKER' },
+    );
+    exit(oom ? 0 : 70);
   }
-  if (m.exit !== undefined) exit(m.exit);
-  pump();
+
+  /** Reply an error for the current job from the main thread (the
+   * executor is gone), marked fatal: the process exits next. */
+  failCurrent(error) {
+    const job = this.current;
+    if (!job || job.id === undefined || job.kind === 'expire' || job.kind === 'shutdown') return;
+    replyError(job.id, error, { fatal: true });
+  }
+
+  endTx() {
+    this.tx = null;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  /** Server._on_deadline */
+  onDeadline(tx) {
+    if (this.tx !== tx) return;
+    this.timer = null;
+    this.tx = null;
+    if (this.current && this.current.kind !== 'expire') this.cancelCurrent(3);
+    this.enqueue({ kind: 'expire', conn: this.conn, tx: Number(tx.slice(1)) }, true);
+  }
+
+  cancelCurrent(reason) {
+    Atomics.store(this.flags, 0, reason);
+    Atomics.notify(this.flags, 0); // wakes a busy-handler wait
+    this.armHardStop(this.current, HARD_STOP_MS, reason === 3 ? 'transaction deadline' : 'cancel');
+  }
+
+  /** A statement that does not reach a progress check (one long C call:
+   * randomblob(1e9), instr() on long strings) cannot be interrupted inside
+   * SQLite. Terminating the executor thread stops even those (V8 checks
+   * for termination inside WebAssembly loops). The worker then replies
+   * and exits, as a kill would. */
+  armHardStop(job, ms, why) {
+    if (this.hardStop) clearTimeout(this.hardStop);
+    this.hardStop = setTimeout(async () => {
+      if (this.current !== job || this.dead) return;
+      this.dead = true;
+      const t0 = performance.now();
+      await this.worker.terminate();
+      releaseThread(lockTable, this.worker.threadId);
+      console.error(`dblayer-nodeworker: ${why}: the statement did not stop; SQLite thread terminated in ${(performance.now() - t0).toFixed(1)} ms`);
+      const message =
+        why === 'time limit'
+          ? 'query interrupted (time limit exceeded): the statement did not reach a progress check, so the worker killed its SQLite thread'
+          : why === 'transaction deadline'
+            ? 'transaction passed its deadline; the statement did not stop, so the worker killed its SQLite thread'
+            : 'query cancelled: the statement did not stop, so the worker killed its SQLite thread';
+      this.failCurrent({ type: why === 'transaction deadline' ? 'TransactionExpired' : 'QueryInterrupted', message });
+      exit(0);
+    }, ms);
+  }
+
+  retire() {
+    if (this.conn !== null && executors.get(this.conn) === this) executors.delete(this.conn);
+    for (const [sid, ex] of streams) if (ex === this) streams.delete(sid);
+    this.dead = true;
+    this.worker.terminate().then(() => {
+      releaseThread(lockTable, this.worker.threadId);
+      maybeFinish();
+    });
+  }
 }
 
-function endTx(connId) {
-  const c = conns.get(connId);
-  if (!c) return;
-  c.tx = null;
-  if (c.timer) clearTimeout(c.timer);
-  c.timer = null;
+const executors = new Map(); // conn id -> Executor
+const streams = new Map(); // stream id -> Executor
+let spare = null;
+let connSeq = 0;
+
+async function newExecutor() {
+  await compiled;
+  return new Executor();
 }
 
-/** Server._on_deadline */
-function onDeadline(connId, tx) {
-  const c = conns.get(connId);
-  if (!c || c.tx !== tx) return;
-  c.timer = null;
-  c.tx = null;
-  if (current && current.kind !== 'expire' && jobConn(current) === connId) cancelCurrent(3);
-  enqueue({ kind: 'expire', conn: connId, tx: Number(tx.slice(1)) }, true);
+/** An executor for a new connection: the spare if one is started, and a
+ * new spare behind it. */
+async function takeExecutor() {
+  const ex = spare ? await spare : await newExecutor();
+  spare = SPARES ? newExecutor() : null;
+  return ex;
 }
 
-function cancelCurrent(reason) {
-  Atomics.store(flags, 0, reason);
-  Atomics.notify(flags, 0); // wakes a busy-handler wait
-  armHardStop(current, HARD_STOP_MS, reason === 3 ? 'transaction deadline' : 'cancel');
+// -- requests ------------------------------------------------------------------------
+
+const CONN_TYPES = new Set(['close', 'execute', 'execute_many', 'batch', 'stream', 'begin', 'commit', 'rollback', 'op', 'schema', 'schema_version']);
+let eof = false;
+let pending = Promise.resolve(); // keeps opens in arrival order
+
+function executorFor(msg) {
+  const c = msg.conn;
+  if (c === undefined || c === null) {
+    if (executors.size === 1) return executors.values().next().value;
+    throw { type: 'QueryError', message: `request has no 'conn' and the worker has ${executors.size} connections`, code: 'PROTOCOL' };
+  }
+  const ex = executors.get(c);
+  if (ex) return ex;
+  throw { type: 'QueryError', message: typeof c === 'number' ? `no connection ${c} in this worker` : 'no connection in this worker', code: 'PROTOCOL' };
 }
 
-/** A statement that does not reach a progress check (one long C call:
- * randomblob(1e9), instr() on long strings) cannot be interrupted inside
- * SQLite. Terminating the executor thread stops even those (V8 checks for
- * termination inside WebAssembly loops); every connection in this process
- * is lost with it, so reply and exit, as a kill would. */
-function armHardStop(job, ms, why) {
-  if (hardStop) clearTimeout(hardStop);
-  hardStop = setTimeout(async () => {
-    if (current !== job || terminating) return;
-    terminating = true;
-    const t0 = performance.now();
-    await executor.terminate();
-    console.error(`dblayer-nodeworker: ${why}: the statement did not stop; SQLite thread terminated in ${(performance.now() - t0).toFixed(1)} ms`);
-    const message =
-      why === 'time limit'
-        ? 'query interrupted (time limit exceeded): the statement did not reach a progress check, so the worker killed its SQLite thread'
-        : why === 'transaction deadline'
-          ? 'transaction passed its deadline; the statement did not stop, so the worker killed its SQLite thread'
-          : 'query cancelled: the statement did not stop, so the worker killed its SQLite thread';
-    failCurrent({ type: why === 'transaction deadline' ? 'TransactionExpired' : 'QueryInterrupted', message }, true);
-    exit(0);
-  }, ms);
+function dispatch(payload) {
+  const msg = decode(codec, payload);
+  if (msg === null || typeof msg !== 'object' || Array.isArray(msg) || msg instanceof Uint8Array) {
+    throw new Error('a message must be a map');
+  }
+  const type = msg.type;
+  const id = msg.id;
+  if (type === 'hello') return hello(msg);
+  if (type === 'cancel') return cancel(msg.target);
+  if (type === 'more') {
+    const ex = streams.get(msg.stream);
+    if (ex) ex.enqueue({ kind: 'more', id: msg.stream, stream: msg.stream, credit: typeof msg.credit === 'number' ? msg.credit : 1 });
+    return;
+  }
+  const job = { kind: 'req', id, msg, payload };
+  if (type === 'open') {
+    const connId = ++connSeq;
+    job.connId = connId;
+    pending = pending.then(async () => {
+      const ex = await takeExecutor();
+      ex.conn = connId;
+      executors.set(connId, ex);
+      ex.enqueue(job);
+    });
+    return;
+  }
+  if (type === 'sleep') {
+    pending = pending.then(() => sleep(id));
+    return;
+  }
+  if (type === '_debug' && debug) {
+    pending = pending.then(async () => {
+      let ex = executors.get(msg.conn) ?? (executors.size === 1 ? executors.values().next().value : null);
+      if (!ex) {
+        ex = await takeExecutor();
+        ex.conn = -1;
+      }
+      ex.enqueue(job);
+    });
+    return;
+  }
+  if (!CONN_TYPES.has(type)) {
+    const t = typeof type === 'string' ? `'${type.slice(0, 64)}'` : type === undefined || type === null ? 'None' : String(type);
+    replyError(id, { type: 'QueryError', message: `unknown message type ${t}`, code: 'PROTOCOL' });
+    return;
+  }
+  pending = pending.then(() => {
+    let ex;
+    try {
+      ex = executorFor(msg);
+    } catch (err) {
+      replyError(id, err);
+      return;
+    }
+    ex.enqueue(job);
+  });
+}
+
+function cancel(target) {
+  pending = pending.then(() => {
+    for (const ex of executors.values()) {
+      if (ex.current && ex.current.id === target && ex.current.kind !== 'expire') {
+        ex.cancelCurrent(1);
+        return;
+      }
+      const queued = ex.queue.find((j) => j.id === target && j.kind !== 'expire');
+      if (queued) {
+        queued.cancelled = true;
+        return;
+      }
+    }
+    const ex = streams.get(target);
+    if (ex) ex.enqueue({ kind: 'close_stream', id: target, stream: target });
+  });
+}
+
+function hello(msg) {
+  const wanted = Array.isArray(msg.codecs) ? msg.codecs : ['json'];
+  const chosen = wanted.find((c) => c === 'json' || c === 'msgpack') ?? 'json';
+  if (typeof msg.max_frame_bytes === 'number' && msg.max_frame_bytes > 0) maxFrame = msg.max_frame_bytes;
+  sendFrame(
+    encode('json', {
+      id: msg.id ?? null,
+      type: 'hello',
+      protocol: PROTOCOL_VERSION,
+      codec: chosen,
+      sqlite_version: SQLITE_VERSION,
+      implementation: 'node',
+      node: process.versions.node,
+      wasm: `@sqlite.org/sqlite-wasm ${WASM_PACKAGE}`,
+      pid: process.pid,
+      rlimit_as: false,
+      ops: false,
+    }),
+  ); // in JSON; everything after it in the agreed codec
+  codec = chosen;
+  const note = { kind: 'codec', codec: chosen, maxFrameBytes: maxFrame };
+  for (const ex of executors.values()) ex.worker.postMessage(note);
+  if (spare) spare.then((ex) => ex.worker.postMessage(note));
+}
+
+/** `sleep`: close every connection, reply, exit. */
+async function sleep(id) {
+  await shutdownAll();
+  try {
+    sendFrame(encode(codec, { id: id ?? null, ok: true }));
+  } catch {
+    // parent gone
+  }
+  exit(0);
+}
+
+let finishing = null;
+function maybeFinish() {
+  if (finishing && executors.size === 0) finishing();
+}
+
+function shutdownAll() {
+  return new Promise((resolve) => {
+    finishing = resolve;
+    for (const ex of executors.values()) ex.enqueue({ kind: 'shutdown' });
+    maybeFinish();
+  });
+}
+
+function onEof() {
+  if (eof) return;
+  eof = true;
+  process.stdin.pause();
+  // Exit even if a statement ignores every interrupt.
+  setTimeout(() => exit(0), SHUTDOWN_GRACE_MS);
+  pending.then(() => {
+    for (const ex of executors.values()) {
+      for (const j of ex.queue) j.cancelled = true;
+      if (ex.current) {
+        Atomics.store(ex.flags, 0, 1);
+        Atomics.notify(ex.flags, 0);
+      }
+    }
+    return shutdownAll();
+  }).then(() => exit(0));
 }
 
 // -- input ---------------------------------------------------------------------------
@@ -296,7 +486,7 @@ process.stdin.on('data', (chunk) => {
         need = n;
       }
       if (have < need) break;
-      // its own ArrayBuffer, so it can be transferred to the executor
+      // its own ArrayBuffer, so it can be transferred to an executor
       const payload = new Uint8Array(take(need));
       need = -1;
       dispatch(payload);
@@ -310,63 +500,4 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', onEof);
 process.stdin.on('error', onEof);
 
-function dispatch(payload) {
-  const msg = decode(codec, payload);
-  if (msg === null || typeof msg !== 'object' || Array.isArray(msg) || msg instanceof Uint8Array) {
-    throw new Error('a message must be a map');
-  }
-  const type = msg.type;
-  const id = msg.id;
-  if (type === 'hello') return hello(msg);
-  if (type === 'cancel') {
-    const target = msg.target;
-    const pending = queue.find((j) => j.id === target && j.kind !== 'expire');
-    if (current && current.id === target && current.kind !== 'expire') cancelCurrent(1);
-    else if (pending) pending.cancelled = true;
-    else if (streams.has(target)) enqueue({ kind: 'close_stream', id: target, stream: target });
-    return;
-  }
-  if (type === 'more') {
-    const credit = typeof msg.credit === 'number' ? msg.credit : 1;
-    enqueue({ kind: 'more', id: msg.stream, stream: msg.stream, credit });
-    return;
-  }
-  enqueue({ kind: 'req', id, msg, payload, codec });
-}
-
-function hello(msg) {
-  const wanted = Array.isArray(msg.codecs) ? msg.codecs : ['json'];
-  const chosen = wanted.find((c) => c === 'json' || c === 'msgpack') ?? 'json';
-  if (typeof msg.max_frame_bytes === 'number' && msg.max_frame_bytes > 0) maxFrame = msg.max_frame_bytes;
-  sendFrame(
-    encode('json', {
-      id: msg.id ?? null,
-      type: 'hello',
-      protocol: PROTOCOL_VERSION,
-      codec: chosen,
-      sqlite_version: SQLITE_VERSION,
-      implementation: 'node',
-      node: process.versions.node,
-      wasm: `@sqlite.org/sqlite-wasm ${WASM_PACKAGE}`,
-      pid: process.pid,
-      rlimit_as: false,
-      ops: false,
-    }),
-  ); // in JSON; everything after it in the agreed codec
-  codec = chosen;
-  executor.postMessage({ kind: 'codec', codec: chosen, maxFrameBytes: maxFrame });
-}
-
-function onEof() {
-  if (eof) return;
-  eof = true;
-  process.stdin.pause();
-  for (const j of queue) j.cancelled = true;
-  if (current) Atomics.store(flags, 0, 1);
-  queue.push({ kind: 'shutdown' });
-  pump();
-  // Exit even if a statement ignores every interrupt.
-  setTimeout(() => exit(0), SHUTDOWN_GRACE_MS);
-}
-
-executor = startExecutor();
+if (SPARES) spare = newExecutor();

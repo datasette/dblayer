@@ -193,10 +193,13 @@ class WorkerConfig:
     """A worker program to run instead of ``python -m dblayer.worker``
     (the C worker, ``dblayer.backends.sqlite_cworker``). It takes the same
     ``--memory-limit-mb`` and ``--debug`` options."""
+    executable_args: tuple[str, ...] = ()
+    """Arguments between ``executable`` and the worker options (the Node
+    worker's script, ``dblayer.backends.sqlite_nodeworker``)."""
 
     def argv(self) -> list[str]:
         if self.executable is not None:
-            args = [self.executable]
+            args = [self.executable, *self.executable_args]
         else:
             args = [self.python, "-m", "dblayer.worker"]
         if self.memory_limit_mb:

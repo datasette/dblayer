@@ -227,6 +227,20 @@ def _duckdb_msgpack_available() -> str | None:
     return _duckdb_available() or _msgpack_available()
 
 
+def _sqlite_nodeworker(tmp_path: Path) -> Backend:
+    from dblayer.backends.sqlite_nodeworker import SqliteNodeWorker
+
+    global _counter
+    _counter += 1
+    return SqliteNodeWorker(tmp_path / f"db{_counter}.db")  # type: ignore[return-value]
+
+
+def _nodeworker_available() -> str | None:
+    from dblayer.backends.sqlite_nodeworker import unavailable
+
+    return unavailable()
+
+
 async def _postgres_cleanup(backend: Backend) -> None:
     await pg.drop_schema(backend.schema)  # type: ignore[attr-defined]
 
@@ -269,6 +283,10 @@ BACKENDS: list[BackendSpec] = [
     # SQLite compiled to WebAssembly, in-process under wasmtime
     # (experimental; `make -C cworker wasm`). Operations run in the parent.
     BackendSpec("sqlite-wasm", _sqlite_wasm, available=_wasm_available, native_operations=True),
+    # SQLite compiled to WebAssembly in a Node.js process, one per database
+    # (experimental; `npm ci --prefix nodeworker`). Operations run in the parent.
+    BackendSpec("sqlite-nodeworker", _sqlite_nodeworker, available=_nodeworker_available,
+                native_operations=True, cleanup=_reap_workers),
     BackendSpec("duckdb", _duckdb_file, available=_duckdb_available, native_operations=True),
     # DuckDB in a worker process the database owns; JSON codec. The
     # MessagePack variant runs with DBLAYER_DUCKDB_WORKER_MSGPACK=1.

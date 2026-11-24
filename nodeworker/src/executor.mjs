@@ -1,8 +1,11 @@
-// The executor thread: SQLite (WebAssembly) and every request that touches
-// it. The main thread (main.mjs) reads frames, keeps the queue and the
-// timers, and hands this thread one job at a time; this thread runs it,
-// writes the reply frames to fd 1 itself, and posts back what changed (a
-// connection opened, a transaction begun or ended, a stream left open).
+// An executor thread: one connection, in a WebAssembly instance of its own,
+// and every request on it. The main thread (main.mjs) reads frames, keeps
+// each connection's queue and the timers, and hands this thread one job at
+// a time; this thread runs it, writes the reply frames to fd 1 itself
+// (under a write lock shared with the other threads), and posts back what
+// changed (a connection opened, a transaction begun or ended, a stream left
+// open). Connections run at the same time, as threads do in-process; file
+// locks between them live in shared memory (locks.mjs).
 //
 // A WebAssembly call blocks this thread's event loop, so cancellation
 // arrives through shared memory: the main thread stores a reason in
@@ -16,28 +19,41 @@
 // ported from the C worker (cworker/src/worker.c).
 
 import fs from 'node:fs';
-import { parentPort, workerData } from 'node:worker_threads';
+import { parentPort, workerData, threadId } from 'node:worker_threads';
 import { Writer, Raw, PyFloat, Ext, decode, EXT_CODES } from './codec.mjs';
-import { writeAll, ParentGone, consoleToStderr } from './io.mjs';
+import { writeAll, ParentGone, consoleToStderr, setWriteLock } from './io.mjs';
 import { installNodeVfs } from './vfs.mjs';
 import { KW, leadingKeyword, lstripSqlBytes, isDml, pathAsUri } from './sqlutil.mjs';
 import { readSchema } from './schema.mjs';
 
 consoleToStderr();
 
-const { flags, debug, memoryLimitMb, maxFrameBytes: initialMaxFrame } = workerData;
+const { flags, debug, memoryLimitMb, maxFrameBytes: initialMaxFrame, lockTable, writeLock, wasmModule } = workerData;
+setWriteLock(writeLock);
 const { default: sqlite3InitModule } = await import('@sqlite.org/sqlite-wasm');
 
-// WebAssembly memory: our own, so its maximum is the worker's memory cap.
+// WebAssembly memory: our own, so its maximum is the worker's memory cap
+// (per connection, as RLIMIT_AS is per process for the Python worker).
 const PAGE = 65536;
 const BASE_MB = 24; // runtime, stack and static data before any database
 const maxPages = memoryLimitMb ? Math.min(65536, Math.ceil(((memoryLimitMb + BASE_MB) * 1048576) / PAGE)) : 32768;
 const wasmMemory = new WebAssembly.Memory({ initial: Math.min(256, maxPages), maximum: maxPages });
-const sqlite3 = await sqlite3InitModule({ print: console.error, printErr: console.error, wasmMemory });
+const sqlite3 = await sqlite3InitModule({
+  print: console.error,
+  printErr: console.error,
+  wasmMemory,
+  // the module compiled once by the main thread: no compile per thread
+  instantiateWasm: wasmModule
+    ? (imports, ok) => {
+        WebAssembly.instantiate(wasmModule, imports).then((inst) => ok(inst, wasmModule));
+        return {};
+      }
+    : undefined,
+});
 const { capi, wasm } = sqlite3;
 const X = wasm.exports;
 const C = capi;
-const vfs = installNodeVfs(sqlite3);
+const vfs = installNodeVfs(sqlite3, { lockTable, threadId });
 
 const SQLITE_TRANSIENT = -1;
 const FETCH_BATCH = 256;
@@ -747,7 +763,7 @@ function hOpen(job, m) {
     throw e;
   }
   X.sqlite3_extended_result_codes(db, 1);
-  const id = ++connSeq;
+  const id = job.connId ?? ++connSeq;
   busyTimeouts.set(id, busyMs);
   X.sqlite3_busy_handler(db, busyFn, id);
   // What CPython's build of the same SQLite does by default, where the
@@ -1246,10 +1262,11 @@ parentPort.on('message', (job) => {
     return;
   }
   const done = { done: true };
+  if (job.codec && job.codec !== codec) setCodec(job.codec);
   try {
     if (job.kind === 'shutdown') {
       closeAll();
-      done.exit = 0;
+      done.finished = true;
     } else {
       runJob(job);
       if (job.opened) done.opened = job.opened;
@@ -1265,6 +1282,7 @@ parentPort.on('message', (job) => {
         closeAll();
         done.exit = 0;
       }
+      if (job.closed) done.finished = true;
     }
   } catch (e) {
     if (e instanceof ParentGone) {
