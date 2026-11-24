@@ -212,6 +212,32 @@ async def test_cancellation_at_random_points_is_never_lost(db):
     assert (await db.execute("select 5")).rows == [(5,)]
 
 
+async def test_cancelling_an_evading_query_at_random_points_always_returns(db):
+    """The same for a statement only a trap stops, cancelled at random
+    points, including before the call has reached the instance and while
+    the previous trapped instance is being replaced: every cancel returns
+    within the grace period (plus an epoch tick) and the connection works."""
+    await db.execute("select 1")
+    rng = random.Random(99)
+    n = 40
+    worst = 0.0
+    traps = runtime_stats()["traps"]
+    for i in range(n):
+        task = asyncio.create_task(db.execute(EVADING["instr_quadratic"]))
+        await asyncio.sleep(0 if i % 5 == 0 else rng.random() * 0.03)
+        t0 = time.perf_counter()
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=10)
+        except asyncio.CancelledError:
+            pass
+        worst = max(worst, time.perf_counter() - t0)
+    trapped = runtime_stats()["traps"] - traps
+    print(f"\n[wasm] {n} random-point cancels of an evading query: worst {worst * 1000:.0f} ms; {trapped} traps")
+    assert worst < BOUND_S
+    assert (await db.execute("select 6")).rows == [(6,)]
+
+
 async def test_cancelled_write_transaction_releases_the_write_slot(db):
     await db.execute_write("create table t (x)")
 
