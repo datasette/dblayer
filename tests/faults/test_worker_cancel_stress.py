@@ -22,7 +22,7 @@ from dblayer import Database, DblayerError
 
 from ..helpers import EVENTUALLY_S, count_open_fds, wait_until
 
-WORKERS = {"sqlite-worker", "sqlite-cworker", "sqlite-cpool", "duckdb-worker"}
+WORKERS = {"sqlite-worker", "sqlite-cworker", "sqlite-cpool", "sqlite-rspool", "duckdb-worker"}
 
 UNBOUNDED = (
     "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c"

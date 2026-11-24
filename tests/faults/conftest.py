@@ -27,7 +27,8 @@ def no_orphan_workers():
     assert live_worker_pids() == []
 
 
-@pytest.fixture(params=["python", "c", "cpool", "node"], ids=["py-worker", "c-worker", "c-pool", "node-worker"])
+@pytest.fixture(params=["python", "c", "cpool", "rspool", "node"],
+                ids=["py-worker", "c-worker", "c-pool", "rust-pool", "node-worker"])
 def make_worker(request: pytest.FixtureRequest):
     """``SqliteWorker``, the C worker (``SqliteCWorker``) or the
     multi-tenant C pool (``SqliteCPool``, one process per test); the C ones
@@ -58,7 +59,12 @@ def make_worker(request: pytest.FixtureRequest):
         return
     from dblayer.backends.sqlite_cworker import SqliteCWorker, binary_unavailable
 
-    reason = binary_unavailable()
+    if request.param == "rspool":  # the Rust port of the multi-tenant worker
+        from dblayer.backends.sqlite_rspool import binary_unavailable as rs_unavailable
+
+        reason = rs_unavailable()
+    else:
+        reason = binary_unavailable()
     if reason:
         pytest.skip(reason)
     pools: list[Any] = []
@@ -69,12 +75,14 @@ def make_worker(request: pytest.FixtureRequest):
         if request.param == "c":
             return SqliteCWorker(path, **kwargs)
         from dblayer.backends.sqlite_cpool import CPool, SqliteCPool
+        from dblayer.backends.sqlite_rspool import RustPool
 
         process_options = {k: kwargs.pop(k) for k in ("kill_grace_ms", "memory_limit_mb", "debug", "max_frame_bytes")
                            if k in kwargs}
         if process_options.get("memory_limit_mb"):  # the per-database heap limit is per process here
             process_options["heap_limit_mb"] = process_options["memory_limit_mb"]
-        pools.append(pool := CPool(1, linger=0, **process_options))
+        pool_class = RustPool if request.param == "rspool" else CPool
+        pools.append(pool := pool_class(1, linger=0, **process_options))
         return SqliteCPool(path, pool=pool, **kwargs)  # type: ignore[return-value]
 
     yield make
