@@ -131,6 +131,21 @@ def _postgres_psycopg(tmp_path: Path) -> Backend:
     return pg.make("psycopg", prepare_threshold=None if threshold is None else int(threshold))
 
 
+def _duckdb_worker(codec: str) -> Callable[[Path], Backend]:
+    def make(tmp_path: Path) -> Backend:
+        from dblayer.backends.duckdb_worker import DuckDBWorker
+
+        global _counter
+        _counter += 1
+        return DuckDBWorker(tmp_path / f"db{_counter}.duckdb", codec=codec)  # type: ignore[return-value]
+
+    return make
+
+
+def _duckdb_msgpack_available() -> str | None:
+    return _duckdb_available() or _msgpack_available()
+
+
 async def _postgres_cleanup(backend: Backend) -> None:
     await pg.drop_schema(backend.schema)  # type: ignore[attr-defined]
 
@@ -149,6 +164,15 @@ BACKENDS: list[BackendSpec] = [
         cleanup=_reap_workers,
     ),
     BackendSpec("duckdb", _duckdb_file, available=_duckdb_available, native_operations=True),
+    # DuckDB in a worker process the database owns; JSON codec. The
+    # MessagePack variant runs with DBLAYER_DUCKDB_WORKER_MSGPACK=1.
+    BackendSpec(
+        "duckdb-worker",
+        _duckdb_worker("json"),
+        available=_duckdb_available,
+        native_operations=True,
+        cleanup=_reap_workers,
+    ),
     BackendSpec(
         "postgres",
         _postgres,

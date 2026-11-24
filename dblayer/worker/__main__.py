@@ -103,6 +103,11 @@ class _ParentGone(Exception):
     pass
 
 
+class _Interrupted(Exception):
+    """Cause of a request the worker itself stopped (cancel, time-limit
+    backstop, deadline) before the engine raised anything."""
+
+
 class Job:
     __slots__ = ("id", "msg", "type", "cancelled", "cancel_reason", "task", "wc")
 
@@ -362,11 +367,21 @@ class Server:
             job.wc is not None and isinstance(job.wc.engine.backend.dialect.map_exception(e), QueryInterrupted)
         )
         if job.cancelled and interrupted:
+            new: DblayerError
             if job.cancel_reason == "deadline":
-                return TransactionExpired(self._expired_msg())
-            if job.cancel_reason == "time_limit":
-                return QueryInterrupted("query interrupted (time limit exceeded)")
-            return QueryInterrupted("query cancelled")
+                new = TransactionExpired(self._expired_msg())
+            elif job.cancel_reason == "time_limit":
+                new = QueryInterrupted("query interrupted (time limit exceeded)")
+            else:
+                new = QueryInterrupted("query cancelled")
+            # Keep the driver's exception as the cause when there is one;
+            # a cancel that stopped the call before the driver raised has
+            # none, so say what stopped it.
+            cause = e.__cause__ if isinstance(e, DblayerError) else e
+            if cause is None or isinstance(cause, (asyncio.CancelledError, DblayerError)):
+                cause = _Interrupted(f"request stopped by the worker ({job.cancel_reason})")
+            new.__cause__ = cause
+            return new
         return e
 
     async def _handle(self, job: Job) -> dict[str, Any] | None:
@@ -447,8 +462,11 @@ class Server:
         interrupts the statement) once the limit has passed."""
         if time_limit_ms is None:
             return None
+        # 50 ms behind the limit: engines whose own limit is a timer
+        # (DuckDB's interrupt lands within a few ms) should get there first,
+        # so the caller sees the engine's error.
         return self.loop.call_later(
-            time_limit_ms / 1000 + 0.005,
+            time_limit_ms / 1000 + 0.05,
             lambda: self.current is job and self.cancel_job(job, "time_limit"),
         )
 
