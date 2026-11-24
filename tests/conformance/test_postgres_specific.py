@@ -478,7 +478,21 @@ async def test_sleep_closes_every_server_connection(make_pg):
     assert (await db.execute("select count(*) from t")).rows == [(0,)]
 
 
-async def test_schema_change_by_another_client_seen_after_refresh_and_ttl(make_pg):
+async def test_schema_change_by_another_client_seen_after_refresh_and_ttl(make_pg, monkeypatch):
+    # change_hint() is a bucket of time.monotonic() // schema_ttl. On the
+    # real clock a bucket boundary can fall between any two lines below (more
+    # likely the slower the machine), so the backend gets a clock the test
+    # moves by hand: "cached" and "past the TTL" are then exact.
+    import time
+    import types
+
+    import dblayer.backends.postgres as postgres_module
+
+    now = [1000.0]
+    fake_time = types.SimpleNamespace(**vars(time))
+    fake_time.monotonic = lambda: now[0]
+    monkeypatch.setattr(postgres_module, "time", fake_time)
+
     db = make_pg(backend={"schema_ttl": 0.6})
     schema = db._backend.schema
     other = make_pg(schema=schema)  # another client: own backend, same schema
@@ -495,7 +509,7 @@ async def test_schema_change_by_another_client_seen_after_refresh_and_ttl(make_p
 
     await other.execute_write("create table c (x integer)")
     assert await db.table_names() == ["a", "b"]
-    await asyncio.sleep(0.7)  # past the TTL: the hint has moved on
+    now[0] += 0.6  # past the TTL: the hint has moved on
     assert await db.table_names() == ["a", "b", "c"]
     # Own writes are seen at once, as on every backend.
     await db.execute_write("create table d (x integer)")
