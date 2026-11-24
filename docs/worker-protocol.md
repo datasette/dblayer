@@ -12,7 +12,9 @@ A second implementation, the C worker in `cworker/`
 (`dblayer.backends.sqlite_cworker.SqliteCWorker`), speaks this protocol for
 the SQLite engine only; `tests/worker/test_cworker.py` and the conformance
 suite (`sqlite-cworker`) check it against the Python worker and in-process
-SQLite. Where it differs is listed under "Implementations" below.
+SQLite. Where it differs is listed under "Implementations" below. A third,
+the Node worker in `nodeworker/` (SQLite compiled to WebAssembly, in Node.js;
+`dblayer.backends.sqlite_nodeworker`), is described there too.
 
 ## Transport and framing
 
@@ -49,8 +51,13 @@ directions uses it.
 
 | Codec | `bytes` | Integers | Non-finite floats | Notes |
 | --- | --- | --- | --- | --- |
-| `json` (stdlib) | `{"$b": "<base64>"}` | exact (both ends are Python) | `NaN`, `Infinity` (Python extensions) | A user dict whose only key is `$b`, `$d` or `$x` is escaped as `{"$d": [key, value]}`. |
-| `msgpack` (optional extra) | native `bin` | native up to 64 bits; larger as ext type 1 (decimal text) | native | |
+| `json` (stdlib) | `{"$b": "<base64>"}` | exact, any size: a number with no fraction or exponent is an integer, one with either is a float (Python writes `1.0`, never `1`, for a float) | `NaN`, `Infinity`, `-Infinity` (Python extensions) | A user dict whose only key is `$b`, `$d` or `$x` is escaped as `{"$d": [key, value]}`. |
+| `msgpack` (optional extra) | native `bin` | native up to 64 bits; larger as ext type 1 (decimal text). A float is always a float (float 64), even with an integral value | native | |
+
+Both rules matter to a peer whose numbers are doubles (JavaScript): SQLite
+INTEGER is 64-bit, so integers beyond 2^53 must be kept exactly (the Node
+worker uses `BigInt`), and `1.0` must stay a float, since SQLite binds it
+as REAL and returns it as `1.0`, not `1`.
 
 Value types beyond the portable set (dates, decimals, UUIDs from a DuckDB or
 PostgreSQL engine) go through one extension point,
@@ -178,6 +185,56 @@ Used by `dblayer.backends.sqlite_cpool` (`SqliteCPool`, `CPool`). Options:
   would change every tenant's limit); heap limits come from the command
   line. A fatal error exits the whole process.
 
+### Node worker (`nodeworker/`, SQLite-WASM)
+
+`node nodeworker/src/main.mjs [--memory-limit-mb N] [--debug] [--version]`,
+used by `dblayer.backends.sqlite_nodeworker` (`SqliteNodeWorker`): the
+official SQLite WebAssembly build (`@sqlite.org/sqlite-wasm`, pinned in
+`nodeworker/package.json`) with a file VFS over Node's synchronous `fs`
+calls. Checked by `tests/worker/test_nodeworker.py` (including the C
+worker's differential cases), `tests/worker/test_nodeworker_locking.py`,
+the conformance suite (`sqlite-nodeworker`) and the fault tests.
+
+- `hello` says `"implementation": "node"`, `"ops": false`, and adds `node`
+  (the Node version) and `wasm` (the package). `op`, `init` hooks and
+  `config.extensions` are refused as by the C worker (the build omits
+  `load_extension`).
+- **One process per database, one thread per connection.** Node cannot take
+  the POSIX advisory locks native SQLite uses, so the VFS keeps SQLite's lock
+  states in shared memory inside the process: correct between its
+  connections, invisible to every other process. Every connection of a
+  database is in one Node process (`DatabaseWorker` placement), each on an
+  executor thread with its own WebAssembly instance, and the parent may have
+  one request in flight *per connection* (as the multi-tenant C worker): a
+  writer waiting on a reader's lock must not stop the reader's next
+  request. Nothing else may open the file meanwhile; a Node worker writing
+  beside a live native writer takes its journal for a hot journal, rolls it
+  back and corrupts the database (`test_nodeworker_locking.py`).
+- No shared memory in the VFS, so no WAL: `journal_mode=wal` leaves the
+  database in `delete` mode, and a database already in WAL mode fails to
+  open (`unable to open database file`).
+- Cancellation reaches a running statement through shared memory read by
+  SQLite's progress handler (the executor's JavaScript event loop is
+  blocked while SQLite runs). A statement that does not reach a progress
+  check is stopped by terminating its executor thread (V8 checks for
+  termination inside WebAssembly loops), about 100 ms after its time limit
+  or a cancel: the worker replies `QueryInterrupted` (or
+  `TransactionExpired`) with `fatal: true` and exits, before the parent's
+  `kill_grace_ms`.
+- Memory: `--memory-limit-mb` is each connection's WebAssembly memory
+  maximum (SQLite cannot allocate past it, on every platform; an
+  allocation that fails is `SQLITE_NOMEM`, `ResourceLimitExceeded`, and the
+  worker carries on) and its thread's V8 old-generation limit (exceeded:
+  `ResourceLimitExceeded`, fatal). No `RLIMIT_AS` (`rlimit_as: false`): V8
+  reserves far more address space than any useful limit.
+- SQLite settings where the WebAssembly build's compile-time defaults differ
+  from CPython's build are reset per connection to CPython's: double-quoted
+  string literals allowed, `recursive_triggers` off, `cache_size` -2000,
+  `page_size` 4096 for new files. The build has no FTS3/FTS4 or geopoly.
+- `fsync` is libuv's: on macOS that is `F_FULLFSYNC`, so every commit
+  flushes the drive's cache (about 10 ms here; native SQLite does the same
+  only with `PRAGMA fullfsync`). On Linux it is `fsync(2)`.
+
 Errors are reproduced as Python's `sqlite3` raises them: the same exception
 class in `cause.type`, the same `sqlite_errorname` as `code`, and the
 module's own `ProgrammingError` texts (binding counts, one statement at a
@@ -229,7 +286,8 @@ placement) and every connection of it.
 Some statements spend seconds inside one C function call (`instr`, `LIKE`
 or `GLOB` with a long literal pattern on a long string, `randomblob(1e9)`,
 `printf('%*d', 1e9, 1)`), where neither the progress handler nor `interrupt()`
-can reach them; only the parent's SIGKILL stops them. See
+can reach them; only the parent's SIGKILL stops them (the Node worker
+stops them itself by terminating the statement's thread, then exits). See
 `tests/faults/test_worker_time.py`.
 
 ## Example session

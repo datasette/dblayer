@@ -124,6 +124,28 @@ fault and value-type tests, which skip until the binary exists.
 `make -C duckdb-rs-worker test` runs the Rust unit tests;
 `benchmarks/duckdb_memory.py native` compares it with the Python worker.
 
+### SQLite-WASM in a Node.js process (experimental)
+
+`SqliteNodeWorker(path)` (`dblayer/backends/sqlite_nodeworker.py`) runs the
+official SQLite WebAssembly build in a Node.js worker process (`nodeworker/`,
+Node 22+): the WebAssembly sandbox with a memory cap, inside a process the
+parent can kill. Install its pinned npm package once (no build step, no
+global install):
+
+```bash
+npm ci --prefix nodeworker
+```
+
+One Node process serves every connection of a database, a thread each,
+because Node cannot take the file locks native SQLite uses: nothing else may
+open the file while it does. Its tests (`sqlite-nodeworker`,
+`tests/worker/test_nodeworker.py`, `tests/worker/test_nodeworker_locking.py`,
+the `node-worker` fault tests) skip until the packages are installed;
+`DBLAYER_NODE` and `DBLAYER_NODEWORKER` point at another `node` or script.
+`benchmarks/nodeworker_bench.py` measures its start-up and memory. Details,
+including what a time limit can stop inside the process, are in
+[docs/worker-protocol.md](docs/worker-protocol.md#node-worker-nodeworker-sqlite-wasm).
+
 ## Demo app
 
 `dblayer_demo/` is a small Datasette-like Starlette app built only on
