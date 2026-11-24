@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from dblayer import Database, NotSupported, QueryError
+from dblayer import Database, NotSupported, QueryError, QueryInterrupted
 from dblayer.backends.duckdb_rsworker import (
     BUILD_COMMAND,
     ENV_VAR,
@@ -236,6 +236,25 @@ async def test_concurrent_reads_on_many_connections(tmp_path):
         await db.execute_write("create table t as select range id from range(100000)")
         results = await asyncio.gather(*[db.execute("select sum(id) from t where id % :m = 0", {"m": m}) for m in range(1, 13)])
         assert [r.rows[0][0] for r in results] == [sum(range(0, 100000, m)) for m in range(1, 13)]
+    finally:
+        await db.close()
+
+
+async def test_cancel_one_connection_leaves_the_others_running(tmp_path):
+    unbounded = "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c"
+    db = Database(DuckDBRustWorker(tmp_path / "k.duckdb"))
+    try:
+        await db.execute("select 1")
+        a = asyncio.ensure_future(db.execute(unbounded, time_limit_ms=8000))
+        b = asyncio.ensure_future(db.execute(unbounded, time_limit_ms=300))
+        await asyncio.sleep(0.2)
+        a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await a
+        with pytest.raises(QueryInterrupted):
+            await b
+        assert (await db.execute("select 2")).rows == [(2,)]
+        assert db.stats().in_use_read == 0
     finally:
         await db.close()
 
