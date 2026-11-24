@@ -189,15 +189,23 @@ class WorkerConfig:
     preload: tuple[str, ...] = ()
     """Modules the worker imports at start-up, before ``hello`` (an
     engine's driver), so a pre-started spare has already paid for them."""
+    executable: str | None = None
+    """A worker program to run instead of ``python -m dblayer.worker``
+    (the C worker, ``dblayer.backends.sqlite_cworker``). It takes the same
+    ``--memory-limit-mb`` and ``--debug`` options."""
 
     def argv(self) -> list[str]:
-        args = [self.python, "-m", "dblayer.worker"]
+        if self.executable is not None:
+            args = [self.executable]
+        else:
+            args = [self.python, "-m", "dblayer.worker"]
         if self.memory_limit_mb:
             args += ["--memory-limit-mb", str(int(self.memory_limit_mb))]
         if self.debug:
             args.append("--debug")
-        for module in self.preload:
-            args += ["--preload", module]
+        if self.executable is None:  # a Python-worker option
+            for module in self.preload:
+                args += ["--preload", module]
         return args
 
 
@@ -1256,7 +1264,12 @@ class WorkerConnection:
 
     async def run_operation(self, name: str, args: dict[str, Any]) -> object:
         """``SupportsOperations``: the worker runs the default
-        implementation of the operation locally, in one round trip."""
+        implementation of the operation locally, in one round trip. A
+        worker whose ``hello`` says ``"ops": false`` (the C worker) cannot
+        run Python operations: decline, so the core runs them here."""
+        await self._ensure_alive()
+        if self._proc.hello.get("ops") is False:
+            return NotImplemented
         reply = await self._call(self._tx_field({"type": "op", "name": name, "args": args}))
         return reply["result"]
 

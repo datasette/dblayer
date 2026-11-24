@@ -78,6 +78,23 @@ def _sqlite_worker(codec: str) -> Callable[[Path], Backend]:
     return make
 
 
+def _sqlite_cworker(codec: str | None) -> Callable[[Path], Backend]:
+    def make(tmp_path: Path) -> Backend:
+        from dblayer.backends.sqlite_cworker import SqliteCWorker
+
+        global _counter
+        _counter += 1
+        return SqliteCWorker(tmp_path / f"db{_counter}.db", codec=codec)  # type: ignore[return-value]
+
+    return make
+
+
+def _cworker_available() -> str | None:
+    from dblayer.backends.sqlite_cworker import binary_unavailable
+
+    return binary_unavailable()
+
+
 def _msgpack_available() -> str | None:
     try:
         import msgpack  # noqa: F401
@@ -160,6 +177,23 @@ BACKENDS: list[BackendSpec] = [
         "sqlite-worker-msgpack",
         _sqlite_worker("msgpack"),
         available=_msgpack_available,
+        native_operations=True,
+        cleanup=_reap_workers,
+    ),
+    # The C worker (cworker/, experimental): MessagePack when installed,
+    # else JSON; and JSON explicitly. Named operations decline in the
+    # worker, so the "override" path is the core's default path.
+    BackendSpec(
+        "sqlite-cworker",
+        _sqlite_cworker(None),
+        available=_cworker_available,
+        native_operations=True,
+        cleanup=_reap_workers,
+    ),
+    BackendSpec(
+        "sqlite-cworker-json",
+        _sqlite_cworker("json"),
+        available=_cworker_available,
         native_operations=True,
         cleanup=_reap_workers,
     ),
