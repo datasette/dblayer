@@ -68,14 +68,14 @@ def raw():
 
 
 @pytest.mark.parametrize("codec", ["json", "msgpack"])
-def test_hello_agrees_codec(raw, codec):
+def test_hello_agrees_codec(raw, codec, tmp_path):
     if codec == "msgpack":
         pytest.importorskip("msgpack")
     reply = raw.call(type="hello", protocol=1, codecs=[codec, "json"])
     assert reply["type"] == "hello" and reply["codec"] == codec
     assert reply["pid"] == raw.p.pid and reply["sqlite_version"]
     raw.codec = get_codec(codec)
-    assert raw.call(type="open", path=":memory:", mode="write")["ok"]
+    assert raw.call(type="open", path=str(tmp_path / "h.db"), mode="write")["ok"]
     r = raw.call(type="execute", sql="select 1 as a, x'00ff' as b")["result"]
     assert r == {"columns": ["a", "b"], "rows": [[1, b"\x00\xff"]]}
 
@@ -118,12 +118,12 @@ def test_worker_tracks_transaction_deadline_itself(raw, tmp_path: Path):
     assert raw.call(type="rollback", tx=tx)["ok"]
 
 
-def test_prints_from_init_hooks_do_not_corrupt_the_stream():
+def test_prints_from_init_hooks_do_not_corrupt_the_stream(tmp_path):
     w = Raw("--debug")
     try:
         w.call(type="hello", protocol=1, codecs=["json"])
         assert w.call(type="_debug", action="print", text="hello from a hook")["ok"]
-        assert w.call(type="open", path=":memory:", mode="write")["ok"]
+        assert w.call(type="open", path=str(tmp_path / "p.db"), mode="write")["ok"]
     finally:
         w.close()
     assert w.p.returncode == 0
