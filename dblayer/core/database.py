@@ -605,7 +605,11 @@ class Database(IntrospectionMixin, OperationsMixin):
         """Everything introspection knows, from the cache when it is current."""
         self._check_open()
         cache = self._cache()
-        hint = self._backend.change_hint() if self.capabilities.cheap_change_hint else None
+        # Every backend's hint is trusted while it stays the same: a file
+        # stat for SQLite, a TTL token for PostgreSQL (so changes made by
+        # other clients are seen after the TTL or refresh_schema()); None
+        # (no hint at all) always checks the version.
+        hint = self._backend.change_hint()
         cached = cache.fresh_by_hint(hint)
         if cached is not None:
             return cached
@@ -636,6 +640,19 @@ class Database(IntrospectionMixin, OperationsMixin):
         ``Backend.change_hint``."""
         self._check_open()
         return self._backend.change_hint()
+
+    async def refresh_schema(self) -> Schema:
+        """Drop the cached schema and read it again, and move
+        ``change_hint()`` on so callers tracking it re-check. On backends
+        whose hint is only a TTL (PostgreSQL), this is how a schema change
+        made by another client is seen before the TTL runs out."""
+        self._check_open()
+        invalidate = getattr(self._backend, "invalidate_change_hint", None)
+        if invalidate is not None:
+            invalidate()
+        if self._schema_cache is not None:
+            self._schema_cache.clear()
+        return await self.schema()
 
     # -- lifecycle ---------------------------------------------------------------
 
