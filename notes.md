@@ -933,3 +933,34 @@ Restarted under Python 3.14 with ClickHouse added. All 15 featured databases ans
 ### Idea
 
 - **Denying host access by scanning SQL text is fragile.** The ClickHouse hole came from a scanner being fooled by comment and quoting syntax. Where an engine offers a real setting or sandbox, use it; where it does not (chDB's `file()`), a worker process with no filesystem access beyond its data directory is the dependable control. The same reasoning applies to DuckDB's external access setting and SQLite's authorizer.
+
+### Found: native export experiment, interim (2026-11-24)
+
+Interim report from the relaunched subagent. Load 19 to 26 during the run; provisional. The 1,000,000-row run is still in progress.
+
+CSV export of a wide 100,000-row table; CPU is the Python server process's own CPU time:
+
+| Mode | Python CPU | Wall | Max event-loop lag |
+| --- | --- | --- | --- |
+| C worker, Python fallback | 0.223 s | 0.39 s | 4.7 ms |
+| C worker, Datasette-style | 0.216 s | not reported | 5.7 ms |
+| C worker, native, raw frames | 0.027 s | 0.18 s | 3.0 ms |
+| C worker, native, socket handoff | 0.015 s | 0.25 s | 8 ms |
+| DuckDB in-process, fallback | 0.349 s | not reported | not reported |
+| DuckDB in-process, native | 0.091 s | 0.08 s | not reported |
+| PostgreSQL (psycopg), fallback | 0.341 s | not reported | not reported |
+| PostgreSQL (psycopg), native | 0.097 s | not reported | not reported |
+
+- **Backend-side serialisation cuts the Python process's CPU by about 8 times on the C worker** (0.223 s to 0.027 s), and socket handoff by about 15 times (to 0.015 s). On in-process DuckDB and on PostgreSQL the gain is 3.5 to 4 times. DuckDB's figure includes the engine's own threads, since it runs in the same process.
+- **Socket handoff saves little over raw frames** at this size (0.015 s against 0.027 s of Python CPU) and its wall time was slower. Given its preconditions, raw frames may be the practical answer.
+- **Datasette-style JSON is the expensive case.** Building the whole response with one `json.dumps` cost 120 to 160 MB of memory and 80 to 235 ms of event-loop lag at 100,000 rows. Every chunked mode stayed under about 10 ms of lag.
+- **PostgreSQL native export does not win on narrow tables** (0.092 s against 0.090 s): psycopg's `Copy.read()` hands over one row per await, so Python still does per-row work.
+- **Parity, verified by 65 new tests:** native output is byte-identical to the Python fallback on the C worker, DuckDB and psycopg for CSV, TSV, every JSON shape and NDJSON, across NaN and infinities, a 5 MiB value, the empty result, NULL against the empty string, 64-bit extremes, and control characters. Dates and timestamps on DuckDB and PostgreSQL are equal only after parsing (`.5` and `-08` where Python writes `.500000` and `-08:00`). Intervals are unspecified.
+- **A real bug fixed in the core** (`0eeec98`): the core's time limit and the backend's both fired for the same budget, and on the DuckDB worker the second cancel left a read transaction open ("cannot start a transaction within a transaction"). The core's limit now fires 100 ms after the backend's, and a connection it had to cancel is discarded.
+- **The psycopg time-limit failures seen earlier are real, not load:** with zero grace, "another command is already in progress" in 2 of 10 runs.
+- The C worker's export and handoff paths are clean under ASan and UBSan.
+
+### Upstream suggestions
+
+- **Datasette: stream JSON responses in chunks.** Serialising a whole JSON response with a single `json.dumps` cost 120 to 160 MB and blocked the event loop for 80 to 235 ms at 100,000 rows here; chunked serialisation of the same data stayed under 10 ms of lag. Measured in dblayer's benchmark with a "Datasette-style" mode written by the subagent, not by running Datasette itself, and Datasette normally caps rows at 1,000 per page, so this bears mainly on `?_shape=`/`_size=max`, on plugins, and on any future streaming JSON export.
+- **Datasette: the CSV streaming path could delegate to the database** where one exists that can serialise (PostgreSQL `COPY`, DuckDB `COPY`, a worker process), for a 4 to 8 times cut in server CPU. A feature idea for the backend interface, not a bug.
