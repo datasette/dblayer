@@ -184,6 +184,26 @@ async def test_worker_killed_mid_body(db):
     assert (await db.execute("select 5 as a")).rows == [(5,)]
 
 
+async def test_worker_killed_mid_body_over_http(server, db):
+    # The client must see a broken transfer (no terminating chunk), never a
+    # complete-looking body that is merely short.
+    async def kill_soon() -> None:
+        for _ in range(200):
+            pool = db._pool
+            if pool is not None and pool._in_use:
+                await asyncio.sleep(0.3)
+                os.kill(_busy_worker_pid(db), signal.SIGKILL)
+                return
+            await asyncio.sleep(0.02)
+
+    killer = asyncio.create_task(kill_soon())
+    async with httpx.AsyncClient(base_url=server, timeout=30) as client:
+        with pytest.raises(httpx.RemoteProtocolError):
+            await client.get("/export", params=q(INFINITE, format="csv", mode="handoff"))
+    await killer
+    assert (await db.execute("select 6 as a")).rows == [(6,)]
+
+
 def _busy_worker_pid(db: Database) -> int:
     pool = db._pool
     assert pool is not None and pool._in_use
