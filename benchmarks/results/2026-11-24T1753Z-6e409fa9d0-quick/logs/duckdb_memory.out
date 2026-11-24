@@ -1,0 +1,38 @@
+machine: load average [1.09, 1.0, 0.55], 8 CPUs, 0 'yes' processes
+
+in-process n=20 cap=40 load [1.09, 1.0, 0.55] -> [1.09, 1.0, 0.55]
+  start: parent 54/38 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 227/198 children 0/0 total 227/198 procs 0 | after sleep parent 143/113 children 0/0 procs 0 | wake median 70.4 ms p95 84.6 ms | wall 0.27 s | fds parent 28 children 0
+
+in-process+gc n=20 cap=40 load [1.09, 1.0, 0.55] -> [1.09, 1.0, 0.55]
+  start: parent 54/38 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 231/202 children 0/0 total 231/202 procs 0 | after sleep parent 105/76 children 0/0 procs 0 | wake median 65.9 ms p95 88.3 ms | wall 0.26 s | fds parent 28 children 0
+
+in-process+trim n=20 cap=40 load [1.09, 1.0, 0.55] -> [1.09, 1.0, 0.55]
+  start: parent 54/38 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 229/200 children 0/0 total 229/200 procs 0 | after sleep parent 100/71 children 0/0 procs 0 | wake median 67.1 ms p95 75.6 ms | wall 0.26 s | fds parent 28 children 0 | malloc_trim -> 1
+
+in-process+settings n=20 cap=40 load [1.09, 1.0, 0.55] -> [1.08, 1.0, 0.56]
+  start: parent 54/38 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 206/177 children 0/0 total 206/177 procs 0 | after sleep parent 98/69 children 0/0 procs 0 | wake median 84.4 ms p95 116.3 ms | wall 0.37 s | fds parent 28 children 0 | malloc_trim -> 1
+
+worker n=20 cap=40 load [1.08, 1.0, 0.56] -> [1.55, 1.1, 0.59]
+  start: parent 36/28 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 37/28 children 1776/782 total 1813/808 procs 20 | after sleep parent 36/28 children 0/0 procs 0 | wake median 974.5 ms p95 1064.4 ms | wall 3.01 s | fds parent 68 children 180
+
+worker-pool n=20 cap=40 load [1.55, 1.1, 0.59] -> [1.51, 1.1, 0.59]
+  start: parent 36/28 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 36/28 children 787/413 total 823/439 procs 8 | after sleep parent 36/28 children 0/0 procs 0 | wake median 220.7 ms p95 1161.9 ms | wall 1.61 s | fds parent 32 children 84
+
+rust-worker n=20 cap=40 load [1.51, 1.1, 0.59] -> [1.51, 1.1, 0.59]
+  start: parent 36/28 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 38/30 children 1238/344 total 1276/373 procs 20 | after sleep parent 38/30 children 0/0 procs 0 | wake median 84.3 ms p95 143.2 ms | wall 0.42 s | fds parent 68 children 100
+
+cpp-worker n=20 cap=40 load [1.51, 1.1, 0.59] -> [1.47, 1.09, 0.6]
+  start: parent 36/28 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 38/30 children 1226/340 total 1265/370 procs 20 | after sleep parent 38/29 children 0/0 procs 0 | wake median 85.6 ms p95 126.2 ms | wall 0.36 s | fds parent 68 children 100
+
+native (load [1.47, 1.09, 0.6] -> [1.05, 1.03, 0.61]):
+  floor: {"worker": {"spawn_to_hello_ms": 870.8, "floor_mb": [51.2, 34.8], "open_ms": 40.8, "first_query_ms": 5.5, "spawn_to_first_result_ms": 917.5, "one_db_open_mb": [81.9, 52.7], "after_analytical_mb": [87.6, 58.2]}, "rust-worker": {"spawn_to_hello_ms": 11.7, "floor_mb": [20.3, 17.5], "open_ms": 46.3, "first_query_ms": 5.7, "spawn_to_first_result_ms": 65.4, "one_db_open_mb": [55.9, 52.9], "after_analytical_mb": [61.8, 58.7]}, "cpp-worker": {"spawn_to_hello_ms": 11.9, "floor_mb": [19.7, 16.8], "open_ms": 55.4, "first_query_ms": 5.9, "spawn_to_first_result_ms": 71.8, "one_db_open_mb": [56.2, 53.1], "after_analytical_mb": [60.7, 57.6]}}
+  concurrent: {"in-process": {"point_read_quiet_ms": 1.79, "point_read_during_long_query_ms": 1.37, "long_query_still_running": true}, "worker": {"point_read_quiet_ms": 3.81, "point_read_during_long_query_ms": 7809.78, "long_query_still_running": false}, "rust-worker": {"point_read_quiet_ms": 2.36, "point_read_during_long_query_ms": 3.09, "long_query_still_running": true}, "cpp-worker": {"point_read_quiet_ms": 2.04, "point_read_during_long_query_ms": 2.69, "long_query_still_running": true}}
+  insert_rows_10k: {"in-process": {"default_ms": 9767.4, "appender_ms": 1139.2, "speedup": 8.6}, "worker": {"default_ms": 9315.5, "appender_ms": 1395.5, "speedup": 6.7}, "rust-worker": {"default_ms": 8573.4, "appender_ms": 777.0, "speedup": 11.0}, "cpp-worker": {"default_ms": 7995.9, "appender_ms": 815.1, "speedup": 9.8}}

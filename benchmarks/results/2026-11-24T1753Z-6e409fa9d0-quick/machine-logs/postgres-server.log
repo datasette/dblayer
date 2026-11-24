@@ -1,0 +1,27 @@
+2026-11-24 17:48:47.265 UTC [785] LOG:  starting PostgreSQL 18.7 (Debian 18.7-1.pgdg13+5) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+2026-11-24 17:48:47.267 UTC [785] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2026-11-24 17:48:47.271 UTC [791] LOG:  database system was shut down at 2026-11-24 17:48:47 UTC
+2026-11-24 17:48:47.275 UTC [785] LOG:  database system is ready to accept connections
+2026-11-24 17:53:47.376 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 17:55:26.881 UTC [789] LOG:  checkpoint complete: wrote 993 buffers (6.1%), wrote 3 SLRU buffers; 1 WAL file(s) added, 0 removed, 0 recycled; write=99.477 s, sync=0.003 s, total=99.506 s; sync files=312, longest=0.002 s, average=0.001 s; distance=4742 kB, estimate=4742 kB; lsn=0/1C153C0, redo lsn=0/1C15330
+2026-11-24 18:03:47.111 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 18:08:17.047 UTC [789] LOG:  checkpoint complete: wrote 3455 buffers (21.1%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 8 recycled; write=269.902 s, sync=0.006 s, total=269.936 s; sync files=891, longest=0.001 s, average=0.001 s; distance=121347 kB, estimate=121347 kB; lsn=0/92961C0, redo lsn=0/9296130
+2026-11-24 18:23:47.392 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 18:23:50.909 UTC [789] LOG:  checkpoint complete: wrote 35 buffers (0.2%), wrote 2 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=3.513 s, sync=0.001 s, total=3.517 s; sync files=35, longest=0.001 s, average=0.001 s; distance=234 kB, estimate=109236 kB; lsn=0/92D0AF0, redo lsn=0/92D0A98
+2026-11-24 18:23:52.560 UTC [20572] ERROR:  canceling statement due to user request
+2026-11-24 18:23:52.560 UTC [20572] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c
+2026-11-24 18:23:52.658 UTC [20579] ERROR:  canceling statement due to user request
+2026-11-24 18:23:52.658 UTC [20579] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c
+2026-11-24 18:24:22.157 UTC [21885] ERROR:  duplicate key value violates unique constraint "log_msg_key"
+2026-11-24 18:24:22.157 UTC [21885] DETAIL:  Key (msg)=(dup) already exists.
+2026-11-24 18:24:22.157 UTC [21885] STATEMENT:  insert into log (msg) values ($1)
+2026-11-24 18:24:22.199 UTC [21891] ERROR:  duplicate key value violates unique constraint "log_msg_key"
+2026-11-24 18:24:22.199 UTC [21891] DETAIL:  Key (msg)=(dup) already exists.
+2026-11-24 18:24:22.199 UTC [21891] STATEMENT:  insert into log (msg) values ($1)
+2026-11-24 18:24:41.892 UTC [785] LOG:  received fast shutdown request
+2026-11-24 18:24:41.894 UTC [785] LOG:  aborting any active transactions
+2026-11-24 18:24:41.896 UTC [785] LOG:  background worker "logical replication launcher" (PID 794) exited with exit code 1
+2026-11-24 18:24:41.897 UTC [789] LOG:  shutting down
+2026-11-24 18:24:41.898 UTC [789] LOG:  checkpoint starting: shutdown immediate
+2026-11-24 18:24:41.905 UTC [789] LOG:  checkpoint complete: wrote 73 buffers (0.4%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.003 s, sync=0.002 s, total=0.008 s; sync files=123, longest=0.001 s, average=0.001 s; distance=732 kB, estimate=98385 kB; lsn=0/9387AB0, redo lsn=0/9387AB0
+2026-11-24 18:24:41.929 UTC [785] LOG:  database system is shut down

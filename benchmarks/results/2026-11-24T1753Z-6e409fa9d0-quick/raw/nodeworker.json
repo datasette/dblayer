@@ -1,0 +1,100 @@
+{
+  "load_start": "1.0 1.0 0.5",
+  "node_e_ms": 31.080466000048546,
+  "true_ms": 0.6899500000372427,
+  "phases": {
+    "python": {
+      "hello": 598.9534299999377,
+      "open": 95.02774899999622,
+      "first_query": 0.9095210000396037,
+      "second_query": 0.4406909999943309,
+      "total": 694.1324489999943
+    },
+    "node": {
+      "hello": 51.61876299996493,
+      "open": 106.34853900000962,
+      "first_query": 3.278083000054721,
+      "second_query": 0.9829299999637442,
+      "total": 164.58120799995868,
+      "main_loaded": 34.98,
+      "wasm_compiled": 51.56,
+      "executor_created": 42.38,
+      "thread_start": 103.46,
+      "sqlite_imported": 106.78,
+      "sqlite_ready": 137.15
+    },
+    "node, no compile cache": {
+      "hello": 51.65143299996089,
+      "open": 126.31170600002406,
+      "first_query": 3.703772999983812,
+      "second_query": 1.0018410000611766,
+      "total": 184.56259399999908,
+      "main_loaded": 36.08,
+      "wasm_compiled": 48.9,
+      "executor_created": 42.79,
+      "thread_start": 107.3,
+      "sqlite_imported": 117.33,
+      "sqlite_ready": 158.3
+    },
+    "node, no spare": {
+      "hello": 52.29530300005081,
+      "open": 123.59574300000986,
+      "first_query": 4.007084000022587,
+      "second_query": 0.8488199999874269,
+      "total": 175.4816259999643,
+      "main_loaded": 36.24,
+      "wasm_compiled": 54.13,
+      "executor_created": 50.19,
+      "thread_start": 110.63,
+      "sqlite_imported": 114.3,
+      "sqlite_ready": 148.69
+    },
+    "c": {
+      "hello": 1.2237409999897864,
+      "open": 0.2744899999242989,
+      "first_query": 0.32166100004360487,
+      "second_query": 0.10281999993821955,
+      "total": 1.7906719999700726
+    }
+  },
+  "first_result_ms": {
+    "in-process": 0.9244399999488451,
+    "python worker": 733.2926220000218,
+    "node worker": 188.22285700002794,
+    "C worker": 2.5412820000383363
+  },
+  "idle_memory": {
+    "python worker": {
+      "processes": 1,
+      "rss_mb": 35.4296875,
+      "footprint_mb": 27.1044921875
+    },
+    "node worker": {
+      "processes": 1,
+      "rss_mb": 86.94921875,
+      "footprint_mb": 84.291015625
+    },
+    "C worker": {
+      "processes": 1,
+      "rss_mb": 3.40234375,
+      "footprint_mb": 1.708984375
+    },
+    "node worker, 4 connections": {
+      "processes": 1,
+      "rss_mb": 139.76171875,
+      "footprint_mb": 137.2041015625
+    }
+  },
+  "inside_node": {
+    "native_open_ms": 0.3092499999999987,
+    "native_row_us": 2.010000000012724,
+    "native_100k_ms": 223.87394600000005,
+    "native_sqlite": "3.54.1",
+    "wasm_init_ms": 83.52539999999999,
+    "wasm_row_us": 8.64000000001397,
+    "wasm_oo1_100k_ms": 929.7548559999996,
+    "wasm_100k_ms": 117.83945800000038,
+    "wasm_sqlite": "3.53.4"
+  },
+  "load_end": "1.1 1.0 0.6"
+}

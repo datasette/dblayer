@@ -1,0 +1,20 @@
+Traceback (most recent call last):
+  File "/data/src/benchmarks/duckdb_memory.py", line 746, in <module>
+    main()
+    ~~~~^^
+  File "/data/src/benchmarks/duckdb_memory.py", line 733, in main
+    out["overhead"] = asyncio.run(overhead(template, root))
+                      ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/uv-python/cpython-3.14.8-linux-x86_64-gnu/lib/python3.14/asyncio/runners.py", line 205, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/opt/uv-python/cpython-3.14.8-linux-x86_64-gnu/lib/python3.14/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/uv-python/cpython-3.14.8-linux-x86_64-gnu/lib/python3.14/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/data/src/benchmarks/duckdb_memory.py", line 465, in overhead
+    assert len(res.rows) == n
+           ^^^^^^^^^^^^^^^^^^
+AssertionError

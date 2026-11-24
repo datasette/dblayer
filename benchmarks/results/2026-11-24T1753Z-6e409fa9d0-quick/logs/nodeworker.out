@@ -1,0 +1,30 @@
+
+Node worker start-up and memory (load average 1.0 1.0 0.5 at start, 1.1 1.0 0.6 at end)
+
+Spawn and wait: /usr/bin/true 0.7 ms; node -e 0 31.1 ms
+
+Raw pipes, median ms: spawn to hello, open, first query (second), total
+  python                   hello  599.0  open   95.0  first  0.91  ( 0.44)  total  694.1
+  node                     hello   51.6  open  106.3  first  3.28  ( 0.98)  total  164.6
+  node, no compile cache   hello   51.7  open  126.3  first  3.70  ( 1.00)  total  184.6
+  node, no spare           hello   52.3  open  123.6  first  4.01  ( 0.85)  total  175.5
+  c                        hello    1.2  open    0.3  first  0.32  ( 0.10)  total    1.8
+
+Inside a Node worker, ms since its process started (median)
+  node                     main loaded  35.0  wasm compiled  51.6  thread created  42.4  thread running 103.5  SQLite JS loaded 106.8  SQLite ready 137.2
+  node, no compile cache   main loaded  36.1  wasm compiled  48.9  thread created  42.8  thread running 107.3  SQLite JS loaded 117.3  SQLite ready 158.3
+  node, no spare           main loaded  36.2  wasm compiled  54.1  thread created  50.2  thread running 110.6  SQLite JS loaded 114.3  SQLite ready 148.7
+
+Open to first result of a new database, through Database (median ms)
+  in-process 0.92; python worker 733.29; node worker 188.22; C worker 2.54
+
+Idle memory with a database open (MB, summed over the worker processes)
+  python worker                footprint   27.1  RSS   35.4  (1 process(es))
+  node worker                  footprint   84.3  RSS   86.9  (1 process(es))
+  C worker                     footprint    1.7  RSS    3.4  (1 process(es))
+  node worker, 4 connections   footprint  137.2  RSS  139.8  (1 process(es))
+
+Inside Node, no protocol, in-memory database (SQLite 3.53.4 WASM vs node:sqlite 3.54.1 native)
+  one-row read: WASM (oo1 API) 8.64 us, native 2.01 us
+  100,000 rows into JS values: WASM raw exports 117.8 ms (oo1 exec 929.8), native .all() 223.9 ms
+  WASM module load and init 83.5 ms; native open 0.31 ms

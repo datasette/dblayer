@@ -1,0 +1,400 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.8, pytest-9.2.0, pluggy-1.7.0 -- /data/src/.venv/bin/python
+rootdir: /data/src
+configfile: pyproject.toml
+testpaths: tests
+plugins: asyncio-1.5.0, anyio-4.16.0, timeout-2.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+timeout: 300.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 10263 items
+
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-memory] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-apsw] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-worker-msgpack] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-cworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-cworker-json] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-cpool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-rspool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-wasm] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[sqlite-nodeworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[duckdb] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[duckdb-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[duckdb-cppworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[duckdb-rsworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[pglite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[postgres] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[postgres-psycopg] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_protocol_instances[clickhouse] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-memory] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-apsw] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-worker-msgpack] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-cworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-cworker-json] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-cpool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-rspool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-wasm] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[sqlite-nodeworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[duckdb] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[duckdb-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[duckdb-cppworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[duckdb-rsworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[pglite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[postgres] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[postgres-psycopg] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_commit[clickhouse] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-memory] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-apsw] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-worker-msgpack] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-cworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-cworker-json] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-cpool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-rspool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-wasm] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[sqlite-nodeworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[duckdb] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[duckdb-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[duckdb-cppworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[duckdb-rsworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[pglite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[postgres] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[postgres-psycopg] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback[clickhouse] SKIPPED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-memory] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-apsw] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-worker-msgpack] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-cworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-cworker-json] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-cpool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-rspool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-wasm] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[sqlite-nodeworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[duckdb] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[duckdb-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[duckdb-cppworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[duckdb-rsworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[pglite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[postgres] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[postgres-psycopg] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_rollback_and_commit_are_noops_without_transaction[clickhouse] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-memory] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-apsw] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-worker-msgpack] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-cworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-cworker-json] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-cpool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-rspool] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-wasm] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[sqlite-nodeworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[duckdb] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[duckdb-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[duckdb-cppworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[duckdb-rsworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[pglite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[postgres] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[postgres-psycopg] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_read_transaction[clickhouse] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-memory] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-apsw] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-worker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-worker-msgpack] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-cworker] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-cworker-json] PASSED [  0%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-cpool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-rspool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-wasm] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[sqlite-nodeworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[duckdb] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[duckdb-worker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[duckdb-cppworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[duckdb-rsworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[pglite] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[postgres] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[postgres-psycopg] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_unknown_mode[clickhouse] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-memory] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-apsw] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-worker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-worker-msgpack] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-cworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-cworker-json] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-cpool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-rspool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-wasm] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[sqlite-nodeworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[duckdb] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[duckdb-worker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[duckdb-cppworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[duckdb-rsworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[pglite] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[postgres] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[postgres-psycopg] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_execute_many[clickhouse] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-memory] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-apsw] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-worker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-worker-msgpack] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-cworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-cworker-json] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-cpool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-rspool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-wasm] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[sqlite-nodeworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[duckdb] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[duckdb-worker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[duckdb-cppworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[duckdb-rsworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[pglite] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[postgres] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[postgres-psycopg] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_interrupt[clickhouse] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-memory] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-apsw] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-worker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-worker-msgpack] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-cworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-cworker-json] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-cpool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-rspool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-wasm] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[sqlite-nodeworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[duckdb] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[duckdb-worker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[duckdb-cppworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[duckdb-rsworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[pglite] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[postgres] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[postgres-psycopg] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_schema_and_version[clickhouse] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-memory] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-apsw] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-worker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-worker-msgpack] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-cworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-cworker-json] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-cpool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-rspool] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-wasm] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[sqlite-nodeworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[duckdb] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[duckdb-worker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[duckdb-cppworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[duckdb-rsworker] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[pglite] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[postgres] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[postgres-psycopg] PASSED [  1%]
+tests/conformance/test_backend_connection.py::test_stream_direct[clickhouse] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite] PASSED      [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-memory] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-apsw] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-worker] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-worker-msgpack] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-cworker] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-cworker-json] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-cpool] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-rspool] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-wasm] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[sqlite-nodeworker] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[duckdb] PASSED      [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[duckdb-worker] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[duckdb-cppworker] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[duckdb-rsworker] PASSED [  1%]
+tests/conformance/test_batch.py::test_batch_runs_all[pglite] PASSED      [  2%]
+tests/conformance/test_batch.py::test_batch_runs_all[postgres] PASSED    [  2%]
+tests/conformance/test_batch.py::test_batch_runs_all[postgres-psycopg] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_runs_all[clickhouse] PASSED  [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-memory] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-apsw] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-worker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-worker-msgpack] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-cworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-cworker-json] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-cpool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-rspool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-wasm] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[sqlite-nodeworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[duckdb] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[duckdb-worker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[duckdb-cppworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[duckdb-rsworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[pglite] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[postgres] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[postgres-psycopg] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_accepts_bare_sql[clickhouse] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-memory] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-apsw] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-worker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-worker-msgpack] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-cworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-cworker-json] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-cpool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-rspool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-wasm] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[sqlite-nodeworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[duckdb] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[duckdb-worker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[duckdb-cppworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[duckdb-rsworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[pglite] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[postgres] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[postgres-psycopg] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_is_all_or_nothing[clickhouse] SKIPPED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-memory] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-apsw] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-worker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-worker-msgpack] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-cworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-cworker-json] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-cpool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-rspool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-wasm] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[sqlite-nodeworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[duckdb] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[duckdb-worker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[duckdb-cppworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[duckdb-rsworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[pglite] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[postgres] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[postgres-psycopg] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_with_matching_schema_version[clickhouse] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-memory] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-apsw] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-worker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-worker-msgpack] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-cworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-cworker-json] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-cpool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-rspool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-wasm] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[sqlite-nodeworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[duckdb] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[duckdb-worker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[duckdb-cppworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[duckdb-rsworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[pglite] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[postgres] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[postgres-psycopg] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_schema_changed_runs_nothing[clickhouse] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-memory] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-apsw] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-worker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-worker-msgpack] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-cworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-cworker-json] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-cpool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-rspool] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-wasm] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[sqlite-nodeworker] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[duckdb] PASSED [  2%]
+tests/conformance/test_batch.py::test_batch_ddl_invalidates_schema_cache[duckdb-worker] 
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+/opt/uv-python/cpython-3.14.8-linux-x86_64-gnu/lib/python3.14/asyncio/runners.py:133: KeyboardInterrupt
+(to show a full traceback on KeyboardInterrupt use --full-trace)
+Traceback (most recent call last):
+  File "/data/src/.venv/bin/pytest", line 10, in <module>
+    sys.exit(_console_main())
+             ~~~~~~~~~~~~~^^
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/config/__init__.py", line 286, in _console_main
+    code = _main(prog=_get_prog_name(sys.argv))
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/config/__init__.py", line 262, in _main
+    ret: ExitCode | int = config.hook.pytest_cmdline_main(config=config)
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_caller.py", line 197, in __call__
+    return self._hookexec(
+           ~~~~~~~~~~~~~~^
+        self.name, self._hookimpls.copy(), call_kwargs, firstresult
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_manager.py", line 183, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_execution.py", line 195, in _multicall
+    raise exception
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_execution.py", line 147, in _multicall
+    res = hook_impl.function(*args)
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/main.py", line 380, in pytest_cmdline_main
+    return wrap_session(config, _main)
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/main.py", line 368, in wrap_session
+    config.hook.pytest_sessionfinish(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        session=session, exitstatus=session.exitstatus
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_caller.py", line 197, in __call__
+    return self._hookexec(
+           ~~~~~~~~~~~~~~^
+        self.name, self._hookimpls.copy(), call_kwargs, firstresult
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_manager.py", line 183, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_execution.py", line 195, in _multicall
+    raise exception
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/logging.py", line 901, in pytest_sessionfinish
+    return (yield)
+            ^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/terminal.py", line 992, in pytest_sessionfinish
+    result = yield
+             ^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/warnings.py", line 104, in pytest_sessionfinish
+    return (yield)
+            ^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/pluggy/_execution.py", line 147, in _multicall
+    res = hook_impl.function(*args)
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/runner.py", line 112, in pytest_sessionfinish
+    session._setupstate.teardown_exact(None)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/runner.py", line 579, in teardown_exact
+    raise exceptions[0]
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/runner.py", line 568, in teardown_exact
+    fin()
+    ~~~^^
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/fixtures.py", line 1235, in finish
+    raise exceptions[0]
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/fixtures.py", line 1225, in finish
+    fin()
+    ~~~^^
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/fixtures.py", line 1083, in _teardown_yield_fixture
+    next(it)
+    ~~~~^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/tmpdir.py", line 343, in tmp_path
+    result_dict = request.node.stash[tmppath_result_key]
+                  ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/data/src/.venv/lib/python3.14/site-packages/_pytest/stash.py", line 84, in __getitem__
+    return cast(T, self._storage[key])
+                   ~~~~~~~~~~~~~^^^^^
+KeyError: <_pytest.stash.StashKey object at 0x7f8b2b2dcf60>

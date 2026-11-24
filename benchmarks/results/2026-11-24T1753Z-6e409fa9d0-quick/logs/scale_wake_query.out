@@ -1,0 +1,19 @@
+sqlite: {"databases": 99, "cold_median_ms": 0.497471000016958, "cold_p90_ms": 0.6333009999934802, "warm_median_ms": 0.18636000004335074, "warm_p90_ms": 0.22483999998712534, "sleep_median_ms": 0.21185000002788001, "wake_ms": 0.31111099997360725, "load1_before": 1.0107421875, "load1_after": 1.0107421875}
+sqlite-wasm: {"databases": 99, "cold_median_ms": 1.7314219999207126, "cold_p90_ms": 2.10344200002055, "warm_median_ms": 0.2927010000348673, "warm_p90_ms": 0.389380000001438, "sleep_median_ms": 0.3116499999578082, "wake_ms": 1.4387209998858452, "load1_before": 1.0107421875, "load1_after": 1.0107421875}
+duckdb: {"databases": 99, "cold_median_ms": 22.174068000026637, "cold_p90_ms": 26.910493000059432, "warm_median_ms": 1.0674610000478424, "warm_p90_ms": 1.4587309999569698, "sleep_median_ms": 4.44110399996589, "wake_ms": 21.106606999978794, "load1_before": 1.0107421875, "load1_after": 1.009765625}
+sqlite-worker: {"databases": 99, "cold_median_ms": 698.9060930000051, "cold_p90_ms": 787.2590169999967, "warm_median_ms": 0.47379099999034224, "warm_p90_ms": 0.6775809999908233, "sleep_median_ms": 0.20523099999536498, "wake_ms": 698.4323020000147, "load1_before": 1.009765625, "load1_after": 1.0009765625}
+sqlite-cworker: {"databases": 99, "cold_median_ms": 2.501652000091781, "cold_p90_ms": 3.062373000034313, "warm_median_ms": 0.1852999999982785, "warm_p90_ms": 0.2698109999528242, "sleep_median_ms": 0.16714999992473167, "wake_ms": 2.3163520000935023, "load1_before": 1.0009765625, "load1_after": 1.0009765625}
+sqlite-nodeworker: {"databases": 99, "cold_median_ms": 162.6228259999607, "cold_p90_ms": 174.35373600005732, "warm_median_ms": 0.9026909999647614, "warm_p90_ms": 1.3091710000026069, "sleep_median_ms": 1.4843609999388718, "wake_ms": 161.72013499999593, "load1_before": 1.0009765625, "load1_after": 1.14794921875}
+sqlite-cpool: {"databases": 99, "cold_median_ms": 1.8043720000378016, "cold_p90_ms": 2.218431999949644, "warm_median_ms": 0.13303999992331228, "warm_p90_ms": 0.18394999995052785, "sleep_median_ms": 0.20578000010118558, "wake_ms": 1.6713320001144893, "load1_before": 1.14794921875, "load1_after": 1.14794921875}
+sqlite-rspool: {"databases": 99, "cold_median_ms": 1.7715010000074471, "cold_p90_ms": 2.1167920000380036, "warm_median_ms": 0.1275800000257732, "warm_p90_ms": 0.17962099991564173, "sleep_median_ms": 0.195100000041748, "wake_ms": 1.643920999981674, "load1_before": 1.14794921875, "load1_after": 1.14794921875}
+
+| backend | wake_ms | warm_median_ms | warm_p90_ms | cold_median_ms | cold_p90_ms | sleep_median_ms | load1_before | load1_after |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| sqlite | 0.311 | 0.186 | 0.225 | 0.497 | 0.633 | 0.212 | 1.01 | 1.01 |
+| sqlite-wasm | 1.439 | 0.293 | 0.389 | 1.731 | 2.103 | 0.312 | 1.01 | 1.01 |
+| duckdb | 21.107 | 1.067 | 1.459 | 22.174 | 26.910 | 4.441 | 1.01 | 1.01 |
+| sqlite-worker | 698.432 | 0.474 | 0.678 | 698.906 | 787.259 | 0.205 | 1.01 | 1.00 |
+| sqlite-cworker | 2.316 | 0.185 | 0.270 | 2.502 | 3.062 | 0.167 | 1.00 | 1.00 |
+| sqlite-nodeworker | 161.720 | 0.903 | 1.309 | 162.623 | 174.354 | 1.484 | 1.00 | 1.15 |
+| sqlite-cpool | 1.671 | 0.133 | 0.184 | 1.804 | 2.218 | 0.206 | 1.15 | 1.15 |
+| sqlite-rspool | 1.644 | 0.128 | 0.180 | 1.772 | 2.117 | 0.195 | 1.15 | 1.15 |

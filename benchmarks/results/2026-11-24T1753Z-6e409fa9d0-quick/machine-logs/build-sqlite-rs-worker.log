@@ -1,0 +1,5 @@
+make: Entering directory '/data/src/sqlite-rs-worker'
+cargo build --release --locked
+   Compiling dblayer-sqlite-rsworker v0.1.0 (/data/src/sqlite-rs-worker)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1m 09s
+make: Leaving directory '/data/src/sqlite-rs-worker'

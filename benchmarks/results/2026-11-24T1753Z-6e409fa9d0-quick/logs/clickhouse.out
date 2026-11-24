@@ -1,0 +1,25 @@
+
+## lifecycle and memory   (load average 1.21, 1.06, 0.67)
+import chdb 0.21s; first statement with the server down 592 ms; second database while up 8.1 ms; wake after sleep 73 ms
+RSS MB: before import 35, after import 234, server up 306, after 1M insert + group by 426, after sleep 427
+
+## analytical reads and point reads, 100,000 rows   (load average 1.21, 1.06, 0.67)
+clickhouse fill 0.12s  group by 8 ms  join 13 ms  point read 5.44 ms  disk 1.0 MB
+duckdb     fill 0.25s  group by 6 ms  join 6 ms  point read 1.93 ms  disk 2.1 MB
+sqlite     fill 0.13s  group by 45 ms  join 51 ms  point read 0.21 ms  disk 2.4 MB
+
+## insert 100,000 rows   (load average 1.21, 1.06, 0.67)
+clickhouse native        insert_rows 100,000: 3.07s (32,545 rows/s)
+clickhouse default path  insert_rows 100,000: 2.31s (43,293 rows/s)
+duckdb                   insert_rows 100,000: 0.45s (223,343 rows/s)
+sqlite                   insert_rows 100,000: 0.53s (186,989 rows/s)
+clickhouse VALUES batches insert_rows 100,000: 247.43s (404 rows/s; 20,000 rows, scaled)
+clickhouse row by row: 5.35 ms a row, 535s for 100,000 (scaled)
+
+## export 100,000 rows   (load average 1.06, 1.04, 0.70)
+clickhouse export csv 100,000 engine: 0.03s wall, 0.03s process CPU
+clickhouse export csv 100,000 python fallback: 0.28s wall, 0.33s process CPU
+clickhouse export json 100,000 engine: 0.04s wall, 0.05s process CPU
+clickhouse export json 100,000 python fallback: 0.32s wall, 0.35s process CPU
+
+load average at the end: 1.06, 1.04, 0.70
