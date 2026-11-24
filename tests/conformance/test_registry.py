@@ -6,6 +6,8 @@ import pytest
 
 from dblayer import Database, DatabaseClosed, Registry, UnknownDatabase
 
+from ..helpers import EVENTUALLY_S, IdleClock, wait_until
+
 
 @pytest.fixture
 async def registry():
@@ -134,7 +136,7 @@ async def test_cancelled_resolver_lets_waiters_retry(make_backend):
         second = asyncio.create_task(registry.get("x"))
         await asyncio.sleep(0)
         first.cancel()
-        db = await asyncio.wait_for(second, 2)
+        db = await asyncio.wait_for(second, EVENTUALLY_S)
         assert attempts == 2 and db.name == "x"
 
 
@@ -160,12 +162,13 @@ async def test_close_closes_every_database(make_backend):
         await registry.get("d0")
 
 
-async def test_registry_idle_timeout_applies_to_its_databases(make_backend):
-    async with Registry(idle_timeout=0.05) as registry:
+async def test_registry_idle_timeout_applies_to_its_databases(make_backend, monkeypatch):
+    clock = IdleClock(monkeypatch)
+    async with Registry(idle_timeout=100) as registry:
         db = registry.add("a", Database(make_backend()))
         own = registry.add("b", Database(make_backend(), idle_timeout=None))
         await db.execute("select 1")
         await own.execute("select 1")
-        await asyncio.sleep(0.2)
-        assert db.state == "asleep"
+        clock.advance(1000, registry._hub)
+        await wait_until(lambda: db.state == "asleep")
         assert own.state == "awake"

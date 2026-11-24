@@ -5,9 +5,14 @@ import asyncio
 
 from dblayer import Database, Registry, RegistryStats
 
+from ..helpers import IdleClock, wait_until
 
-async def test_stats_follow_the_lifecycle(make_backend):
-    async with Registry(max_open_connections=2, max_threads=3, idle_timeout=0.05) as registry:
+
+async def test_stats_follow_the_lifecycle(make_backend, monkeypatch):
+    # The idle timeout must not fire between the steps below, however slow
+    # the machine: time is moved by hand.
+    clock = IdleClock(monkeypatch)
+    async with Registry(max_open_connections=2, max_threads=3, idle_timeout=100) as registry:
         s = registry.stats()
         assert isinstance(s, RegistryStats)
         assert (s.databases, s.awake, s.open_connections, s.wakes, s.sleeps) == (0, 0, 0, 0, 0)
@@ -24,7 +29,8 @@ async def test_stats_follow_the_lifecycle(make_backend):
         assert s.cap_evictions == 1
         assert s.open_connections == 2
         assert s.wakes == 3
-        await asyncio.sleep(0.2)  # idle timeout
+        clock.advance(100, registry._hub)  # idle timeout
+        await wait_until(lambda: registry.stats().sleeps == 3)
         s = registry.stats()
         assert (s.awake, s.open_connections, s.idle_connections) == (0, 0, 0)
         assert s.sleeps == 3
@@ -37,17 +43,19 @@ async def test_stats_count_waiters(make_backend):
         a, b = registry.add("a", Database(make_backend())), registry.add("b", Database(make_backend()))
         await a.execute_write("create table t (x integer)")
         gate = asyncio.Event()
+        holding = asyncio.Event()
 
         async def hold():
             async with a.transaction() as tx:
                 await tx.execute("insert into t values (1)")
+                holding.set()
                 await gate.wait()
 
         holder = asyncio.create_task(hold())
-        await asyncio.sleep(0.02)
+        await holding.wait()
         reader = asyncio.create_task(b.execute("select 1"))
-        await asyncio.sleep(0.02)
-        assert registry.stats().waiting == 1
+        await wait_until(lambda: registry.stats().waiting == 1)
+        assert not reader.done()
         gate.set()
         await asyncio.gather(holder, reader)
         assert registry.stats().waiting == 0
