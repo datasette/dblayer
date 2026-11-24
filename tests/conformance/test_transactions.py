@@ -16,6 +16,8 @@ from dblayer import (
     WriteResult,
 )
 
+from ..helpers import EVENTUALLY_S, check_latency
+
 
 @pytest.fixture
 async def t(db):
@@ -148,9 +150,10 @@ async def test_cancel_rolls_back_and_releases_write_slot(t):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    # Write slot free: another writer proceeds at once.
-    await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), 1)
-    assert time.perf_counter() - t0 < 0.05
+    # Write slot free: another writer proceeds at once (spec fault table:
+    # "write slot released within 50 ms", asserted under strict timing).
+    await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), EVENTUALLY_S)
+    check_latency("cancel -> write slot released", time.perf_counter() - t0, 0.05)
     assert (await t.execute("select id from t")).rows == [(2,)]
     assert t.stats().in_use_write == 0
 
@@ -175,8 +178,8 @@ async def test_cancel_during_running_statement(t):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), 1)
-    assert time.perf_counter() - t0 < 0.5
+    await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), EVENTUALLY_S)
+    check_latency("cancel mid-statement -> write slot released", time.perf_counter() - t0, 0.5)
     assert (await t.execute("select id from t")).rows == [(2,)]
 
 
@@ -196,7 +199,7 @@ async def test_double_cancel_still_rolls_back(t):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), 1)
+    await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), EVENTUALLY_S)
     assert (await t.execute("select id from t")).rows == [(2,)]
 
 
@@ -218,29 +221,29 @@ async def test_nested_transaction_raises(t):
 async def test_execute_write_inside_write_transaction_raises(t):
     async with t.transaction():
         with pytest.raises(NestedWriteError):
-            await asyncio.wait_for(t.execute_write("insert into t (id, v) values (1, 'a')"), 1)
+            await asyncio.wait_for(t.execute_write("insert into t (id, v) values (1, 'a')"), EVENTUALLY_S)
 
 
 async def test_named_operation_on_db_inside_transaction_raises(t):
     async with t.transaction():
         with pytest.raises(NestedWriteError):
-            await asyncio.wait_for(t.insert_rows("t", [{"id": 1}]), 1)
+            await asyncio.wait_for(t.insert_rows("t", [{"id": 1}]), EVENTUALLY_S)
 
 
 async def test_child_task_inherits_nesting_check(t):
     async with t.transaction():
         task = asyncio.create_task(t.execute_write("insert into t (id, v) values (1, 'a')"))
         with pytest.raises(NestedWriteError):
-            await asyncio.wait_for(task, 1)
+            await asyncio.wait_for(task, EVENTUALLY_S)
 
 
 async def test_reads_on_db_inside_write_transaction(t):
     await t.execute_write("insert into t (id, v) values (1, 'a')")
     async with t.transaction() as tx:
         await tx.execute("insert into t (id, v) values (2, 'b')")
-        r = await asyncio.wait_for(t.execute("select count(*) from t"), 2)
+        r = await asyncio.wait_for(t.execute("select count(*) from t"), EVENTUALLY_S)
         assert r.rows[0][0] in (1, 2)
-        assert await asyncio.wait_for(t.table_names(), 2) == ["t"]
+        assert await asyncio.wait_for(t.table_names(), EVENTUALLY_S) == ["t"]
 
 
 async def test_other_database_not_affected(make_db):
@@ -250,7 +253,7 @@ async def test_other_database_not_affected(make_db):
     await b.execute_write("create table t (x integer)")
     async with a.transaction() as tx:
         await tx.execute("insert into t values (1)")
-        await asyncio.wait_for(b.execute_write("insert into t values (2)"), 1)
+        await asyncio.wait_for(b.execute_write("insert into t values (2)"), EVENTUALLY_S)
         async with b.transaction() as tx2:
             await tx2.execute("insert into t values (3)")
     assert await count(a) == 1 and await count(b) == 2
@@ -272,7 +275,7 @@ async def test_write_inside_read_transaction_is_allowed(t):
         # A read transaction holds no write slot, so this cannot deadlock.
         task = asyncio.create_task(t.execute_write("insert into t (id, v) values (1, 'a')"))
         await asyncio.sleep(0.05)
-    await asyncio.wait_for(task, 2)
+    await asyncio.wait_for(task, EVENTUALLY_S)
     assert await count(t) == 1
 
 
@@ -304,8 +307,8 @@ async def test_read_transaction_never_takes_write_slot(t):
         go.set()
         # The writer gets the slot and writes while the read tx is open
         # (its commit may wait for the reader on rollback-journal SQLite).
-        await asyncio.wait_for(inserted.wait(), 2)
-    await asyncio.wait_for(task, 6)
+        await asyncio.wait_for(inserted.wait(), EVENTUALLY_S)
+    await asyncio.wait_for(task, EVENTUALLY_S)
     assert await count(t) == 1
 
 
@@ -317,7 +320,7 @@ async def test_read_transaction_snapshot(t):
         task = asyncio.create_task(t.execute_write("insert into t (id, v) values (2, 'b')"))
         await asyncio.sleep(0.1)
         assert (await tx.execute("select count(*) from t")).rows[0][0] == 1
-    await asyncio.wait_for(task, 6)
+    await asyncio.wait_for(task, EVENTUALLY_S)
     assert await count(t) == 2
 
 

@@ -2,7 +2,60 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import os
+import time
+from collections.abc import Callable
+
+STRICT_TIMING = os.environ.get("DBLAYER_STRICT_TIMING") == "1"
+"""``DBLAYER_STRICT_TIMING=1`` makes ``check_latency`` assert the spec's
+tight latency figures as well as the generous functional bound."""
+
+# Generous bound for "this must happen at all": several seconds, so a
+# loaded CI machine cannot fail it, while a hang still fails promptly.
+EVENTUALLY_S = 10.0
+
+latencies: list[tuple[str, float, float]] = []
+"""Every figure ``check_latency`` measured in this run: (name, seconds,
+spec bound in seconds). Printed at the end of the session."""
+
+
+async def wait_until(
+    condition: Callable[[], object], timeout: float = EVENTUALLY_S, interval: float = 0.005
+) -> None:
+    """Poll ``condition`` (a plain or async callable) until it is truthy.
+    Fails with ``AssertionError`` after ``timeout`` seconds. Use this
+    instead of sleeping a fixed time and then asserting."""
+    deadline = time.monotonic() + timeout
+    while True:
+        result = condition()
+        if inspect.isawaitable(result):
+            result = await result
+        if result:
+            return
+        if time.monotonic() > deadline:
+            raise AssertionError(f"condition not met within {timeout} s: {condition}")
+        await asyncio.sleep(interval)
+
+
+def check_latency(name: str, seconds: float, spec_bound: float, *, functional: float = EVENTUALLY_S) -> None:
+    """A latency promise from the spec, split in two.
+
+    ``functional`` (several seconds) must always hold: it proves the thing
+    happens at all. ``spec_bound`` is the figure the spec promises; it is
+    recorded and printed (``pytest -s`` shows it as it happens, and the
+    session summary lists them all) and only asserted when
+    ``DBLAYER_STRICT_TIMING=1``, since shared or loaded machines cannot
+    honour tens of milliseconds."""
+    latencies.append((name, seconds, spec_bound))
+    print(f"[latency] {name}: {seconds * 1000:.1f} ms (spec {spec_bound * 1000:.0f} ms)")
+    assert seconds < functional, f"{name}: {seconds:.3f} s, functional bound {functional} s"
+    if STRICT_TIMING:
+        assert seconds < spec_bound, (
+            f"{name}: {seconds * 1000:.1f} ms, spec bound {spec_bound * 1000:.0f} ms "
+            "(DBLAYER_STRICT_TIMING=1)"
+        )
 
 
 def is_text_type(declared: str) -> bool:

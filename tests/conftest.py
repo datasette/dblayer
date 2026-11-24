@@ -112,6 +112,28 @@ BACKENDS: list[BackendSpec] = [
 ]
 
 
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # type: ignore[no-untyped-def]
+    """List the spec latency figures ``helpers.check_latency`` measured."""
+    from .helpers import STRICT_TIMING, latencies
+
+    if not latencies:
+        return
+    mode = "asserted" if STRICT_TIMING else "reported only; DBLAYER_STRICT_TIMING=1 asserts them"
+    terminalreporter.section(f"spec latencies ({mode})")
+    by_name: dict[str, list[float]] = {}
+    bounds: dict[str, float] = {}
+    for name, seconds, bound in latencies:
+        by_name.setdefault(name, []).append(seconds)
+        bounds[name] = bound
+    for name, values in by_name.items():
+        values.sort()
+        over = sum(1 for v in values if v >= bounds[name])
+        terminalreporter.write_line(
+            f"{name}: n={len(values)} median {values[len(values) // 2] * 1000:.1f} ms, "
+            f"max {values[-1] * 1000:.1f} ms, spec {bounds[name] * 1000:.0f} ms, over spec {over}"
+        )
+
+
 def _check_marks(request: pytest.FixtureRequest, caps: Capabilities) -> None:
     for mark in request.node.iter_markers("requires"):
         missing = [f for f in mark.args if not caps.has(f)]
