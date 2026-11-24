@@ -1507,3 +1507,9 @@ Subagent-reported: run 45454952137. Ten of fifteen jobs passed and five failed; 
 ### Decision: pluggy registration dropped (2026-11-24)
 
 Simon dropped the queued work to register every backend through a pluggy hook. Nothing had been built. The core stays free of runtime dependencies. The mention of pluggy in `dblayer-api-revision-proposal.md` is now out of date and is marked there as dropped.
+
+### Found: demo restarted on the latest code (2026-11-24, 11:50; my own check)
+
+All 16 featured databases answer a count query, serve a table page and export a 201-line CSV, including the new multi-tenant Rust worker. The fleet's mix is now 500 in-process SQLite, 200 C worker, 100 multi-tenant C, 100 DuckDB, 50 DuckDB worker, 30 PostgreSQL and 20 Python worker; a 500-way fan-out succeeded in 0.86 s with connections at the cap of 40.
+
+A slip of mine on the way: running `uv run python` without `--python 3.14` in the main checkout made uv delete and recreate the virtual environment on Python 3.15 with no extras, underneath the running demo server. I restored it with `uv sync --python 3.14 --all-extras --group demo`, rebuilt the native workers and restarted the demo. Lesson: the checkout the demo runs from needs its interpreter pinned (a `.python-version` file), because ClickHouse's chDB has no Python 3.15 build and uv's default here is 3.15.
