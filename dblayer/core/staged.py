@@ -97,7 +97,7 @@ async def sweep_staged(db: "Database", max_age: float | timedelta) -> list[str]:
         schema = await tx.schema()
         for name in list(schema.tables):
             created = staging_created_at(name)
-            if created is None or name in db._live_staging:
+            if created is None or name in db._staging_names():
                 continue
             if now - created >= limit:
                 await tx.execute(tx.dialect.drop_table_sql(name, if_exists=True))
@@ -137,7 +137,7 @@ class StagedImport:
         if self._state != "new":
             raise RuntimeError("a StagedImport can only be entered once")
         db = self._db
-        db._live_staging.add(self.staging)
+        db._staging_names().add(self.staging)
         try:
             async with db.transaction() as tx:
                 schema = await tx.schema()
@@ -163,7 +163,7 @@ class StagedImport:
                 elif self.columns:
                     await create_table(tx, self.staging, self.columns, pk=self.pk)
         except BaseException:
-            db._live_staging.discard(self.staging)
+            db._staging_names().discard(self.staging)
             self._state = "failed"
             raise
         self._state = "open"
@@ -201,7 +201,7 @@ class StagedImport:
                     await asyncio.shield(task)
                 except Exception:
                     pass
-            self._db._live_staging.discard(self.staging)
+            self._db._staging_names().discard(self.staging)
 
     async def _drop_staging(self) -> None:
         async with self._db.transaction() as tx:

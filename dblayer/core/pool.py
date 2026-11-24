@@ -24,9 +24,13 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..backends.base import Backend, BackendConnection
 from ..errors import DatabaseClosed
+
+if TYPE_CHECKING:
+    from .database import Database
 
 __all__ = ["Pool", "PoolStats", "DEFAULT_MAX_READ_CONNECTIONS"]
 
@@ -60,15 +64,26 @@ class _Entry:
 
 
 class Pool:
-    def __init__(
-        self,
-        backend: Backend,
-        *,
-        max_read_connections: int = DEFAULT_MAX_READ_CONNECTIONS,
-    ) -> None:
-        if max_read_connections < 1:
-            raise ValueError("max_read_connections must be at least 1")
-        self._backend = backend
+    """Created by its ``Database`` on first use (so an unused database costs
+    no pool); cumulative open/close counts live on the database."""
+
+    __slots__ = (
+        "_db",
+        "_backend",
+        "max_read_connections",
+        "_read_slots",
+        "_write_slot",
+        "_idle_read",
+        "_idle_write",
+        "_in_use",
+        "_generation",
+        "_closed",
+    )
+
+    def __init__(self, db: "Database") -> None:
+        self._db = db
+        self._backend: Backend = db._backend
+        max_read_connections = db.max_read_connections
         self.max_read_connections = max_read_connections
         # asyncio primitives bind to the running loop lazily (3.10+), so
         # creating them here opens nothing and needs no loop.
@@ -79,8 +94,6 @@ class Pool:
         self._in_use: dict[int, _Entry] = {}
         self._generation = 0
         self._closed = False
-        self._opened_total = 0
-        self._closed_total = 0
 
     # -- checkout ------------------------------------------------------------
 
@@ -111,7 +124,7 @@ class Pool:
             entry = self._take_idle(write)
             if entry is None:
                 conn = await self._backend.open(write=write)
-                self._opened_total += 1
+                self._db._opened_total += 1
                 entry = _Entry(conn, write, self._generation)
         except BaseException:
             slot.release()
@@ -177,7 +190,7 @@ class Pool:
         await self.close_idle()
 
     async def _close_entry(self, entry: _Entry) -> None:
-        self._closed_total += 1
+        self._db._closed_total += 1
         try:
             await entry.conn.close()
         except Exception:
@@ -204,8 +217,8 @@ class Pool:
             idle_write=idle_write,
             in_use_read=in_use_read,
             in_use_write=in_use_write,
-            opened_total=self._opened_total,
-            closed_total=self._closed_total,
+            opened_total=self._db._opened_total,
+            closed_total=self._db._closed_total,
         )
 
 

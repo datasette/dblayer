@@ -63,6 +63,28 @@ class Database(IntrospectionMixin, OperationsMixin):
     override them (``None`` meaning "no limit").
     """
 
+    # Slots, and the pool / schema cache / staging set created only when
+    # first needed, keep a never-used or asleep database to one small object
+    # (the 10,000-database scale test measures it).
+    __slots__ = (
+        "_backend",
+        "name",
+        "max_read_connections",
+        "time_limit_ms",
+        "max_rows",
+        "max_result_bytes",
+        "returning_limit",
+        "chunk_rows",
+        "deadline_ms",
+        "native_operations",
+        "_staging",
+        "_pool",
+        "_schema_cache",
+        "_closed",
+        "_opened_total",
+        "_closed_total",
+    )
+
     def __init__(
         self,
         backend: Backend,
@@ -77,8 +99,11 @@ class Database(IntrospectionMixin, OperationsMixin):
         deadline_ms: int | None = DEFAULT_DEADLINE_MS,
         native_operations: bool = True,
     ) -> None:
+        if max_read_connections < 1:
+            raise ValueError("max_read_connections must be at least 1")
         self._backend = backend
         self.name = name
+        self.max_read_connections = max_read_connections
         self.time_limit_ms = time_limit_ms
         self.max_rows = max_rows
         self.max_result_bytes = max_result_bytes
@@ -86,12 +111,14 @@ class Database(IntrospectionMixin, OperationsMixin):
         self.chunk_rows = chunk_rows
         self.deadline_ms = deadline_ms
         self.native_operations = native_operations
-        self._live_staging: set[str] = set()
         """When false, named operations always use the default
         implementations, never a backend's ``run_operation`` override."""
-        self._pool = Pool(backend, max_read_connections=max_read_connections)
-        self._schema_cache = SchemaCache()
+        self._staging: set[str] | None = None
+        self._pool: Pool | None = None
+        self._schema_cache: SchemaCache | None = None
         self._closed = False
+        self._opened_total = 0
+        self._closed_total = 0
 
     def __repr__(self) -> str:
         return f"<Database {self.name!r} {self._backend!r}>"
@@ -108,9 +135,37 @@ class Database(IntrospectionMixin, OperationsMixin):
 
     def stats(self) -> PoolStats:
         """Connection counts for this database. Never opens anything."""
-        return self._pool.stats()
+        pool = self._pool
+        if pool is None:
+            return PoolStats(0, 0, 0, 0, 0, 0, self._opened_total, self._closed_total)
+        return pool.stats()
 
     # -- helpers -------------------------------------------------------------
+
+    def _get_pool(self) -> Pool:
+        pool = self._pool
+        if pool is None:
+            pool = self._pool = Pool(self)
+        return pool
+
+    def _staging_names(self) -> set[str]:
+        """Names of staging tables owned by imports running in this
+        process (created on first use)."""
+        if self._staging is None:
+            self._staging = set()
+        return self._staging
+
+    def _cache(self) -> SchemaCache:
+        if self._schema_cache is None:
+            self._schema_cache = SchemaCache()
+        return self._schema_cache
+
+    def _invalidate_schema(self) -> None:
+        if self._schema_cache is not None:
+            self._schema_cache.clear()
+
+    def _cached_schema(self) -> Schema | None:
+        return None if self._schema_cache is None else self._schema_cache.schema
 
     def _check_open(self) -> None:
         if self._closed:
@@ -135,7 +190,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         self._check_open()
         native_sql, native_params = self._native(sql, params)
         with map_errors(self._backend):
-            async with self._pool.connection(write=False) as conn:
+            async with self._get_pool().connection(write=False) as conn:
                 with map_errors(self._backend):
                     return await conn.execute(
                     native_sql,
@@ -189,7 +244,8 @@ class Database(IntrospectionMixin, OperationsMixin):
         self._check_open()
         native_sql, native_params = self._native(sql, params)
         with map_errors(self._backend):
-            conn = await self._pool.acquire(write=False)
+            pool = self._get_pool()
+            conn = await pool.acquire(write=False)
         discard = False
         try:
             rs = conn.stream(
@@ -218,7 +274,7 @@ class Database(IntrospectionMixin, OperationsMixin):
             discard = _should_discard(e)
             raise
         finally:
-            await self._pool.release(conn, discard=discard)
+            await pool.release(conn, discard=discard)
 
     async def execute_write(
         self,
@@ -238,7 +294,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         native_sql, native_params = self._native(sql, params)
         try:
             with map_errors(self._backend):
-                async with self._pool.connection(write=True) as conn:
+                async with self._get_pool().connection(write=True) as conn:
                     with map_errors(self._backend):
                         res = await conn.execute(
                         native_sql,
@@ -248,7 +304,7 @@ class Database(IntrospectionMixin, OperationsMixin):
                     )
         finally:
             # Invalidate before the caller hears back, success or not.
-            self._schema_cache.clear()
+            self._invalidate_schema()
         return WriteResult(
             rowcount=res.rowcount,
             last_pk=res.last_pk,
@@ -398,13 +454,13 @@ class Database(IntrospectionMixin, OperationsMixin):
     async def schema(self) -> Schema:
         """Everything introspection knows, from the cache when it is current."""
         self._check_open()
-        cache = self._schema_cache
+        cache = self._cache()
         hint = self._backend.change_hint() if self.capabilities.cheap_change_hint else None
         cached = cache.fresh_by_hint(hint)
         if cached is not None:
             return cached
         with map_errors(self._backend):
-            async with self._pool.connection(write=False) as conn:
+            async with self._get_pool().connection(write=False) as conn:
                 with map_errors(self._backend):
                     if cache.schema is not None:
                         version = await conn.schema_version()
@@ -420,7 +476,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         database (one cheap query)."""
         self._check_open()
         with map_errors(self._backend):
-            async with self._pool.connection(write=False) as conn:
+            async with self._get_pool().connection(write=False) as conn:
                 with map_errors(self._backend):
                     return await conn.schema_version()
 
@@ -438,9 +494,11 @@ class Database(IntrospectionMixin, OperationsMixin):
         else). The next call wakes the database transparently. Connections in
         use right now finish their call and are closed when returned."""
         self._check_open()
-        self._schema_cache.clear()
-        await self._pool.close_idle()
-        if self.capabilities.sleep_releases_everything and self._pool.in_use == 0:
+        self._invalidate_schema()
+        pool = self._pool
+        if pool is not None:
+            await pool.close_idle()
+        if self.capabilities.sleep_releases_everything and (pool is None or pool.in_use == 0):
             await self._backend.close()
 
     async def close(self) -> None:
@@ -449,8 +507,9 @@ class Database(IntrospectionMixin, OperationsMixin):
         if self._closed:
             return
         self._closed = True
-        self._schema_cache.clear()
-        await self._pool.close()
+        self._invalidate_schema()
+        if self._pool is not None:
+            await self._pool.close()
         await self._backend.close()
 
     async def __aenter__(self) -> "Database":
@@ -464,5 +523,5 @@ class Database(IntrospectionMixin, OperationsMixin):
     def _connection(self, *, write: bool) -> Any:
         """Pooled connection context manager, for core modules only
         (transactions in milestone 2). Yields a ``BackendConnection``."""
-        return self._pool.connection(write=write)
+        return self._get_pool().connection(write=write)
 

@@ -17,6 +17,8 @@ __all__ = ["IntrospectionMixin", "OperationsMixin"]
 class IntrospectionMixin:
     """Needs ``schema()`` and ``capabilities``."""
 
+    __slots__ = ()
+
     @property
     def capabilities(self) -> Capabilities:  # pragma: no cover - overridden
         raise NotImplementedError
@@ -68,6 +70,8 @@ class OperationsMixin:
     override or the default implementation, ``Database`` opens a
     transaction first. Arguments are documented on the default
     implementations in ``dblayer.core.operations``."""
+
+    __slots__ = ()
 
     async def _operation(self, name: str, args: dict[str, Any]) -> OperationResult:  # pragma: no cover
         raise NotImplementedError

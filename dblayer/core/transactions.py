@@ -39,7 +39,7 @@ from .api import IntrospectionMixin, OperationsMixin
 from .common import DEFAULT, Opt, map_errors, pick
 from .operations import OPERATIONS, OperationResult, normalise_args
 from .params import Params, leading_keyword
-from .pool import _should_discard
+from .pool import Pool, _should_discard
 from .results import Results, WriteResult
 from .schema import Schema
 
@@ -111,6 +111,7 @@ class Transaction(IntrospectionMixin, OperationsMixin):
         self.deadline_ms = deadline_ms
         self._state = _State.NEW
         self._conn: BackendConnection | None = None
+        self._pool: Pool | None = None
         self._lock = asyncio.Lock()
         self._busy = False
         self._timer: asyncio.TimerHandle | None = None
@@ -155,7 +156,7 @@ class Transaction(IntrospectionMixin, OperationsMixin):
                 f"a transaction is already open on database {db.name!r} in this task; "
                 "transactions cannot be nested"
             )
-        pool = db._pool
+        pool = db._get_pool()
         write = self.mode == "write"
         with map_errors(db._backend):
             conn = await pool.acquire(write=write)
@@ -166,6 +167,7 @@ class Transaction(IntrospectionMixin, OperationsMixin):
             await pool.release(conn, discard=_should_discard(e))
             raise
         self._conn = conn
+        self._pool = pool
         self._state = _State.OPEN
         if self.deadline_ms is not None:
             loop = asyncio.get_running_loop()
@@ -248,10 +250,11 @@ class Transaction(IntrospectionMixin, OperationsMixin):
             self._conn = None
             self._schema = None
             try:
-                await db._pool.release(conn, discard=discard)
+                assert self._pool is not None
+                await self._pool.release(conn, discard=discard)
             finally:
                 if self.mode == "write":
-                    db._schema_cache.clear()
+                    db._invalidate_schema()
         if error is not None:
             raise error
 
@@ -320,7 +323,7 @@ class Transaction(IntrospectionMixin, OperationsMixin):
     def _schema_may_have_changed(self) -> None:
         if self.mode == "write":
             self._schema = None
-            self._db._schema_cache.clear()
+            self._db._invalidate_schema()
 
     def _after(self, sql: str) -> None:
         if self.mode == "write" and leading_keyword(sql, self.dialect.flavor) not in _DML:
@@ -407,7 +410,7 @@ class Transaction(IntrospectionMixin, OperationsMixin):
         for the transaction; reuses the database's cached schema when the
         version matches (one cheap query instead of a full read)."""
         if self._schema is None:
-            cached = self._db._schema_cache.schema
+            cached = self._db._cached_schema()
             if cached is not None:
                 version = await self._run(lambda c: c.schema_version())
                 if version == cached.version:

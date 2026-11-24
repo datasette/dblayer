@@ -164,14 +164,51 @@ class _TimeLimit:
             self.conn.set_progress_handler(None, 0)
 
 
+@functools.cache
+def _capabilities(is_memory: bool) -> Capabilities:
+    """Shared (frozen) instances: one per kind, not one per database."""
+    return Capabilities(
+        concurrent_writers=False,
+        transactional_ddl=True,
+        implicit_rowid=True,
+        cheap_change_hint=not is_memory,
+        hard_kill=False,
+        memory_limit=False,
+        table_definition_sql=True,
+        full_text_search=_has_fts5(),
+        sleep_releases_everything=not is_memory,
+        returning=sqlite3.sqlite_version_info >= (3, 35, 0),
+        snapshot_reads=not is_memory,
+    )
+
+
+_DIALECT = SqliteDialect()  # stateless, shared by every backend instance
+_ANCHOR_LOCK = threading.Lock()  # anchor creation is rare; one lock for all
+
+
 class SqliteInProcess:
     """In-process SQLite backend.
 
     Capability rounding: none needed; every flag is a plain yes/no here.
     ``full_text_search`` reflects whether this sqlite3 build has FTS3/4/5.
+
+    Slotted, with shared capabilities and dialect objects, so that 10,000
+    registered databases cost a few hundred bytes each. The path is kept as
+    a string; ``path`` builds a ``Path`` on demand.
     """
 
-    dialect: Dialect
+    __slots__ = (
+        "_path",
+        "memory_name",
+        "immutable",
+        "init",
+        "executor",
+        "busy_timeout",
+        "create",
+        "capabilities",
+        "_anchor",
+    )
+    dialect: Dialect = _DIALECT
 
     def __init__(
         self,
@@ -188,30 +225,17 @@ class SqliteInProcess:
             raise ValueError("pass exactly one of path or memory_name")
         if memory_name is not None and immutable:
             raise ValueError("an in-memory database cannot be immutable")
-        self.path: Path | None = Path(path).absolute() if path is not None else None
+        self._path: str | None = (
+            os.path.abspath(os.fspath(path)) if path is not None else None
+        )
         self.memory_name = memory_name
         self.immutable = immutable
         self.init = init
         self.executor = executor
         self.busy_timeout = busy_timeout
         self.create = create and not immutable
-        self.dialect = SqliteDialect()
-        is_memory = memory_name is not None
-        self.capabilities = Capabilities(
-            concurrent_writers=False,
-            transactional_ddl=True,
-            implicit_rowid=True,
-            cheap_change_hint=not is_memory,
-            hard_kill=False,
-            memory_limit=False,
-            table_definition_sql=True,
-            full_text_search=_has_fts5(),
-            sleep_releases_everything=not is_memory,
-            returning=sqlite3.sqlite_version_info >= (3, 35, 0),
-            snapshot_reads=not is_memory,
-        )
+        self.capabilities = _capabilities(memory_name is not None)
         self._anchor: sqlite3.Connection | None = None
-        self._anchor_lock = threading.Lock()
 
     @classmethod
     def memory(cls, name: str | None = None, **kwargs: Any) -> "SqliteInProcess":
@@ -220,11 +244,15 @@ class SqliteInProcess:
         return cls(memory_name=name or f"dblayer-{uuid.uuid4().hex}", **kwargs)
 
     @property
+    def path(self) -> Path | None:
+        return None if self._path is None else Path(self._path)
+
+    @property
     def is_memory(self) -> bool:
         return self.memory_name is not None
 
     def __repr__(self) -> str:
-        target = f"memory:{self.memory_name}" if self.is_memory else str(self.path)
+        target = f"memory:{self.memory_name}" if self.is_memory else self._path
         return f"SqliteInProcess({target!r})"
 
     # -- Backend protocol ----------------------------------------------------
@@ -239,12 +267,12 @@ class SqliteInProcess:
         """Size and mtime of the database file and its ``-wal`` file. Uses
         ``os.stat`` only; never opens a connection. ``None`` for memory
         databases (no cheap hint exists)."""
-        if self.path is None:
+        if self._path is None:
             return None
-        return (_stat(self.path), _stat(self.path.with_name(self.path.name + "-wal")))
+        return (_stat(self._path), _stat(self._path + "-wal"))
 
     async def close(self) -> None:
-        with self._anchor_lock:
+        with _ANCHOR_LOCK:
             anchor, self._anchor = self._anchor, None
         if anchor is not None:
             anchor.close()
@@ -254,8 +282,8 @@ class SqliteInProcess:
     def _uri(self, write: bool) -> str:
         if self.memory_name is not None:
             return f"file:{urllib.parse.quote(self.memory_name)}?mode=memory&cache=shared"
-        assert self.path is not None
-        base = self.path.as_uri()
+        assert self._path is not None
+        base = Path(self._path).as_uri()
         if write:
             return base + ("?mode=rwc" if self.create else "?mode=rw")
         if self.immutable:
@@ -264,16 +292,16 @@ class SqliteInProcess:
 
     def _connect(self, write: bool) -> sqlite3.Connection:
         if self.memory_name is not None:
-            with self._anchor_lock:
+            with _ANCHOR_LOCK:
                 if self._anchor is None:
                     self._anchor = sqlite3.connect(
                         self._uri(True), uri=True, check_same_thread=False, autocommit=True
                     )
-        elif self.create and not write and self.path is not None:
+        elif self.create and not write and self._path is not None:
             # A read before the first write: an empty file is a valid empty
             # database, so create one rather than fail with CANTOPEN.
             try:
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
             except FileExistsError:
                 pass
             else:
@@ -297,7 +325,7 @@ class SqliteInProcess:
         return raw
 
 
-def _stat(path: Path) -> tuple[int, int] | None:
+def _stat(path: str) -> tuple[int, int] | None:
     try:
         st = os.stat(path)
     except FileNotFoundError:

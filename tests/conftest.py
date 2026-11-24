@@ -133,6 +133,12 @@ async def db(make_db: Callable[..., Database]) -> Database:
     return make_db(name="test")
 
 
+class _OpsDatabase(Database):
+    """``Database`` uses ``__slots__``; this subclass can carry ``op_path``."""
+
+    op_path: str
+
+
 @pytest.fixture(params=["default", "override"])
 async def make_ops_db(
     request: pytest.FixtureRequest,
@@ -145,12 +151,12 @@ async def make_ops_db(
     def make(**kwargs: object) -> Database:
         backend = make_backend()
         if path == "default":
-            db = Database(backend, native_operations=False, **kwargs)  # type: ignore[arg-type]
+            db = _OpsDatabase(backend, native_operations=False, **kwargs)  # type: ignore[arg-type]
         else:
             if not backend_spec.native_operations:
                 backend = OverrideBackend(backend)  # type: ignore[assignment]
-            db = Database(backend, native_operations=True, **kwargs)  # type: ignore[arg-type]
-        db.op_path = path  # type: ignore[attr-defined]
+            db = _OpsDatabase(backend, native_operations=True, **kwargs)  # type: ignore[arg-type]
+        db.op_path = path
         made.append(db)
         return db
 
