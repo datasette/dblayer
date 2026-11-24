@@ -93,7 +93,12 @@ async def test_fleet_starts_cold_and_page_lists_every_member(
     r = await client.get("/-/fleet?backend=sqlite&state=cold")
     shown = re.findall(r'<a class="s-cold" href="/(sqlite-\d+)"', r.text)
     assert len(shown) == fleet.mix["sqlite"]
-    assert "sqlite-worker" not in "".join(re.findall(r'<div class="grid">.*?</div>', r.text, re.S))
+    grid = "".join(re.findall(r'<div class="grid">.*?</div>', r.text, re.S))
+    assert "sqlite-worker" not in grid and "sqlite-cworker" not in grid
+    r = await client.get("/-/fleet?backend=sqlite-cworker")
+    assert r.status_code == 200
+    shown = re.findall(r'href="/(sqlite-cworker-\d+)"', r.text)
+    assert len(shown) == fleet.mix["sqlite-cworker"] > 0
     assert (await client.get("/-/fleet?state=bogus")).status_code == 400
 
     home = await client.get("/")
@@ -208,6 +213,13 @@ async def test_one_member_of_every_backend_kind_browses(
         r = await client.get(f"/{name}/-/query", params={"sql": "select name from branch"})
         assert r.status_code == 200 and m.branch in r.text, name
     assert {"sqlite", "sqlite-worker"} <= seen
+    from dblayer.backends.sqlite_cworker import binary_unavailable
+
+    if binary_unavailable() is None:
+        assert "sqlite-cworker" in seen
+        # A C worker member is a SQLite file copied from the SQLite template.
+        cw = next(m for m in fleet.members.values() if m.kind == "sqlite-cworker")
+        assert cw.path is not None and cw.path.read_bytes()[:16] == b"SQLite format 3\x00"
     try:
         import duckdb  # noqa: F401
     except ImportError:
@@ -239,3 +251,61 @@ async def test_stats_count_worker_processes_and_their_memory(
         await asyncio.sleep(0.1)
     r = await client.get("/-/fleet")
     assert r.status_code == 200 and "worker processes" in r.text
+
+
+async def test_cworker_members_unavailable_without_the_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a built C worker its members are listed as unavailable, the
+    reason naming the build command, and the fleet still has every member."""
+    monkeypatch.setenv("DBLAYER_CWORKER", str(tmp_path / "no-such-dblayer-cworker"))
+    config = DemoConfig(data_dir=tmp_path, fleet_size=SIZE, fleet_max_open_connections=CAP,
+                        fleet_max_threads=4, fleet_idle_timeout=0.5)
+    app = create_app(config, specs=[])
+    async with app.router.lifespan_context(app):
+        fleet = app.state.fleet
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://demo") as client:
+            cw = [m for m in fleet.members.values() if m.kind == "sqlite-cworker"]
+            assert len(cw) == fleet.mix["sqlite-cworker"] > 0
+            assert len(fleet.members) == SIZE
+            for m in cw:
+                assert m.state == "unavailable"
+                assert m.demo.error and "make -C cworker" in m.demo.error, m.demo.error
+            s = (await _stats(client))["fleet"]
+            assert s["fleet_size"] == SIZE
+            assert s["unavailable"] >= len(cw)
+            assert s["registered"] + s["unavailable"] == SIZE
+            r = await client.get("/-/fleet?backend=sqlite-cworker&state=unavailable")
+            assert r.status_code == 200 and "make -C cworker" in r.text
+            # The rest of the fleet is unaffected.
+            r = await client.get("/sqlite-0001/-/query", params={"sql": "select name from branch"})
+            assert r.status_code == 200
+
+
+async def test_stats_count_c_worker_processes(
+    fleet_client: tuple[Fleet, httpx.AsyncClient],
+) -> None:
+    """A C worker member's process is a worker process in the stats panel."""
+    from dblayer.backends.sqlite_cworker import binary_unavailable
+    from dblayer.backends.sqlite_worker import live_worker_pids
+
+    reason = binary_unavailable()
+    if reason:
+        pytest.skip(reason)
+    fleet, client = fleet_client
+    await _wait_asleep(client)
+    before = set(live_worker_pids())
+    member = next(m for m in fleet.members.values() if m.kind == "sqlite-cworker")
+    r = await client.get(f"/{member.name}/-/query", params={"sql": "select name from branch"})
+    assert r.status_code == 200 and member.branch in r.text
+    new = set(live_worker_pids()) - before
+    assert new, "the C worker member started no worker process"
+    s = await _stats(client)
+    assert s["workers"]["processes"] >= len(new)
+    assert s["workers"]["rss_mb"] > 0
+    await _wait_asleep(client)
+    deadline = asyncio.get_running_loop().time() + 10
+    while set(live_worker_pids()) & new:
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0.1)
