@@ -1,10 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>dblayer demo</h1>
-<p>The same small dataset in each of dblayer's backends.</p>
-<ul class="dbs">
-{% for db in databases %}
-  <li>{{ db.title }}</li>
+<p>The same small dataset (authors, books, reviews) in each of dblayer's backends.
+Every page reads through <code>Database.execute()</code>: read-only connections,
+a time limit and a row cap.</p>
+<table class="rows">
+<thead><tr><th>Database</th><th>Backend</th><th>Status</th><th>Tables</th><th>Views</th></tr></thead>
+<tbody>
+{% for row in rows %}
+<tr>
+  <td>{% if row.demo.available %}<a href="/{{ row.demo.spec.slug }}">{{ row.demo.spec.title }}</a>{% else %}{{ row.demo.spec.title }}{% endif %}</td>
+  <td><code>{{ row.demo.spec.backend }}</code></td>
+  <td>{% if row.error %}<span class="unavailable">unavailable: {{ row.error }}</span>{% else %}available{% endif %}</td>
+  <td class="num">{{ row.tables if row.tables is not none else "" }}</td>
+  <td class="num">{{ row.views if row.views is not none else "" }}</td>
+</tr>
 {% endfor %}
-</ul>
+</tbody>
+</table>
 {% endblock %}
