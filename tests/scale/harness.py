@@ -77,6 +77,12 @@ def _duckdb_backend(path: Path) -> Backend:
     return DuckDB(path)  # type: ignore[return-value]
 
 
+def _worker_backend(path: Path) -> Backend:
+    from dblayer.backends.sqlite_worker import SqliteWorker
+
+    return SqliteWorker(path)  # type: ignore[return-value]
+
+
 def _duckdb_available() -> str | None:
     try:
         import duckdb  # noqa: F401
@@ -94,6 +100,9 @@ SCALE_BACKENDS: list[ScaleBackend] = [
         "duckdb", duckdb_files, _duckdb_backend, 1_000,
         available=_duckdb_available, requests=3_000, growth_limit=None,
     ),
+    # Every wake of a worker database starts a process (~80 ms), and at
+    # saturation almost every request wakes one, so a shorter load.
+    ScaleBackend("sqlite-worker", sqlite_files, _worker_backend, 1_000, requests=2_000),
 ]
 
 
