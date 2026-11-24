@@ -1260,3 +1260,7 @@ Subagent-reported. Full suite after the fixes: 6,295 passed, 3,339 skipped, 4 ex
 - **Datasette: on Python 3.14 and later, cancelling `await asyncio.shield(fut)` whose future later fails logs an ERROR.** Observed in CPython 3.15's asyncio; Datasette's own uses of `shield` not checked.
 - **Datasette and sqlite-utils:** comparing `last_insert_rowid()` before and after an insert gets a reused rowid and an upsert that updates wrong. Verified in dblayer; not checked against their code. (Restates an earlier entry with a second confirmation.)
 - **DuckDB (not sqlite-utils or Datasette):** closing a streaming result early makes the next statement on the connection wait for the background producer to fill the streaming buffer. Verified with minimal scripts on 2.0.1 on macOS.
+
+### Decision: build a Rust version of the multi-tenant SQLite worker (2026-11-24)
+
+Simon asked for it, to compare with the C one. One subagent is building `sqlite-rs-worker/`, a drop-in for `dblayer-cworker --multi`, linked against the same pinned SQLite amalgamation with the same compile options so the comparison is fair. Deliverables: a side-by-side table (speed, memory, size, build time, lines, `unsafe`, dependencies) and a bug-by-bug table saying whether Rust would have prevented each bug the C worker has had. Known limit: ThreadSanitizer and Miri need a nightly Rust toolchain, which is not installed and will not be.
