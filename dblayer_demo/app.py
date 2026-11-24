@@ -25,6 +25,7 @@ from dblayer.core.params import find_placeholders, leading_keyword
 from dblayer.core.schema import TableInfo
 
 from .config import DemoConfig
+from .fleet import Fleet
 from .databases import DemoDatabase, DemoSpec, close_all, open_all
 from .render import cell, describe_error, is_numeric
 
@@ -59,8 +60,18 @@ def _demos(request: Request) -> dict[str, DemoDatabase]:
     return request.app.state.demos
 
 
+def _fleet(request: Request) -> Fleet | None:
+    return request.app.state.fleet
+
+
 def _database(request: Request) -> tuple[DemoDatabase, Database]:
-    demo = _demos(request).get(request.path_params["database"])
+    """A featured database or a fleet member, by URL name: every page
+    works the same for both."""
+    name = request.path_params["database"]
+    demo = _demos(request).get(name)
+    fleet = _fleet(request)
+    if demo is None and fleet is not None and name in fleet.members:
+        demo = fleet.members[name].demo
     if demo is None:
         raise HTTPException(404, "No such database")
     if demo.db is None:
@@ -259,9 +270,17 @@ def create_app(
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
         demos = await open_all(config, specs)
         app.state.demos = {d.spec.slug: d for d in demos}
+        fleet: Fleet | None = None
+        if config.fleet_size > 0:
+            fleet = Fleet(config)
+            pg = app.state.demos.get("postgres")
+            await fleet.start(postgres_error=pg.error if pg is not None else None)
+        app.state.fleet = fleet
         try:
             yield
         finally:
+            if fleet is not None:
+                await fleet.close()
             await close_all(demos)
 
     routes = [
