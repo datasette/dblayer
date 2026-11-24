@@ -34,7 +34,10 @@ session inside one Node process (``DatabaseWorker`` placement), with a mode:
   transaction to end, and never sees its uncommitted rows. A waiting request
   with a time limit gives up with ``QueryInterrupted`` when the limit passes;
   the wait counts against it. A paused ``stream`` holds the session the same
-  way (it runs in a transaction block of its own).
+  way (it runs in a transaction block of its own). The task holding a
+  transaction would wait for itself: a statement it sends through ``db``
+  rather than the transaction raises ``NestedWriteError`` at once (the core
+  checks this for every backend with ``concurrent_sessions`` false).
 * **A read transaction's snapshot** is REPEATABLE READ as on a server, but
   trivially so: nothing else can write while it is open, so it sees exactly
   the last committed state, and a writer waits for it to end.
@@ -58,7 +61,10 @@ event loop: the worker cannot read a ``cancel`` while it runs, and
 ``statement_timeout`` never fires (PostgreSQL's timers are JavaScript
 timers here). The only stop is the parent's SIGKILL, at the time limit plus
 ``kill_grace_ms``; it loses the session, so the open transaction (there is
-at most one) and any paused stream with it. The data directory survives a
+at most one) and any paused stream with it. Requests from other connections
+that were waiting behind it never reached the worker: they run on the next
+process (one retry, ``NotSent``), so a kill costs bystanders a wake (about
+150 ms), not an error. The data directory survives a
 kill: PostgreSQL's WAL recovery runs on the next open (see
 ``tests/faults/test_pglite_faults.py``).
 
@@ -85,6 +91,11 @@ functions up with TurboFan; the TurboFan compiles alone cost the process
 about 600 MB. The worker therefore runs with ``--liftoff-only`` (reads are
 as fast, CPU-heavy queries about 1.5x slower); ``optimize=True`` turns
 TurboFan back on. ``shared_buffers`` defaults to 16 MB here (PGlite: 128 MB).
+WebAssembly memory never shrinks, so a new directory without ``template``
+is initialised by a short-lived child process (``scripts/init_template.mjs``):
+initdb in the worker itself would leave it at about 830 MB until it sleeps.
+An awake database costs about 115 MB to start with (the module declares
+128 MB of initial memory) and keeps whatever its largest query grew it to.
 
 What the worker cannot do: named operations run in the parent (``hello``
 says ``"ops": false``), except ``insert_rows``, done with ``COPY ... FROM

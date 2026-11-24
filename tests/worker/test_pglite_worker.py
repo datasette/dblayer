@@ -407,3 +407,20 @@ async def test_template_copy_and_create_false(tmp_path):
         assert (await db.execute("select current_setting('server_version') v")).rows[0]["v"].startswith("18.")
     finally:
         await db.close()
+
+
+async def test_initdb_runs_in_a_child_process(tmp_path):
+    """A new directory without a template is initialised by a short-lived
+    child process: in the worker itself initdb would leave about 830 MB of
+    WebAssembly memory for as long as the database stays awake."""
+    backend = PGliteWorker(tmp_path / "new", debug=True)
+    db = Database(backend)
+    try:
+        assert (await db.execute("select 1 x")).rows[0]["x"] == 1
+        assert backend.process is not None
+        status = await backend.process.call({"type": "_debug", "action": "status"}, owner=None)
+        rss_mb = status["memory"]["rss"] / 2**20
+        print(f"\n[pglite] worker RSS after creating a database with initdb: {rss_mb:.0f} MB")
+        assert rss_mb < 450
+    finally:
+        await db.close()

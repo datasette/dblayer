@@ -23,6 +23,7 @@
 // execute / execute_many runs in a savepoint, so a failed statement does not
 // abort the transaction (as the psycopg backend does).
 
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { decode, encode } from './codec.mjs';
@@ -520,6 +521,7 @@ async function doOpen(m) {
     if (template && !fs.existsSync(`${path}/PG_VERSION`) && fs.existsSync(`${template}/PG_VERSION`)) {
       fs.cpSync(template, path, { recursive: true, errorOnExist: false });
     }
+    if (!fs.existsSync(`${path}/PG_VERSION`)) initdbInChild(path);
     const t0 = performance.now();
     const wasmModule = await compiled;
     const t1 = performance.now();
@@ -540,6 +542,20 @@ async function doOpen(m) {
   const t = {};
   for (const [k, v] of Object.entries(timings)) t[k] = Math.round(v * 100) / 100;
   return { ok: true, conn: wc.id, timings: t };
+}
+
+/** A new data directory: initdb in a short-lived child process. Run here,
+ * initdb leaves this process's WebAssembly memory at about 830 MB for as
+ * long as the database stays awake (WebAssembly memory never shrinks); in a
+ * child it costs one more Node start (about 50 ms) and the memory goes
+ * with the child. */
+function initdbInChild(path) {
+  const script = new URL('../scripts/init_template.mjs', import.meta.url).pathname;
+  const r = spawnSync(process.execPath, [...process.execArgv, script, path], { stdio: ['ignore', 'ignore', 'pipe'] });
+  if (r.status !== 0) {
+    const why = r.error ? r.error.message : `${r.stderr}`.trim().slice(-500) || `exit status ${r.status}`;
+    throw new WireError('QueryError', `initdb for ${path} failed: ${why}`, 'CANTOPEN');
+  }
 }
 
 async function closeConn(wc) {
