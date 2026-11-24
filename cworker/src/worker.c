@@ -35,13 +35,17 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#ifndef CWORKER_WASM
 #include <signal.h>
+#endif
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef CWORKER_WASM
 #include <sys/resource.h>
+#endif
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -51,6 +55,9 @@
 #include "codec.h"
 #include "errnames.h"
 #include "sqlutil.h"
+#ifdef CWORKER_WASM
+#include "wasm_host.h"
+#endif
 
 #define PROTOCOL_VERSION 1
 #define DEFAULT_MAX_FRAME ((size_t)256 * 1024 * 1024)
@@ -230,6 +237,32 @@ static void err_sqlite(err_t *e, sqlite3 *db, int rc) {
 
 /* -- output ------------------------------------------------------------------ */
 
+#ifdef CWORKER_WASM
+/* WebAssembly build: replies are appended to one output buffer that the
+ * host reads after dbl_call() returns (frame in, frames out). */
+static uint8_t *g_out;
+static size_t g_out_len, g_out_cap;
+static int g_out_failed;
+
+static void write_all(const uint8_t *p, size_t n) {
+    if (g_out_failed)
+        return;
+    if (g_out_len + n > g_out_cap) {
+        size_t cap = g_out_cap ? g_out_cap : 65536;
+        while (cap < g_out_len + n)
+            cap *= 2;
+        uint8_t *q = realloc(g_out, cap);
+        if (q == NULL) {
+            g_out_failed = 1;
+            return;
+        }
+        g_out = q;
+        g_out_cap = cap;
+    }
+    memcpy(g_out + g_out_len, p, n);
+    g_out_len += n;
+}
+#else
 static void write_all(const uint8_t *p, size_t n) {
     pthread_mutex_lock(&g_write_mu);
     while (n > 0 && !atomic_load(&g_parent_gone)) {
@@ -245,6 +278,7 @@ static void write_all(const uint8_t *p, size_t n) {
     }
     pthread_mutex_unlock(&g_write_mu);
 }
+#endif
 
 static void send_frame(wbuf *w) {
     w_finish_frame(w);
@@ -458,8 +492,32 @@ typedef struct {
     int64_t deadline_ns;
 } progress_ctx;
 
+#ifdef CWORKER_WASM
+/* Written by the host from another thread while a call runs (an aligned
+ * 32-bit store into linear memory): 1 cancel, 2 time limit. Read here and
+ * by the progress handler; cleared by the host before each call. */
+volatile int32_t g_host_cancel;
+static void on_deadline(conn *c);
+
+static void wasm_sync_cancel(job *j) {
+    int32_t v = g_host_cancel;
+    if (v && !atomic_load(&j->cancelled)) {
+        atomic_store(&j->cancelled, 1);
+        j->reason = v == 2 ? R_TIME_LIMIT : R_CANCELLED;
+    }
+}
+#endif
+
 static int progress_cb(void *p) {
     progress_ctx *c = p;
+#ifdef CWORKER_WASM
+    /* No watchdog thread: the progress handler sees cancellation and
+     * transaction deadlines itself. */
+    wasm_sync_cancel(c->j);
+    conn *dc = c->j->wc;
+    if (dc && dc->tx && dc->deadline_ns && mono_ns() >= dc->deadline_ns)
+        on_deadline(dc);
+#endif
     if (atomic_load_explicit(&c->j->cancelled, memory_order_relaxed))
         return 1;
     if (c->deadline_ns && mono_ns() >= c->deadline_ns)
@@ -481,6 +539,9 @@ static void limit_remove(conn *wc) { sqlite3_progress_handler(wc->db, 0, NULL, N
 
 /* SqliteConnection._statement: refuse to start once cancelled. */
 static int stmt_enter(job *j, err_t *e) {
+#ifdef CWORKER_WASM
+    wasm_sync_cancel(j);
+#endif
     pthread_mutex_lock(&g_mu);
     if (atomic_load(&j->cancelled)) {
         pthread_mutex_unlock(&g_mu);
@@ -970,8 +1031,12 @@ static conn *conn_for(job *j, err_t *e) {
 
 static void recover_hot_journal(conn *wc) {
     char *jpath = xasprintf("%s-journal", wc->path);
+#ifdef CWORKER_WASM
+    int exists = host_access(jpath, (int32_t)strlen(jpath), SQLITE_ACCESS_EXISTS) == 1;
+#else
     struct stat sb;
     int exists = stat(jpath, &sb) == 0;
+#endif
     free(jpath);
     if (!exists)
         return;
@@ -1057,6 +1122,16 @@ static int h_open(job *j, wbuf *w, err_t *e) {
     conn tmp = {0};
     tmp.path = path;
     tmp.busy_ms = (int)(busy * 1000);
+#ifdef CWORKER_WASM
+    if (create && !write) {
+        int32_t trc = host_touch(path, (int32_t)strlen(path));
+        if (trc < 0) {
+            err_sqlite(e, NULL, -trc);
+            free(path);
+            return -1;
+        }
+    }
+#else
     if (create && !write) {
         /* A read before the first write: an empty file is a valid database. */
         int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644);
@@ -1069,6 +1144,7 @@ static int h_open(job *j, wbuf *w, err_t *e) {
             return -1;
         }
     }
+#endif
     if (!write && !immutable)
         recover_hot_journal(&tmp);
     char *base = path_as_uri(path);
@@ -1892,6 +1968,9 @@ static void run_job(job *j) {
         run_expire(j);
         return;
     }
+#ifdef CWORKER_WASM
+    wasm_sync_cancel(j);
+#endif
     if (atomic_load(&j->cancelled)) {
         err_set(&e, "QueryInterrupted", NULL, "query cancelled");
         goto done;
@@ -1933,6 +2012,9 @@ static void run_job(job *j) {
     else if (val_is_str(type, "schema")) rc = h_schema(j, wc, w, &e);
     else rc = h_schema_version(j, wc, w, &e);
 done:
+#ifdef CWORKER_WASM
+    wasm_sync_cancel(j);
+#endif
     if (rc == 0 && !streaming && atomic_load(&j->cancelled)) {
         /* cancelled while it ran: the caller gets the cancellation */
         err_set(&e, "QueryInterrupted", NULL, "query cancelled");
@@ -1990,6 +2072,7 @@ static void on_deadline(conn *c) {
     enqueue(ln, x, 1);
 }
 
+#ifndef CWORKER_WASM
 static void *watchdog_main(void *arg) {
     (void)arg;
     pthread_mutex_lock(&g_mu);
@@ -2027,9 +2110,11 @@ static void *watchdog_main(void *arg) {
     }
     return NULL;
 }
+#endif
 
 /* -- reader -------------------------------------------------------------------- */
 
+#ifndef CWORKER_WASM
 static int read_full(int fd, uint8_t *p, size_t n) {
     size_t got = 0;
     while (got < n) {
@@ -2045,6 +2130,7 @@ static int read_full(int fd, uint8_t *p, size_t n) {
     }
     return 1;
 }
+#endif
 
 static void hello(const val *msg) {
     const val *codecs = map_get(msg, "codecs");
@@ -2069,8 +2155,16 @@ static void hello(const val *msg) {
     w_cstr(&w, "protocol"); w_int(&w, PROTOCOL_VERSION);
     w_cstr(&w, "codec"); w_cstr(&w, codec == CODEC_MSGPACK ? "msgpack" : "json");
     w_cstr(&w, "sqlite_version"); w_cstr(&w, sqlite3_libversion());
+#ifdef CWORKER_WASM
+    w_cstr(&w, "implementation"); w_cstr(&w, "wasm");
+#else
     w_cstr(&w, "implementation"); w_cstr(&w, "c");
+#endif
+#ifdef CWORKER_WASM
+    w_cstr(&w, "pid"); w_nil(&w);
+#else
     w_cstr(&w, "pid"); w_int(&w, (int64_t)getpid());
+#endif
     w_cstr(&w, "rlimit_as"); w_bool(&w, g_rlimit_as);
     w_cstr(&w, "ops"); w_bool(&w, 0);
     if (g_multi) {
@@ -2086,6 +2180,7 @@ static void hello(const val *msg) {
     atomic_store(&g_codec, codec);
 }
 
+#ifndef CWORKER_WASM
 static void on_eof(void) {
     pthread_mutex_lock(&g_mu);
     if (!g_eof) {
@@ -2094,6 +2189,7 @@ static void on_eof(void) {
     }
     pthread_mutex_unlock(&g_mu);
 }
+#endif
 
 /* [g_mu] The lane running (or holding queued) request `id`, if any. */
 static lane *lane_of_request(int64_t id, job **found) {
@@ -2253,6 +2349,7 @@ static void dispatch(job *j) {
     pthread_mutex_unlock(&g_mu);
 }
 
+#ifndef CWORKER_WASM
 static void *reader_main(void *arg) {
     (void)arg;
     pthread_mutex_lock(&g_mu);
@@ -2294,8 +2391,93 @@ static void *reader_main(void *arg) {
     _exit(0);
     return NULL;
 }
+#endif
 
 /* -- main ---------------------------------------------------------------------- */
+
+#ifdef CWORKER_WASM
+/* The WebAssembly build has no main loop: the host calls dbl_call() with one
+ * request frame's payload in the input buffer and reads back every frame
+ * the request produced (replies, stream chunks, `expired` notices). */
+
+static uint8_t *g_in;
+static size_t g_in_cap;
+
+__attribute__((export_name("dbl_init"))) int32_t dbl_init(int32_t debug) {
+    g_debug = debug;
+    sqlite3_config(SQLITE_CONFIG_MEMSTATUS, 1);
+    return sqlite3_initialize();
+}
+
+/* A buffer for an n-byte request payload (NULL if out of memory). */
+__attribute__((export_name("dbl_input"))) uint8_t *dbl_input(uint32_t n) {
+    if (n > g_in_cap || (g_in_cap > (4u << 20) && n < (1u << 20))) {
+        free(g_in);
+        g_in_cap = n > 4096 ? n : 4096;
+        g_in = malloc(g_in_cap);
+        if (g_in == NULL)
+            g_in_cap = 0;
+    }
+    return g_in;
+}
+
+__attribute__((export_name("dbl_output"))) uint8_t *dbl_output(void) { return g_out; }
+
+__attribute__((export_name("dbl_cancel_flag"))) volatile int32_t *dbl_cancel_flag(void) { return &g_host_cancel; }
+
+static void check_deadlines(void) {
+    int64_t now = mono_ns();
+    for (conn *c = g_conns; c; c = c->next)
+        if (c->tx && c->deadline_ns && now >= c->deadline_ns)
+            on_deadline(c);
+}
+
+static void drain(void) {
+    while (q_head) {
+        job *j = dequeue();
+        if (j->kind != J_SHUTDOWN)
+            run_job(j);
+        g_current = NULL;
+        job_free(j);
+    }
+}
+
+/* Run the request in the input buffer (n bytes; 0: no request, only
+ * transaction deadlines are checked). Returns the number of bytes of
+ * output frames at dbl_output(), -1 if the output could not be stored, -2
+ * if the request did not decode. */
+__attribute__((export_name("dbl_call"))) int32_t dbl_call(uint32_t n) {
+    if (g_out_cap > (8u << 20)) {
+        free(g_out);
+        g_out = NULL;
+        g_out_cap = 0;
+    }
+    g_out_len = 0;
+    g_out_failed = 0;
+    check_deadlines();
+    drain();
+    if (n > 0) {
+        job *j = job_new(J_REQ);
+        j->payload = malloc(n);
+        if (j->payload == NULL) {
+            job_free(j);
+            return -1;
+        }
+        memcpy(j->payload, g_in, n);
+        char err[200];
+        if (decode_msg(atomic_load(&g_codec), j->payload, n, &j->ar, &j->msg, err, sizeof err) < 0) {
+            job_free(j);
+            return -2;
+        }
+        dispatch(j);
+        drain();
+    }
+    if (g_out_failed)
+        return -1;
+    return (int32_t)g_out_len;
+}
+
+#else
 
 static int set_rlimit_as(long mb) {
 #ifdef __linux__
@@ -2497,3 +2679,4 @@ int main(int argc, char **argv) {
     fflush(stderr);
     _exit(0);
 }
+#endif
