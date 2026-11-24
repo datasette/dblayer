@@ -232,6 +232,34 @@ class Database(IntrospectionMixin, OperationsMixin):
         self._check_open()
         return Transaction(self, mode, pick(deadline_ms, self.deadline_ms))
 
+    async def batch(
+        self,
+        statements: Iterable[tuple[str, Params] | str],
+        *,
+        expect_schema_version: object | None = None,
+        deadline_ms: Opt[int] = DEFAULT,
+    ) -> list[WriteResult]:
+        """Run ``statements`` (``(sql, params)`` pairs, or bare SQL strings)
+        in one write transaction: all or nothing. Where the backend supports
+        it (``SupportsBatch``) they go in one call with no awaits between
+        them. With ``expect_schema_version``, the version is checked inside
+        the transaction, after the write slot is held, and ``SchemaChanged``
+        is raised with nothing run if it moved. Returns one ``WriteResult``
+        per statement (``RETURNING`` rows capped by ``returning_limit``)."""
+        from ..errors import SchemaChanged
+
+        items = [(s, None) if isinstance(s, str) else (s[0], s[1]) for s in statements]
+        async with self.transaction(deadline_ms=deadline_ms) as tx:
+            if expect_schema_version is not None:
+                version = await tx.schema_version()
+                if version != expect_schema_version:
+                    raise SchemaChanged(
+                        f"schema version is {version!r}, expected {expect_schema_version!r}"
+                    )
+            if not items:
+                return []
+            return await tx._execute_batch(items)
+
     # -- named operations ----------------------------------------------------------
 
     async def _operation(self, name: str, args: dict[str, Any]) -> OperationResult:
