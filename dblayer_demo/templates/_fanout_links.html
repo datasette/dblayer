@@ -1,0 +1,6 @@
+<p class="fanout">Load:
+<a href="/-/fanout?n=50">query 50 databases</a> ·
+<a href="/-/fanout?n=200">query 200</a> ·
+<a href="/-/fanout?n={{ fanout_max or 500 }}">query {{ fanout_max or 500 }}</a> ·
+<a href="/-/fanout?n=100&amp;action=evict">evict 100 asleep</a>
+<span class="meta">(all launched at once with a skewed, Zipf-like pick; at most {{ fanout_max or 500 }} per request)</span></p>

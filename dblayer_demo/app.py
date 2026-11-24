@@ -25,7 +25,7 @@ from dblayer.core.params import find_placeholders, leading_keyword
 from dblayer.core.schema import TableInfo
 
 from .config import DemoConfig
-from .fleet import BACKEND_CLASS, KINDS, Fleet
+from .fleet import BACKEND_CLASS, FANOUT_MAX, KINDS, FanoutBusy, Fleet
 from .stats import all_stats, state_counts
 from .databases import DemoDatabase, DemoSpec, close_all, open_all
 from .render import cell, describe_error, is_numeric
@@ -295,6 +295,39 @@ async def fleet_page(request: Request) -> Response:
     )
 
 
+async def _run_fanout(request: Request) -> tuple[dict[str, Any] | None, str | None, int]:
+    fleet = _fleet(request)
+    if fleet is None:
+        raise HTTPException(404, "This run has no fleet (fleet size 0)")
+    try:
+        n = int(request.query_params.get("n", "100"))
+    except ValueError:
+        raise HTTPException(400, "n must be an integer") from None
+    action = request.query_params.get("action", "query")
+    try:
+        return await fleet.fanout(n, action), None, 200
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    except FanoutBusy as e:
+        return None, str(e), 429
+
+
+async def fanout_page(request: Request) -> Response:
+    result, error, status = await _run_fanout(request)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "fanout.html",
+        {"result": result, "error": error, "fanout_max": FANOUT_MAX,
+         "stats": await all_stats(_fleet(request))},
+        status_code=status,
+    )
+
+
+async def fanout_json(request: Request) -> Response:
+    result, error, status = await _run_fanout(request)
+    return JSONResponse(result if error is None else {"error": error}, status_code=status)
+
+
 async def http_error(request: Request, exc: Exception) -> Response:
     assert isinstance(exc, HTTPException)
     return TEMPLATES.TemplateResponse(
@@ -337,6 +370,8 @@ def create_app(
         Route("/", homepage, name="index"),
         Route("/-/fleet", fleet_page, name="fleet"),
         Route("/-/stats.json", stats_json, name="stats"),
+        Route("/-/fanout", fanout_page, name="fanout"),
+        Route("/-/fanout.json", fanout_json, name="fanout_json"),
         Route("/{database}", database_page, name="database"),
         Route("/{database}/-/query", query_page, name="query"),
         Route("/{database}/{table:path}", table_page, name="table"),

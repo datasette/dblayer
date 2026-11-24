@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Fan-out{% endblock %}
+{% block crumbs %} / <a href="/-/fleet">fleet</a> / fan-out{% endblock %}
+{% block content %}
+<h1>Fan-out across the fleet</h1>
+{% include "_fanout_links.html" %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if result %}
+{% set r = result %}
+<p>{% if r.action == "query" %}Ran <b>{{ r.ran }}</b> reads on <b>{{ r.distinct }}</b> distinct databases
+(<code>select (select name from branch), count(*) from reviews</code>), all at once,
+in <b>{{ r.seconds }} s</b>: {{ r.ok }} ok, {{ r.errors }} failed.
+Latency p50 {{ r.latency_ms.p50 }} ms, p95 {{ r.latency_ms.p95 }} ms, max {{ r.latency_ms.max }} ms.
+{% else %}Evicted <b>{{ r.ok }}</b> of {{ r.ran }} asleep databases to cold in <b>{{ r.seconds }} s</b>
+(their files deleted; the next use rebuilds them from the template).{% endif %}</p>
+<p class="{{ 'notice' if not r.cap_held else '' }}">Peak during the run: <b>{{ r.peak.awake }}</b> awake,
+<b>{{ r.peak.open_connections }}</b> open connections against a cap of <b>{{ r.cap }}</b>{% if r.cap_held %} (held){% else %} (exceeded!){% endif %},
+<b>{{ r.peak.waiting }}</b> callers waiting at once.</p>
+{% for e in r.error_samples %}<p class="error">{{ e }}</p>{% endfor %}
+<table class="rows">
+<thead><tr><th>Registry</th><th>before</th><th>after</th><th>change</th></tr></thead>
+<tbody>
+{% for k in ["awake", "cold", "open_connections", "idle_connections", "waiting", "wakes", "sleeps", "evictions", "cap_evictions", "idle_closes"] %}
+<tr><td>{{ k }}</td><td class="num">{{ r.before[k] }}</td><td class="num">{{ r.after[k] }}</td><td class="num">{{ "{:+d}".format(r.after[k] - r.before[k]) }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+<p class="meta">Idle connections close after {{ stats.fleet.idle_timeout_s }} s; watch the live numbers below fall as databases go back to sleep.</p>
+{% endif %}
+{% include "_stats.html" %}
+<p><a href="/-/fleet?refresh=1">Fleet grid (auto-refreshing)</a></p>
+{% endblock %}

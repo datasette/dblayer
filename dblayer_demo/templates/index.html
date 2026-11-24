@@ -2,6 +2,7 @@
 {% block content %}
 <h1>dblayer demo</h1>
 {% include "_stats.html" %}
+{% if fleet %}{% include "_fanout_links.html" %}{% endif %}
 <p>The same small dataset (authors, books, reviews) in each of dblayer's backends.
 Every page reads through <code>Database.execute()</code>: read-only connections,
 a time limit and a row cap.</p>

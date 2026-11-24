@@ -9,6 +9,7 @@ Cap {{ fleet.registry.max_open_connections }} open connections across all of the
 {{ fleet.registry.max_threads }} threads, idle timeout {{ fleet.registry.idle_timeout }} s.
 Databases start <b>cold</b> (not on local disk) and are built from a template on first use.</p>
 {% include "_stats.html" %}
+{% include "_fanout_links.html" %}
 
 <table class="rows counts">
 <thead><tr><th>Backend</th>{% for s in states %}<th><a href="?state={{ s }}{% if kind %}&amp;backend={{ kind }}{% endif %}">{{ s }}</a></th>{% endfor %}<th>All</th></tr></thead>

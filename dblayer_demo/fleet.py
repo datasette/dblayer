@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import shutil
+import statistics
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from dblayer import Database, Registry
 from dblayer.backends.base import Backend
@@ -30,7 +33,19 @@ from .databases import (
 )
 from .seed import VIEW_NAME, seed
 
-__all__ = ["Fleet", "FleetMember", "fleet_mix", "KINDS"]
+__all__ = ["Fleet", "FleetMember", "FanoutBusy", "fleet_mix", "KINDS", "FANOUT_MAX"]
+
+FANOUT_MAX = 500
+"""The most databases one fan-out request may touch."""
+FANOUT_ACTIONS = ("query", "evict")
+FANOUT_TIMEOUT_S = 60.0
+FANOUT_SQL = "select (select name from branch) as branch, count(*) as reviews from reviews"
+ZIPF_S = 1.1
+"""Skew of the fan-out draw: rank r is chosen with weight 1 / r**s."""
+
+
+class FanoutBusy(Exception):
+    pass
 
 KINDS = ("sqlite", "duckdb", "postgres", "sqlite-worker")
 BACKEND_CLASS = {
@@ -112,6 +127,8 @@ class Fleet:
     mix: dict[str, int] = field(default_factory=dict)
     started_at: float = 0.0
     startup_seconds: float = 0.0
+    _fanout_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _hot: list[Database] | None = None
 
     def __post_init__(self) -> None:
         c = self.config
@@ -288,6 +305,116 @@ class Fleet:
         member = self.members.get(db.name or "")
         if member is not None:
             member.last_sleep = time.time()
+
+    # -- load ------------------------------------------------------------------
+
+    async def fanout(self, n: int, action: str = "query") -> dict[str, Any]:
+        """Run ``action`` on ``n`` fleet databases at once and report.
+
+        ``query``: ``n`` concurrent reads, drawn with a Zipf-like skew (a
+        few hot databases, a long tail), all launched together so the
+        connection cap does the queueing. ``evict``: make up to ``n``
+        asleep file-backed databases cold. ``n`` is capped at
+        ``FANOUT_MAX``; one fan-out runs at a time."""
+        if action not in FANOUT_ACTIONS:
+            raise ValueError(f"action must be one of {', '.join(FANOUT_ACTIONS)}")
+        n = max(1, min(int(n), FANOUT_MAX))
+        if self._fanout_lock.locked():
+            raise FanoutBusy("another fan-out is running; try again when it finishes")
+        async with self._fanout_lock:
+            before = self.registry.stats()
+            peaks = {"awake": before.awake, "open_connections": before.open_connections,
+                     "waiting": before.waiting}
+            stop = asyncio.Event()
+
+            async def sample() -> None:
+                while not stop.is_set():
+                    s = self.registry.stats()
+                    peaks["awake"] = max(peaks["awake"], s.awake)
+                    peaks["open_connections"] = max(peaks["open_connections"], s.open_connections)
+                    peaks["waiting"] = max(peaks["waiting"], s.waiting)
+                    try:
+                        await asyncio.wait_for(stop.wait(), 0.005)
+                    except TimeoutError:
+                        pass
+
+            sampler = asyncio.create_task(sample())
+            t0 = time.perf_counter()
+            try:
+                if action == "query":
+                    result = await self._fanout_query(n)
+                else:
+                    result = await self._fanout_evict(n)
+            finally:
+                stop.set()
+                await sampler
+            seconds = time.perf_counter() - t0
+            after = self.registry.stats()
+        result.update(
+            action=action,
+            requested=n,
+            seconds=round(seconds, 3),
+            before=asdict(before),
+            after=asdict(after),
+            peak=peaks,
+            cap=self.registry.max_open_connections,
+            cap_held=peaks["open_connections"] <= (self.registry.max_open_connections or 1 << 30),
+        )
+        return result
+
+    def _hot_order(self) -> list[Database]:
+        """Available members in a fixed shuffled order: rank 1 is hottest."""
+        if self._hot is None:
+            dbs = [m.db for m in self.members.values() if m.db is not None]
+            random.Random(1234).shuffle(dbs)
+            self._hot = dbs
+        return self._hot
+
+    async def _fanout_query(self, n: int) -> dict[str, Any]:
+        dbs = self._hot_order()
+        if not dbs:
+            return {"ran": 0, "ok": 0, "errors": 0, "distinct": 0, "error_samples": []}
+        weights = [1 / (rank ** ZIPF_S) for rank in range(1, len(dbs) + 1)]
+        picks = random.choices(dbs, weights=weights, k=n)
+        latencies: list[float] = []
+        errors: list[str] = []
+
+        async def one(db: Database) -> None:
+            t = time.perf_counter()
+            try:
+                await db.execute(FANOUT_SQL, time_limit_ms=5000)
+            except Exception as e:  # noqa: BLE001 - reported, not raised
+                errors.append(f"{db.name}: {_reason(e)}")
+            else:
+                latencies.append(time.perf_counter() - t)
+
+        await asyncio.wait_for(asyncio.gather(*(one(db) for db in picks)), FANOUT_TIMEOUT_S)
+        ms = sorted(x * 1000 for x in latencies)
+        return {
+            "ran": len(picks),
+            "ok": len(latencies),
+            "errors": len(errors),
+            "error_samples": errors[:5],
+            "distinct": len({id(db) for db in picks}),
+            "latency_ms": {
+                "p50": round(statistics.median(ms), 1) if ms else None,
+                "p95": round(ms[int(len(ms) * 0.95) - 1], 1) if ms else None,
+                "max": round(ms[-1], 1) if ms else None,
+            },
+        }
+
+    async def _fanout_evict(self, n: int) -> dict[str, Any]:
+        asleep = [
+            m for m in self.members.values()
+            if m.db is not None and m.path is not None and m.db.state == "asleep"
+        ]
+        random.shuffle(asleep)
+        evicted = 0
+        for m in asleep[:n]:
+            if await self.registry.evict(m.name):
+                evicted += 1
+        return {"ran": min(n, len(asleep)), "ok": evicted, "errors": 0, "error_samples": [],
+                "distinct": evicted}
 
     # -- shutdown --------------------------------------------------------------
 
