@@ -177,8 +177,16 @@ its tests are `duckdb-rsworker` in the conformance suite,
 `tests/worker/test_duckdb_rsworker.py` and the `duckdb-rsworker` DuckDB
 fault and value-type tests, which skip until the binary exists.
 `DBLAYER_DUCKDB_RS_WORKER=/path/to/binary` points them at another build;
-`make -C duckdb-rs-worker test` runs the Rust unit tests;
-`benchmarks/duckdb_memory.py native` compares it with the Python worker.
+`make -C duckdb-rs-worker test` runs the Rust unit tests, including a
+seeded fuzz of the frame reader and both decoders
+(`DBLAYER_RS_FUZZ_ITERS` raises its count);
+`benchmarks/duckdb_memory.py native` compares it with the Python and C++
+workers. It passes the whole conformance suite with the same skips as
+in-process DuckDB. `unsafe` is confined to `src/ffi.rs`
+(`#![deny(unsafe_code)]` elsewhere). Streamed results start at once
+because each connection gets a 16KB `streaming_buffer_size` (DuckDB's
+10 MB default makes the C API wait seconds for an unbounded recursive
+CTE's first rows); the C++ worker does the same.
 
 ### SQLite-WASM in a Node.js process (experimental)
 

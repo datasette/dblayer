@@ -76,6 +76,31 @@ database: 0.81 ms in-process, 6,205 ms Python worker (it waits for the long
 query), 1.04 ms C++ worker. ``insert_rows`` of 10,000 rows, default path
 against the appender: 1,956 / 269 ms on the C++ worker (7.3x).
 
+Rust worker against C++ worker, same session (2026-11-24 08:02 to 08:06,
+macOS, PROVISIONAL: load 18 to 26; both workers with 16KB streaming buffers
+and 8 configured connections per database):
+
+| Measure | in-process | Python worker | Rust worker | C++ worker |
+| --- | --- | --- | --- | --- |
+| process floor before ``open`` (footprint) | - | 44.8 MB | 2.2 MB | 2.1 MB |
+| one database open | - | 53.7 MB | 13.9 MB | 14.1 MB |
+| after the analytical query | - | 68.2 MB | 28.6 MB | 28.5 MB |
+| spawn to ``hello`` / ``open`` / first query | - | 168 / 13.1 / 2.0 ms | 12.5 / 12.8 / 1.5 ms | 11.5 / 14.6 / 1.5 ms |
+| asleep to first result (``overhead``) | 8.8 ms | 155 ms (msgpack) | 25.2 ms | 26.2 ms |
+| one-row read, msgpack | 684 µs | 875 µs | 553 µs | 629 µs |
+| extra per row, plain, 1,000 / 100,000 rows, msgpack | - | 0.41 / 0.42 µs | -0.12 / 0.01 µs | -0.11 / -0.04 µs |
+| extra per row, typed, 1,000 / 100,000 rows, msgpack | - | 2.93 / 2.66 µs | 0.52 / 0.69 µs | 0.66 / 0.61 µs |
+| extra per row, typed, 100,000 rows, JSON | - | - | 0.97 µs | 1.32 µs |
+| point read during a long query, same database | 0.83 ms | 6,039 ms | 0.89 ms | 0.82 ms |
+| ``insert_rows`` 10,000 rows, default / appender | 1,745 / 235 ms | 2,128 / 300 ms | 1,857 / 255 ms (7.3x) | 1,777 / 225 ms (7.9x) |
+| peak footprint, N=50, cap 40 (in-process / Rust / C++) | 500 MB | - | 1,170 MB | 1,184 MB |
+| peak footprint, N=150, cap 40 | 436 MB | - | 1,144 MB | 1,176 MB |
+| wake median, N=150 | 19 to 61 ms | - | 36 to 38 ms | 36 to 54 ms |
+
+The one-row read and per-row figures move by 100 µs and 0.1 µs between runs
+at this load (an earlier run had the Rust worker's one-row read at 875 µs
+and the C++ worker's at 481 µs); read them as "the same".
+
 Check the machine is quiet first: the script prints the load average and
 any ``yes`` CPU burners, and marks results "provisional" when the 1-minute
 load average is over ``--max-load``.
