@@ -113,6 +113,25 @@ class Capabilities:
     ``QueryError`` and the import is rolled back. Not in the spec's table;
     the spec says the suite records which backends fail."""
 
+    # Flags added for ClickHouse (``backends/clickhouse.py``). Each defaults
+    # to what every earlier backend does.
+    transactions: bool = True
+    """Writes inside ``db.transaction()`` / ``batch()`` commit or roll back
+    together. False on ClickHouse: each statement takes effect when it runs
+    and a rolled-back block keeps the writes it made (the write slot is
+    still held, so writers stay serialised)."""
+    unique_constraints: bool = True
+    """The engine enforces PRIMARY KEY and UNIQUE. False on ClickHouse:
+    named operations check keys themselves (``core/emulated_keys.py``),
+    plain SQL ``INSERT`` accepts duplicates."""
+    foreign_keys: bool = True
+    """FOREIGN KEY constraints can be declared and are reported by
+    introspection. False on ClickHouse (``create_table`` refuses them)."""
+    distinct_blob_type: bool = True
+    """Binary and text values are told apart: bytes read back as bytes.
+    False on ClickHouse, whose single ``String`` type holds both; values
+    that are valid UTF-8 come back as ``str``."""
+
     def has(self, flag: str) -> bool:
         if flag not in self.names():
             raise AttributeError(f"unknown capability flag {flag!r}")
@@ -285,6 +304,14 @@ class Dialect:
         staged-import ``replace``). Views and triggers elsewhere still refer
         to ``target`` by name and must keep working."""
         return [self.rename_table_sql(staging, target)]
+
+    def exchange_tables_sql(self, staging: str, target: str) -> list[str] | None:
+        """Statements that atomically swap the names of two tables, used by
+        rebuilds and staged-import ``replace`` in place of drop and rename
+        (the old table is then dropped under the staging name). ``None``
+        (default): the engine has no such statement. ClickHouse: ``EXCHANGE
+        TABLES``, which matters there because nothing else is atomic."""
+        return None
 
     def add_column_sql(self, table: str, col: ColumnDef) -> str:
         return f"ALTER TABLE {self.quote_identifier(table)} ADD COLUMN {self.column_sql(col)}"

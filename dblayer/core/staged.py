@@ -239,6 +239,15 @@ class StagedImport:
                 if self.mode == "create" or target is None:
                     raise QueryError(f"table {self.table!r} already exists", code="TABLE_EXISTS")
                 await check_drop_safe(tx, schema, self.table)
+                exchange = d.exchange_tables_sql(self.staging, self.table)
+                if exchange:
+                    # One atomic swap where the engine has it (ClickHouse);
+                    # the old table, now under the staging name, is dropped.
+                    for sql in exchange:
+                        await tx.execute(sql)
+                    await tx.execute(d.drop_table_sql(self.staging))
+                    await recreate_dependents(tx, target, schema)
+                    return
                 await tx.execute(d.drop_table_sql(self.table))
             for sql in d.swap_rename_sql(self.staging, self.table):
                 await tx.execute(sql)

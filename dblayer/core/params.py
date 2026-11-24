@@ -49,6 +49,7 @@ __all__ = [
     "SQLITE_FLAVOR",
     "POSTGRES_FLAVOR",
     "DUCKDB_FLAVOR",
+    "CLICKHOUSE_FLAVOR",
     "Params",
     "Placeholder",
     "find_placeholders",
@@ -97,6 +98,8 @@ class SqlFlavor:
     dollar_quotes: bool = False
     nested_block_comments: bool = False
     escape_strings: bool = False
+    backslash_strings: bool = False
+    """Every ``'...'`` string takes backslash escapes (ClickHouse)."""
 
 
 SQLITE_FLAVOR = SqlFlavor("sqlite", bracket_identifiers=True)
@@ -108,6 +111,13 @@ POSTGRES_FLAVOR = SqlFlavor(
 # list literal or slice, never an identifier quote.
 DUCKDB_FLAVOR = SqlFlavor(
     "duckdb", dollar_quotes=True, escape_strings=True, nested_block_comments=True
+)
+
+# Checked against ClickHouse 26.11 (scripts/clickhouse_verify.py): backslash
+# escapes in every '...' string, nested /* */ comments, $$heredoc$$ and
+# `backtick` identifiers; [ ] is an array literal.
+CLICKHOUSE_FLAVOR = SqlFlavor(
+    "clickhouse", dollar_quotes=True, nested_block_comments=True, backslash_strings=True
 )
 
 _DEFAULT_FLAVOR = {
@@ -175,7 +185,7 @@ def _scan(
         i = m.start()
         c = sql[i]
         if c == "'":
-            backslash = (
+            backslash = flavor.backslash_strings or (
                 flavor.escape_strings
                 and i > 0
                 and sql[i - 1] in "eE"

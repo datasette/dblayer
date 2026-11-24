@@ -402,6 +402,13 @@ async def insert_rows(
             for c in info.columns
             if not c.hidden and not c.generated and c.name not in pk_cols
         ]
+    if not tx.capabilities.unique_constraints:
+        from .emulated_keys import insert_keyed
+
+        keys = pk_cols or _table(await tx.schema(), table).primary_keys
+        n = await insert_keyed(tx, table, rows, keys, ignore=ignore, replace=replace)
+        if n is not None:
+            return OperationResult(rowcount=n, table_created=created, columns_added=added)
     total = 0
     for cols, group in _groups(rows):
         if replace:
@@ -443,6 +450,11 @@ async def upsert_rows(
         missing = [p for p in pk_cols if row.get(p) is None]
         if missing:
             raise ValueError(f"row has no value for primary key column(s) {missing}: {row!r}")
+    if not tx.capabilities.unique_constraints:
+        from .emulated_keys import upsert_keyed
+
+        n = await upsert_keyed(tx, table, rows, pk_cols)
+        return OperationResult(rowcount=n, table_created=created, columns_added=added)
     d = tx.dialect
     total = 0
     for cols, group in _groups(rows):
@@ -769,9 +781,12 @@ async def rebuild_table(
         ),
         f"INSERT INTO {d.quote_identifier(tmp)} ({d.quote_identifiers(dst)}) "
         f"SELECT {d.quote_identifiers(src)} FROM {d.quote_identifier(table)}",
-        d.drop_table_sql(table),
-        *d.swap_rename_sql(tmp, table),
     ]
+    exchange = d.exchange_tables_sql(tmp, table)
+    if exchange:
+        statements += [*exchange, d.drop_table_sql(tmp)]
+    else:
+        statements += [d.drop_table_sql(table), *d.swap_rename_sql(tmp, table)]
     for sql in statements:
         await tx.execute(sql)
     await recreate_dependents(tx, info, schema, drop=drop_list, rename=rename)
