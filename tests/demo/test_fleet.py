@@ -67,7 +67,9 @@ async def _wait_asleep(client: httpx.AsyncClient, timeout: float = 10.0) -> dict
 def test_fleet_mix_adds_up() -> None:
     for size in [0, 1, 9, 10, 30, 1000, 1234]:
         assert sum(fleet_mix(size).values()) == max(size, 0)
-    assert fleet_mix(1000) == {"sqlite": 800, "duckdb": 150, "postgres": 30, "sqlite-worker": 20}
+    assert fleet_mix(1000) == {
+        "sqlite": 800, "duckdb": 100, "duckdb-worker": 50, "postgres": 30, "sqlite-worker": 20,
+    }
 
 
 async def test_fleet_starts_cold_and_page_lists_every_member(
@@ -191,7 +193,8 @@ async def test_one_member_of_every_backend_kind_browses(
     fleet_client: tuple[Fleet, httpx.AsyncClient],
 ) -> None:
     """Each kind builds from the right template: a worker-process SQLite
-    member is a SQLite file, not a copy of the DuckDB template."""
+    member is a SQLite file, not a copy of the DuckDB template, and a
+    worker-process DuckDB member is a copy of the DuckDB template."""
     fleet, client = fleet_client
     seen: set[str] = set()
     for name, m in fleet.members.items():
@@ -204,3 +207,8 @@ async def test_one_member_of_every_backend_kind_browses(
         r = await client.get(f"/{name}/-/query", params={"sql": "select name from branch"})
         assert r.status_code == 200 and m.branch in r.text, name
     assert {"sqlite", "sqlite-worker"} <= seen
+    try:
+        import duckdb  # noqa: F401
+    except ImportError:
+        return
+    assert {"duckdb", "duckdb-worker"} <= seen

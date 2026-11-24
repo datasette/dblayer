@@ -28,6 +28,7 @@ from .databases import (
     Unavailable,
     _reason,
     check_postgres_connection,
+    duckdb_worker_backend,
     postgres_backend,
     sqlite_worker_backend,
 )
@@ -51,13 +52,22 @@ MAX_CONCURRENT_MATERIALISE = 8
 class FanoutBusy(Exception):
     pass
 
-KINDS = ("sqlite", "duckdb", "postgres", "sqlite-worker")
+KINDS = ("sqlite", "duckdb", "duckdb-worker", "postgres", "sqlite-worker")
 BACKEND_CLASS = {
     "sqlite": "SqliteInProcess",
     "duckdb": "DuckDB",
+    "duckdb-worker": "DuckDBWorker",
     "postgres": "Postgres",
     "sqlite-worker": "SqliteWorker",
 }
+TEMPLATE_KIND = {
+    "sqlite": "sqlite",
+    "sqlite-worker": "sqlite",
+    "duckdb": "duckdb",
+    "duckdb-worker": "duckdb",
+}
+"""Which template file a kind's members are copied from: a worker-process
+database is an ordinary file of its engine."""
 POSTGRES_FLEET_PREFIX = "dblayer_demo_fleet_"
 """Fleet schemas in ``dblayer_test``: ``dblayer_demo_fleet_001`` and up."""
 
@@ -69,6 +79,7 @@ _TOWNS = (
 _KIND_LABEL = {
     "sqlite": "SQLite",
     "duckdb": "DuckDB",
+    "duckdb-worker": "DuckDB worker",
     "postgres": "PostgreSQL",
     "sqlite-worker": "SQLite worker",
 }
@@ -76,16 +87,20 @@ _KIND_LABEL = {
 
 def fleet_mix(size: int) -> dict[str, int]:
     """How many of each backend: mostly in-process SQLite (cheapest asleep
-    and awake), 15% DuckDB (about 5 MB per awake instance), 3% PostgreSQL
-    schemas (each awake one holds server connections) and 2% worker SQLite."""
+    and awake), 10% in-process DuckDB (about 5 MB per awake instance, not
+    all of it returned on sleep), 5% DuckDB in a worker process (a process
+    per awake database, gone on sleep), 3% PostgreSQL schemas (each awake
+    one holds server connections) and 2% worker SQLite."""
     if size <= 0:
         return {k: 0 for k in KINDS}
-    duckdb = round(size * 0.15)
+    duckdb = round(size * 0.10)
+    duckdb_worker = max(1, round(size * 0.05)) if size >= 10 else 0
     postgres = max(1, round(size * 0.03)) if size >= 10 else 0
     worker = max(1, round(size * 0.02)) if size >= 10 else 0
     return {
-        "sqlite": size - duckdb - postgres - worker,
+        "sqlite": size - duckdb - duckdb_worker - postgres - worker,
         "duckdb": duckdb,
+        "duckdb-worker": duckdb_worker,
         "postgres": postgres,
         "sqlite-worker": worker,
     }
@@ -185,7 +200,7 @@ class Fleet:
                 path = None
                 if kind == "sqlite":
                     path = self.dir / f"{name}.db"
-                elif kind == "duckdb":
+                elif kind in ("duckdb", "duckdb-worker"):
                     path = self.dir / f"{name}.duckdb"
                 elif kind == "sqlite-worker":
                     path = self.dir / f"{name}.db"
@@ -200,8 +215,8 @@ class Fleet:
                 if kind == "postgres" and postgres_error:
                     member.demo.error = postgres_error
                     continue
-                if kind in template_errors:
-                    member.demo.error = template_errors[kind]
+                if TEMPLATE_KIND.get(kind) in template_errors:
+                    member.demo.error = template_errors[TEMPLATE_KIND[kind]]
                     continue
                 try:
                     backend = self._backend(member)
@@ -236,13 +251,18 @@ class Fleet:
         if member.kind == "sqlite-worker":
             assert member.path is not None
             return sqlite_worker_backend(member.path)
+        if member.kind == "duckdb-worker":
+            assert member.path is not None
+            # The same small settings as in-process members; the worker
+            # process exits when the database sleeps.
+            return duckdb_worker_backend(member.path, memory_limit="64MB", threads=1)
         raise Unavailable(f"unknown kind {member.kind!r}")
 
     # -- cold storage: templates stand in for object storage ---------------------
 
     def template_path(self, kind: str) -> Path:
-        # A worker-process SQLite database is an ordinary SQLite file.
-        sqlite_file = kind in ("sqlite", "sqlite-worker")
+        # A worker-process database is an ordinary file of its engine.
+        sqlite_file = TEMPLATE_KIND[kind] == "sqlite"
         return self.dir / ("_template.db" if sqlite_file else "_template.duckdb")
 
     async def _ensure_templates(self) -> dict[str, str]:
@@ -254,7 +274,7 @@ class Fleet:
         kinds = []
         if self.mix.get("sqlite") or self.mix.get("sqlite-worker"):
             kinds.append("sqlite")
-        if self.mix.get("duckdb"):
+        if self.mix.get("duckdb") or self.mix.get("duckdb-worker"):
             kinds.append("duckdb")
         for kind in kinds:
             path = self.template_path(kind)
@@ -293,7 +313,7 @@ class Fleet:
         return None
 
     def _file_backend(self, kind: str, path: Path) -> Backend:
-        if kind in ("sqlite", "sqlite-worker"):
+        if TEMPLATE_KIND[kind] == "sqlite":
             # Building the file needs no worker: it is plain SQLite on disk.
             from dblayer.backends.sqlite import SqliteInProcess
 
