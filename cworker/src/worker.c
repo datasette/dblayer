@@ -2403,6 +2403,12 @@ static void *reader_main(void *arg) {
 static uint8_t *g_in;
 static size_t g_in_cap;
 
+/* Multi-tenant lanes need threads; the WebAssembly build has one. */
+static void *lane_main(void *arg) {
+    (void)arg;
+    return NULL;
+}
+
 __attribute__((export_name("dbl_init"))) int32_t dbl_init(int32_t debug) {
     g_debug = debug;
     sqlite3_config(SQLITE_CONFIG_MEMSTATUS, 1);
@@ -2433,11 +2439,12 @@ static void check_deadlines(void) {
 }
 
 static void drain(void) {
-    while (q_head) {
-        job *j = dequeue();
+    lane *ml = &g_main_lane;
+    while (ml->q_head) {
+        job *j = dequeue(ml);
         if (j->kind != J_SHUTDOWN)
             run_job(j);
-        g_current = NULL;
+        ml->current = NULL;
         job_free(j);
     }
 }
