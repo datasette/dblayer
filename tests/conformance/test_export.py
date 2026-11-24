@@ -172,9 +172,7 @@ async def test_max_rows_zero(db, native):
     assert stream.truncated is True
 
 
-async def test_max_rows_stops_an_unbounded_query(db, native, request):
-    if not native:
-        _no_recursive_cte_streaming(request)
+async def test_max_rows_stops_an_unbounded_query(db, native):
     stream = db.export(infinite_series(db), format="csv", max_rows=10, native=native)
     data = await asyncio.wait_for(stream.read_all(), 10)
     assert data.count(b"\r\n") == 11
@@ -204,17 +202,7 @@ async def test_byte_cap(db, native):
     assert db.stats().in_use_read == 0
 
 
-def _no_recursive_cte_streaming(request: pytest.FixtureRequest) -> None:
-    if "duckdb-cppworker" in request.node.name:
-        # Through DuckDB's C API an unbounded recursive CTE yields its first
-        # rows only after seconds of work (about 3.6 s here; the duckdb
-        # Python package streams them in well under a second), past these
-        # tests' time limits. See duckdb-cpp-worker/README.md.
-        pytest.xfail("DuckDB's C API streams a recursive CTE's first rows late")
-
-
-async def test_time_limit_mid_stream(db, native, request):
-    _no_recursive_cte_streaming(request)
+async def test_time_limit_mid_stream(db, native):
     chunks = 0
     with pytest.raises(QueryInterrupted):
         async with db.export(infinite_series(db), format="csv", time_limit_ms=200, native=native) as s:

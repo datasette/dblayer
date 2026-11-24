@@ -76,9 +76,14 @@ then `build/dblayer-duckdb-worker`.
   `date.max`, maps with nested keys as `{"key": [...], "value": [...]}`,
   TIMESTAMPTZ in the session's `TimeZone`) is redone, checked by
   `tests/worker/test_duckdb_cppworker.py` against in-process DuckDB.
-* An unbounded recursive CTE yields its first rows only after seconds of
-  work through the C API (both the classic API and the 2.0 `duckdb_v2_*`
-  one); the Python package, built on engine internals (`ClientContext::Submit`),
-  gets them in well under a second. With `max_rows` the worker runs
-  `SELECT * FROM (sql) LIMIT max_rows + 1` when that keeps the column
-  names; streams have no such bound (two export tests are expected failures).
+* A streaming result's first rows: the C API's streaming execute returns
+  only once DuckDB has filled about half of the connection's
+  `streaming_buffer_size` (10 MB by default), which for a query yielding a
+  row per chunk (an unbounded recursive CTE) took seconds. The setting is
+  per connection, cannot be a database default and cannot change after
+  `lock_configuration`, so each database makes 8 connections set to 16KB
+  before locking and reuses them (not after a statement that leaves
+  session state); the cause was found on the Rust worker. With `max_rows`
+  the worker still runs `SELECT * FROM (sql) LIMIT max_rows + 1` when that
+  keeps the column names, as an optimisation (DuckDB can stop early or
+  plan a top-N).

@@ -305,7 +305,21 @@ bool check_statement(Conn &c, const std::string &sql, Prepared &out) {
     }
     out.kind = kw_kind == "PRAGMA" ? kw_kind : statement_type_name(duckdb_prepared_statement_type(out.p));
     check_kind(c, out.kind);
+    if (leaves_session_state(out.kind, sql)) c.dirty = true;
     return true;
+}
+
+// A statement that leaves state in the DuckDB session, which a reused
+// connection would carry over to its next user: temporary objects,
+// variables, prepared statements, attached databases, the current schema.
+bool leaves_session_state(const std::string &kind, const std::string &sql) {
+    if (in(kind, {"SET", "VARIABLE_SET", "PREPARE", "ATTACH", "DETACH", "CREATE_FUNC"})) return true;
+    if (in(kind, {"CREATE", "DROP", "ALTER"})) {
+        std::string up = sql;
+        for (auto &ch : up) ch = (char)toupper((unsigned char)ch);
+        return up.find("TEMP") != std::string::npos;
+    }
+    return false;
 }
 
 void exec_one(Conn &c, Writer &wr, const std::string &sql, const val *params, double time_limit_ms, int64_t max_rows,

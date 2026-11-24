@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from dblayer import Database, NotSupported, QueryInterrupted
+from dblayer import Database, NotSupported, QueryError, QueryInterrupted
 from dblayer.backends.duckdb_cppworker import (
     BUILD_COMMAND,
     ENV_VAR,
@@ -159,6 +159,37 @@ async def test_read_only_database_and_create_false(tmp_path):
         assert e.value.code == "CANTOPEN"
     finally:
         await missing.close()
+
+
+async def test_session_state_does_not_reach_a_later_connection(tmp_path):
+    """The worker reuses DuckDB connections it configured before locking
+    the settings (a small streaming_buffer_size); one that holds session
+    state (a temporary table, a variable) is closed instead, so a new
+    connection starts clean, as a new cursor does in-process. A connection
+    kept open throughout keeps the database (and its spares) open."""
+    b = DuckDBCppWorker(tmp_path / "s.duckdb")
+    keeper = await b.open(write=False)
+    try:
+        w = await b.open(write=True)
+        try:
+            await w.execute("create temp table tt as select 1 x", (), time_limit_ms=None, max_rows=None)
+            await w.execute("set variable v = 42", (), time_limit_ms=None, max_rows=None)
+        finally:
+            await w.close()
+        for _ in range(10):  # every spare connection in turn
+            c = await b.open(write=True)
+            try:
+                with pytest.raises(QueryError, match="tt"):
+                    await c.execute("select * from tt", (), time_limit_ms=None, max_rows=None)
+                r = await c.execute("select getvariable('v'), current_setting('streaming_buffer_size')", (),
+                                    time_limit_ms=None, max_rows=None)
+                assert r.rows[0][0] is None
+                assert r.rows[0][1] == "15.6 KiB", r.rows  # 16KB (16,000 bytes), not the 10 MB default
+            finally:
+                await c.close()
+    finally:
+        await keeper.close()
+        await b.close()
 
 
 async def test_process_exits_when_the_database_sleeps(tmp_path):

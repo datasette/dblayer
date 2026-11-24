@@ -51,6 +51,10 @@ struct Instance {
     std::string key, path;
     duckdb_database db = nullptr;
     int conns = 0;
+    // Connections made and configured before the configuration was locked
+    // (streaming_buffer_size is per connection; see open_instance), taken
+    // by opens and given back by clean closes. Guarded by g_inst_mu.
+    std::vector<duckdb_connection> spare;
 };
 
 // An open stream (Python worker: Stream + _DuckDBStream). Lives on its
@@ -96,6 +100,7 @@ struct Conn {
     int tx_seq = 0;
     bool duck_in_tx = false;   // DuckDBConnection._in_tx
     bool tx_failed = false;    // DuckDBConnection._tx_failed
+    bool dirty = false;        // left session state: not reused (leaves_session_state)
     std::map<int64_t, std::unique_ptr<Stream>> streams;
     std::string zone;          // session TimeZone, cached
     uint64_t zone_gen = 0;
@@ -138,6 +143,7 @@ struct Prepared {
     }
 };
 bool check_statement(Conn &c, const std::string &sql, Prepared &out);
+bool leaves_session_state(const std::string &kind, const std::string &sql);
 
 void run_sql_simple(Conn &c, const char *sql);  // BEGIN / COMMIT / ...; throws
 

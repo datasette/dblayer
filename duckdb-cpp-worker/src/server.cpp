@@ -31,6 +31,10 @@ int64_t g_next_conn = 1;
 int g_threads = 0;
 std::condition_variable g_threads_cv;
 
+// Configured connections kept per database, and their streaming buffer.
+static const int SPARE_CONNECTIONS = 8;
+#define STREAMING_BUFFER "16KB"
+
 std::mutex g_inst_mu;  // instances: opened and closed one at a time
 std::map<std::string, std::shared_ptr<Instance>> g_instances;
 
@@ -357,6 +361,25 @@ static std::shared_ptr<Instance> open_instance(const std::string &path, const va
         if (err) duckdb_free(err);
         throw duckdb_error(msg);
     }
+    // DuckDB fills a streaming result's buffer (streaming_buffer_size,
+    // 10 MiB by default) to about half before the C API's streaming execute
+    // returns; for a query that yields a row per chunk (an unbounded
+    // recursive CTE) that is seconds. The setting is per connection and
+    // cannot be changed once the configuration is locked (nor be a
+    // database default), so connections are made and configured here,
+    // before the lock, and reused (close_conn). The same as the Rust worker.
+    for (int i = 0; i < SPARE_CONNECTIONS; i++) {
+        duckdb_connection sc;
+        if (duckdb_connect(inst->db, &sc) != DuckDBSuccess) break;
+        duckdb_result sr;
+        bool set = duckdb_query(sc, "SET streaming_buffer_size = '" STREAMING_BUFFER "'", &sr) == DuckDBSuccess;
+        duckdb_destroy_result(&sr);
+        if (!set) {
+            duckdb_disconnect(&sc);
+            break;
+        }
+        inst->spare.push_back(sc);
+    }
     // Lock the configuration, so SQL cannot raise memory_limit or turn
     // external access back on.
     duckdb_connection tmp;
@@ -370,6 +393,8 @@ static std::shared_ptr<Instance> open_instance(const std::string &path, const va
     duckdb_destroy_result(&res);
     duckdb_disconnect(&tmp);
     if (!ok) {
+        for (auto &sc : inst->spare) duckdb_disconnect(&sc);
+        inst->spare.clear();
         duckdb_close(&inst->db);
         throw duckdb_error(msg);
     }
@@ -383,6 +408,8 @@ static void release_instance(const std::shared_ptr<Instance> &inst) {
     std::lock_guard<std::mutex> lock(g_inst_mu);
     if (--inst->conns > 0) return;
     g_instances.erase(inst->key);
+    for (auto &sc : inst->spare) duckdb_disconnect(&sc);
+    inst->spare.clear();
     // Closing checkpoints the WAL into the file and releases the lock.
     duckdb_close(&inst->db);
 }
@@ -562,11 +589,25 @@ static void close_conn(Conn &c) {
     try {
         duck_rollback(c);
     } catch (const Error &) {
+        c.dirty = true;
     }
+    duckdb_connection dc;
     {
         std::lock_guard<std::mutex> lock(c.mu);
-        if (c.c != nullptr) duckdb_disconnect(&c.c);
+        dc = c.c;
         c.c = nullptr;
+    }
+    if (dc != nullptr) {
+        // A clean connection goes back to the instance, configured.
+        bool kept = false;
+        if (!c.dirty && c.inst) {
+            std::lock_guard<std::mutex> lock(g_inst_mu);
+            if (c.inst->spare.size() < (size_t)SPARE_CONNECTIONS) {
+                c.inst->spare.push_back(dc);
+                kept = true;
+            }
+        }
+        if (!kept) duckdb_disconnect(&dc);
     }
     release_instance(c.inst);
     c.inst.reset();
@@ -727,8 +768,15 @@ static void conn_thread(ConnPtr c, JobPtr open_job, std::string path, const val 
     // duckdb_connection of our own.
     try {
         c->inst = open_instance(path, config);
-        duckdb_connection dc;
-        if (duckdb_connect(c->inst->db, &dc) != DuckDBSuccess) {
+        duckdb_connection dc = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_inst_mu);
+            if (!c->inst->spare.empty()) {
+                dc = c->inst->spare.back();
+                c->inst->spare.pop_back();
+            }
+        }
+        if (dc == nullptr && duckdb_connect(c->inst->db, &dc) != DuckDBSuccess) {
             release_instance(c->inst);
             c->inst.reset();
             throw Error("QueryError", "could not connect to the database");
