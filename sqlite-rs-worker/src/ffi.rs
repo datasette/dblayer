@@ -704,6 +704,30 @@ mod tests {
         intr.interrupt(); // a no-op now, never a use after free
     }
 
+    /// Positive controls: each must make its sanitizer report (and fail).
+    /// `cargo +nightly test ... -- --ignored asan_positive` under ASan,
+    /// `... tsan_positive` under TSan; never run otherwise.
+    #[test]
+    #[ignore]
+    fn asan_positive_control() {
+        let v = vec![1u8; 16];
+        let p = v.as_ptr();
+        drop(v);
+        // SAFETY: none: a deliberate use after free.
+        let x = unsafe { std::ptr::read_volatile(p) };
+        assert_ne!(x, 255);
+    }
+
+    #[test]
+    #[ignore]
+    fn tsan_positive_control() {
+        // The race the C worker's suppression file names, provoked on
+        // purpose: two threads call sqlite3_config, which is not thread-safe.
+        let t = std::thread::spawn(|| unsafe { sqlite3_config(SQLITE_CONFIG_MEMSTATUS, 1) });
+        unsafe { sqlite3_config(SQLITE_CONFIG_MEMSTATUS, 1) };
+        t.join().unwrap();
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn busy_handler_gives_up_when_interrupted() {
