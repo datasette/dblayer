@@ -297,10 +297,14 @@ class DuckDB:
         config: Mapping[str, Any] | None = None,
         create: bool = True,
         executor: Executor | None = None,
+        max_write_connections: int | None = None,
     ) -> None:
         import duckdb  # noqa: F401  (fail early when the extra is missing)
 
         self.path = Path(path).absolute()
+        self.max_write_connections = max_write_connections
+        """With ``write_queue=False``: how many write transactions the core
+        pool lets in at once (default: ``max_read_connections``)."""
         self.memory_limit = memory_limit
         self.threads = threads
         self.read_only = read_only
