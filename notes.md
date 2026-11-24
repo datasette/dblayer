@@ -1487,3 +1487,19 @@ Subagent-reported. Timings at load 9 to 30 on the Mac; provisional, with single 
 
 - **Datasette, issue 1270, a caveat to earlier entries:** a loop that repeats `interrupt()` until the query returns must expect `sqlite3_prepare` itself to fail with `SQLITE_INTERRUPT`, not only the step. Verified by the subagent in an FFI test on SQLite 3.53.1.
 - **Datasette and sqlite-utils, weak:** statements with tens of thousands of named parameters are slow to prepare in SQLite itself (1.4 to 2 s for 32,000). Measured only through these workers.
+
+### Found: first completed run on the repaired CI workflow (2026-11-24)
+
+Subagent-reported: run 45454952137. Ten of fifteen jobs passed and five failed; jobs took 1.5 to 11 minutes with no hangs and no killed runners. Each failure has a fix pushed, not yet confirmed by a later run.
+
+- **Green for the first time:** PGlite on Linux; the C worker under ASan (all four earlier failures fixed); and ThreadSanitizer on the C worker, which had never run in CI before.
+- **A security gap found by CI on Linux:** the Linux build of chDB has table functions the Mac build lacks (`deltaLake*` including a local-file variant, `hdfs*`, and others), and untrusted SQL could call them. The allowlist test that compares against the engine's own function list caught it, which is what that test was for. Now refused.
+- **A real hang in the Node.js worker, caught by the new stack dump:** a `more` message that arrived before the main thread had registered the stream was dropped, so a native export stalled. Fixed, along with the lost-cancel race already fixed in the C worker.
+- chDB opens three `/proc` files per pool thread on Linux, which broke four descriptor-leak tests; those descriptors are now excluded from the count.
+- The 10,000-database scale test on the Python worker ran past 300 s on a 3-CPU, 7 GB macOS runner: slow, not hung. Process backends now sample memory over 200 databases.
+- A thread-count assertion failed `11 == 12` on core 3.14 because a thread from an earlier test exited; it now compares sets.
+- The Rust SQLite worker's CI job failed on a clippy lint that passed locally, so the CI toolchain is newer than the local one. The Rust toolchain version should be pinned in the workflow.
+
+### Idea
+
+- **Platform-dependent attack surface:** an engine's set of host-reaching functions differs by platform and build. Any allowlist must be checked against the running engine at start-up or in CI on the deployment platform, not only on a developer's machine.
