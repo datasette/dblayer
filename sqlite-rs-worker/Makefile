@@ -24,10 +24,35 @@ debug: $(AMALGAMATION)
 test: $(AMALGAMATION)
 	$(CARGO) test --release --locked
 
+clippy: $(AMALGAMATION)
+	$(CARGO) clippy --release --locked --all-targets -- -D warnings
+
+# Nightly-only checks (rustup's nightly toolchain; not run in CI). TSan and
+# ASan instrument SQLite too (build.rs); the TSan binary is for the Python
+# tests: DBLAYER_RSWORKER=$(TSAN_BIN) TSAN_OPTIONS="halt_on_error=1
+# suppressions=$(CURDIR)/../cworker/tsan.supp" uv run pytest -k rspool ...
+TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
+TSAN_BIN := target/tsan/$(TARGET)/release/dblayer-sqlite-rsworker
+
+tsan: $(AMALGAMATION)
+	RUSTFLAGS="-Zsanitizer=thread" $(CARGO) +nightly test -Zbuild-std --target $(TARGET) --target-dir target/tsan
+	RUSTFLAGS="-Zsanitizer=thread" $(CARGO) +nightly build --release -Zbuild-std=std,panic_abort --target $(TARGET) --target-dir target/tsan
+
+asan: $(AMALGAMATION)
+	RUSTFLAGS="-Zsanitizer=address" $(CARGO) +nightly test -Zbuild-std --target $(TARGET) --target-dir target/asan
+	RUSTFLAGS="-Zsanitizer=address" $(CARGO) +nightly build --release -Zbuild-std=std,panic_abort --target $(TARGET) --target-dir target/asan
+
+# Miri runs every unit test (all of them are pure Rust: codecs, framing,
+# SQL text helpers, error names, float formatting) at a reduced fuzz size.
+miri: $(AMALGAMATION)
+	DBLAYER_RS_FUZZ_ITERS=300 DBLAYER_RS_FUZZ_SCALE=50 \
+	MIRIFLAGS="-Zmiri-env-forward=DBLAYER_RS_FUZZ_ITERS -Zmiri-env-forward=DBLAYER_RS_FUZZ_SCALE -Zmiri-disable-isolation" \
+	$(CARGO) +nightly miri test
+
 $(AMALGAMATION):
 	$(MAKE) -C ../cworker vendor/sqlite-amalgamation-3530100/sqlite3.c
 
 clean:
 	$(CARGO) clean
 
-.PHONY: release debug test clean
+.PHONY: release debug test clean clippy tsan asan miri

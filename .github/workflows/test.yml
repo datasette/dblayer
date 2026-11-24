@@ -191,6 +191,46 @@ jobs:
         if: failure() || cancelled()
         run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
 
+  sqlite-rs-worker:
+    # The experimental Rust port of the multi-tenant SQLite worker
+    # (sqlite-rs-worker/): the C worker's pinned amalgamation (cached),
+    # clippy, a cargo build (cached), the Rust unit tests and fuzz, then the
+    # sqlite-rspool tests (the C worker's own tests run on it through
+    # tests/native_impl.py). Other jobs do not build it, so they skip.
+    name: Rust multi-tenant SQLite worker (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - uses: actions/cache@v4
+        with:
+          path: cworker/vendor/sqlite-amalgamation-3530100.zip
+          key: sqlite-amalgamation-3530100
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            sqlite-rs-worker/target
+          key: cargo-sqlite-${{ runner.os }}-${{ hashFiles('sqlite-rs-worker/Cargo.lock', 'sqlite-rs-worker/src/**', 'sqlite-rs-worker/build.rs') }}
+          restore-keys: cargo-sqlite-${{ runner.os }}-
+      - name: Build the Rust SQLite worker
+        run: make -C sqlite-rs-worker && sqlite-rs-worker/target/release/dblayer-sqlite-rsworker --version
+      - name: Clippy
+        run: make -C sqlite-rs-worker clippy
+      - name: Rust unit tests and fuzz
+        run: make -C sqlite-rs-worker test
+      - name: Run the Rust worker's tests
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras pytest -ra -k "rspool or rust" tests/worker tests/faults tests/conformance tests/scale
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
+
   duckdb-cppworker:
     # The experimental DuckDB worker in C++ (duckdb-cpp-worker/): downloads
     # the pinned, checksummed prebuilt libduckdb (cached), builds, runs this
