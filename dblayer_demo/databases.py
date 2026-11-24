@@ -9,7 +9,6 @@ reason, and the app carries on.
 from __future__ import annotations
 
 import asyncio
-import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -18,6 +17,7 @@ from pathlib import Path
 from dblayer import Database
 from dblayer.backends.base import Backend
 
+from .config import POSTGRES_DEFAULT_DSN, POSTGRES_DSN_ENV, DemoConfig
 from .seed import seed
 
 __all__ = ["DemoSpec", "DemoDatabase", "Unavailable", "DEMO_SPECS", "open_all", "close_all"]
@@ -32,8 +32,8 @@ class DemoSpec:
     title: str
     backend: str
     """The dblayer backend class, for display."""
-    make: Callable[[Path], Backend]
-    """Build the backend, given the demo data directory. May raise."""
+    make: Callable[[DemoConfig], Backend]
+    """Build the backend from the run's settings. May raise."""
     check: Callable[[Database], Awaitable[None]] | None = None
     """Run after the first connection, before seeding: raise to refuse."""
 
@@ -60,22 +60,16 @@ class Unavailable(Exception):
 # -- the backends ------------------------------------------------------------------
 
 
-def _sqlite(data_dir: Path) -> Backend:
+def _sqlite(config: DemoConfig) -> Backend:
     from dblayer.backends.sqlite import SqliteInProcess
 
-    return SqliteInProcess(data_dir / "sqlite.db")
+    return SqliteInProcess(config.data_dir / "sqlite.db")
 
 
-POSTGRES_DSN_ENV = "DBLAYER_TEST_POSTGRES"
-POSTGRES_DEFAULT_DSN = "postgresql:///dblayer_test?host=/tmp"
 POSTGRES_DATABASE = "dblayer_test"
 """The only PostgreSQL database the demo will connect to."""
 POSTGRES_SCHEMA = "dblayer_demo"
 """The only schema the demo creates or writes to."""
-
-
-def postgres_dsn() -> str:
-    return os.environ.get(POSTGRES_DSN_ENV, POSTGRES_DEFAULT_DSN)
 
 
 def _dsn_database(dsn: str) -> str | None:
@@ -86,43 +80,72 @@ def _dsn_database(dsn: str) -> str | None:
     return urllib.parse.unquote(parts.path.lstrip("/")) or None
 
 
-def _postgres(data_dir: Path) -> Backend:
-    dsn = postgres_dsn()
-    # Refuse before connecting: the server may hold other, real databases.
+POSTGRES_HINT = (
+    f"Set the server with --postgres-dsn or ${POSTGRES_DSN_ENV}, naming the "
+    f"{POSTGRES_DATABASE} database, e.g. postgresql://USER@localhost:5432/{POSTGRES_DATABASE} "
+    f"(the default, {POSTGRES_DEFAULT_DSN}, connects as the current OS user)."
+)
+
+
+def check_postgres_dsn(dsn: str) -> None:
+    """Refuse, before connecting, any DSN not naming ``dblayer_test``: the
+    server may hold other, real databases."""
     if _dsn_database(dsn) != POSTGRES_DATABASE:
         raise Unavailable(
-            f"${POSTGRES_DSN_ENV} must name the {POSTGRES_DATABASE!r} database; refusing to connect"
+            f"the PostgreSQL DSN must name the {POSTGRES_DATABASE!r} database; refusing to "
+            f"connect. {POSTGRES_HINT}"
         )
+
+
+def postgres_backend(dsn: str, schema: str, application_name: str) -> Backend:
+    check_postgres_dsn(dsn)
     from dblayer.backends.postgres import Postgres
 
-    return Postgres(
-        dsn, schema=POSTGRES_SCHEMA, application_name="dblayer-demo", connect_timeout=5.0
-    )
+    return Postgres(dsn, schema=schema, application_name=application_name, connect_timeout=5.0)
+
+
+def _postgres(config: DemoConfig) -> Backend:
+    return postgres_backend(config.postgres_dsn, POSTGRES_SCHEMA, "dblayer-demo")
+
+
+async def check_postgres_connection(db: Database, schema: str) -> None:
+    """The first query on a PostgreSQL database: confirm where it landed.
+    A connection failure is reported with how to set the DSN."""
+    try:
+        r = await db.execute("select current_database(), current_schema()")
+    except Exception as e:
+        raise Unavailable(f"{_reason(e)}. {POSTGRES_HINT}") from e
+    database, current = r.rows[0]
+    if database != POSTGRES_DATABASE or current != schema:
+        raise Unavailable(
+            f"connected to {database}.{current}, expected {POSTGRES_DATABASE}.{schema}; refusing"
+        )
 
 
 async def _postgres_check(db: Database) -> None:
-    r = await db.execute("select current_database(), current_schema()")
-    database, schema = r.rows[0]
-    if database != POSTGRES_DATABASE or schema != POSTGRES_SCHEMA:
-        raise Unavailable(f"connected to {database}.{schema}, expected "
-                           f"{POSTGRES_DATABASE}.{POSTGRES_SCHEMA}; refusing to seed")
+    await check_postgres_connection(db, POSTGRES_SCHEMA)
 
 
-def _sqlite_worker(data_dir: Path) -> Backend:
+def _sqlite_worker(config: DemoConfig) -> Backend:
     # The worker backend (spec: "Backend: SQLite in a separate process") is
     # not written yet. This is the one place to change once it lands:
     # confirm the module path and constructor below.
+    return sqlite_worker_backend(config.data_dir / "sqlite-worker.db")
+
+
+def sqlite_worker_backend(path: Path) -> Backend:
+    """Shared by the featured worker database and the fleet's."""
     try:
         from dblayer.backends.sqlite_worker import SqliteWorker  # type: ignore[import-not-found]
     except ImportError as e:
         raise Unavailable(f"the SqliteWorker backend is not available yet ({e})") from e
-    return SqliteWorker(data_dir / "sqlite-worker.db")
+    return SqliteWorker(path)
 
 
-def _duckdb(data_dir: Path) -> Backend:
+def _duckdb(config: DemoConfig) -> Backend:
     from dblayer.backends.duckdb import DuckDB  # ImportError without the duckdb extra
 
-    return DuckDB(data_dir / "duckdb.duckdb")
+    return DuckDB(config.data_dir / "duckdb.duckdb")
 
 
 DEMO_SPECS: list[DemoSpec] = [
@@ -143,11 +166,11 @@ def _reason(e: BaseException) -> str:
     return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
 
-async def open_one(spec: DemoSpec, data_dir: Path) -> DemoDatabase:
+async def open_one(spec: DemoSpec, config: DemoConfig) -> DemoDatabase:
     demo = DemoDatabase(spec)
     db: Database | None = None
     try:
-        db = Database(spec.make(data_dir), name=spec.slug)
+        db = Database(spec.make(config), name=spec.slug)
         if spec.check is not None:
             await spec.check(db)
         demo.seeded = await asyncio.wait_for(seed(db), SEED_TIMEOUT_S)
@@ -163,9 +186,10 @@ async def open_one(spec: DemoSpec, data_dir: Path) -> DemoDatabase:
     return demo
 
 
-async def open_all(data_dir: Path, specs: list[DemoSpec] | None = None) -> list[DemoDatabase]:
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return list(await asyncio.gather(*(open_one(s, data_dir) for s in specs or DEMO_SPECS)))
+async def open_all(config: DemoConfig, specs: list[DemoSpec] | None = None) -> list[DemoDatabase]:
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    specs = DEMO_SPECS if specs is None else specs
+    return list(await asyncio.gather(*(open_one(s, config) for s in specs)))
 
 
 async def close_all(demos: list[DemoDatabase]) -> None:

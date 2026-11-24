@@ -24,6 +24,7 @@ from dblayer import Database, DblayerError, NotSupported, QueryError, Results
 from dblayer.core.params import find_placeholders, leading_keyword
 from dblayer.core.schema import TableInfo
 
+from .config import DemoConfig
 from .databases import DemoDatabase, DemoSpec, close_all, open_all
 from .render import cell, describe_error, is_numeric
 
@@ -247,14 +248,16 @@ async def http_error(request: Request, exc: Exception) -> Response:
 
 
 def create_app(
-    data_dir: Path | str = "demo-data", specs: list[DemoSpec] | None = None
+    config: DemoConfig | Path | str = "demo-data", specs: list[DemoSpec] | None = None
 ) -> Starlette:
-    """``specs`` defaults to ``DEMO_SPECS`` (tests pass their own)."""
-    data_dir = Path(data_dir)
+    """``config`` (or just a data directory); ``specs`` defaults to
+    ``DEMO_SPECS`` (tests pass their own)."""
+    if not isinstance(config, DemoConfig):
+        config = DemoConfig(data_dir=Path(config))
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
-        demos = await open_all(data_dir, specs)
+        demos = await open_all(config, specs)
         app.state.demos = {d.spec.slug: d for d in demos}
         try:
             yield

@@ -22,11 +22,12 @@ pytest.importorskip("jinja2")
 import httpx  # noqa: E402
 
 from dblayer_demo import create_app  # noqa: E402
+from dblayer_demo.config import DemoConfig  # noqa: E402
 from dblayer_demo.databases import (  # noqa: E402
     DEMO_SPECS,
-    POSTGRES_DSN_ENV,
     Unavailable,
-    _postgres,
+    check_postgres_connection,
+    check_postgres_dsn,
 )
 
 SLUGS = [s.slug for s in DEMO_SPECS]
@@ -47,7 +48,8 @@ def data_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 async def _client(data_dir: Path, slugs: list[str]) -> AsyncIterator[tuple[Any, httpx.AsyncClient]]:
-    app = create_app(data_dir, [s for s in DEMO_SPECS if s.slug in slugs])
+    config = DemoConfig(data_dir=data_dir, fleet_size=0)
+    app = create_app(config, [s for s in DEMO_SPECS if s.slug in slugs])
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://demo") as client:
@@ -222,9 +224,32 @@ async def test_time_limit(client: httpx.AsyncClient) -> None:
     assert r.status_code == 200 and _rows(r.text) == [["1"]]
 
 
-def test_postgres_refuses_other_databases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_postgres_refuses_other_databases() -> None:
     # Refused before any connection is attempted.
     for dsn in ["postgresql:///postgres?host=/tmp", "postgresql://u@h/prod", "postgresql://h/?dbname=x"]:
-        monkeypatch.setenv(POSTGRES_DSN_ENV, dsn)
         with pytest.raises(Unavailable, match="must name the 'dblayer_test' database"):
-            _postgres(tmp_path)
+            check_postgres_dsn(dsn)
+    check_postgres_dsn("postgresql://u:p@h:5432/dblayer_test")
+
+
+async def test_postgres_connection_failure_says_how_to_set_the_dsn(tmp_path: Path) -> None:
+    pytest.importorskip("asyncpg")
+    from dblayer import Database
+    from dblayer_demo.databases import postgres_backend
+
+    # No server listens on this socket directory: fails fast, never
+    # reaching any real server.
+    db = Database(postgres_backend(f"postgresql:///dblayer_test?host={tmp_path}", "dblayer_demo", "t"))
+    try:
+        with pytest.raises(Unavailable, match="--postgres-dsn or \\$DBLAYER_TEST_POSTGRES"):
+            await check_postgres_connection(db, "dblayer_demo")
+    finally:
+        await db.close()
+
+
+def test_postgres_dsn_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DBLAYER_TEST_POSTGRES", "postgresql://env@h/dblayer_test")
+    assert DemoConfig().postgres_dsn == "postgresql://env@h/dblayer_test"
+    assert DemoConfig(postgres_dsn="postgresql://cli@h/dblayer_test").postgres_dsn.startswith(
+        "postgresql://cli@"
+    )

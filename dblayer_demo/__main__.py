@@ -1,4 +1,4 @@
-"""``python -m dblayer_demo [--port 8001] [--data-dir demo-data]``"""
+"""``python -m dblayer_demo [--port 8001] [--data-dir demo-data] [--postgres-dsn DSN]``"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 import uvicorn
 
 from .app import create_app
+from .config import POSTGRES_DEFAULT_DSN, POSTGRES_DSN_ENV, DemoConfig, _env_dsn
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -20,8 +21,15 @@ def main(argv: list[str] | None = None) -> None:
         default=Path("demo-data"),
         help="where the demo SQLite and DuckDB files are created (default: demo-data)",
     )
+    parser.add_argument(
+        "--postgres-dsn",
+        default=None,
+        help=f"PostgreSQL DSN naming the dblayer_test database (default: ${POSTGRES_DSN_ENV}, "
+        f"else {POSTGRES_DEFAULT_DSN}, which connects as the current OS user)",
+    )
     args = parser.parse_args(argv)
-    uvicorn.run(create_app(args.data_dir), host=args.host, port=args.port)
+    config = DemoConfig(data_dir=args.data_dir, postgres_dsn=args.postgres_dsn or _env_dsn())
+    uvicorn.run(create_app(config), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
