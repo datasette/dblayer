@@ -120,8 +120,15 @@ if [ "$RUN_TESTS" = 1 ]; then
     [ $left -gt 2400 ] && left=2400
     if [ $left -gt 300 ]; then
         export DBLAYER_HANG_DUMP_S=240 DBLAYER_HANG_DUMP_FILE="$OUT/hang-dump.txt"
+        # Memory every 5 s while the suite runs: "time used_mb available_mb swap_used_mb".
+        ( while :; do awk -v t="$(date -u +%T)" '/^MemTotal/{tot=$2} /^MemAvailable/{av=$2} /^SwapTotal/{st=$2} /^SwapFree/{sf=$2}
+              END {printf "%s %d %d %d\n", t, (tot-av)/1024, av/1024, (st-sf)/1024}' /proc/meminfo; sleep 5; done \
+          > "$OUT/logs/memory.log" ) &
+        mem_pid=$!
         stage tests "$left" uv run --python "$PY" --all-extras --group demo pytest -v -p no:cacheprovider \
             -o faulthandler_timeout=240 --timeout=300 --timeout-method=thread --durations=30 -ra
+        kill $mem_pid 2>/dev/null
+        echo "##### peak memory used during tests: $(sort -k2 -n "$OUT/logs/memory.log" | tail -1) (time used_mb available_mb swap_mb)"
         grep -E "Timeout|FAILED|ERROR|passed|failed" "$OUT/logs/tests.log" | tail -n 40
     else
         echo "##### tests: skipped, only ${left}s of lifetime left"
