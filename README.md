@@ -70,6 +70,18 @@ are `sqlite-cpool`, `c-pool`, `tests/worker/test_cworker_multi.py`,
 `make -C cworker SANITIZE=thread` builds a ThreadSanitizer binary in
 `cworker/build-tsan/`.
 
+### The DuckDB C++ worker (experimental)
+
+`duckdb-cpp-worker/` is a DuckDB worker process in C++ on the official
+prebuilt libduckdb (downloaded once, checksummed, into the git-ignored
+`duckdb-cpp-worker/vendor/`), used by `DuckDBCppWorker`. Build it with
+`make -C duckdb-cpp-worker`; its tests (`duckdb-cppworker` in the
+conformance suite, `tests/worker/test_duckdb_cppworker.py`, the DuckDB
+worker fault and value-type tests) skip until then.
+`DBLAYER_DUCKDB_CPP_WORKER` points them at another build, such as the
+sanitized one from `make -C duckdb-cpp-worker SANITIZE=1`. See
+`duckdb-cpp-worker/README.md`.
+
 ### In-process SQLite on apsw (experimental)
 
 `SqliteApsw` (`dblayer/backends/sqlite_apsw.py`, extra `apsw`) is the

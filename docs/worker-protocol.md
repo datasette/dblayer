@@ -271,6 +271,26 @@ placement) and every connection of it.
   exception class in `cause.type` (`_duckdb.CatalogException`) and its
   messages for parameter binding.
 
+### C++ DuckDB worker (`duckdb-cpp-worker/`)
+
+`dblayer.backends.duckdb_cppworker.DuckDBCppWorker`: the same engine as a
+C++17 program on libduckdb 2.0.1's C API (`duckdb-cpp-worker/README.md`),
+`DatabaseWorker` placement.
+
+- `hello` adds `"implementation": "cpp"`, `"concurrent": true` (as for the
+  Rust worker: a thread per connection, the parent multiplexes) and
+  `duckdb_version`, and `"ops": ["insert_rows"]`: a list names the named
+  operations the worker runs itself. For any other operation the parent
+  runs the default implementation; the worker may also answer an `op` with
+  `{"result": {"declined": true}}` (ignore/replace, a table to create or
+  alter), and the parent then runs the default.
+- `open` accepts any engine name containing `duckdb` (the parent sends
+  `dblayer.backends.duckdb_cppworker:LocalDuckDB`).
+- Results, column type names, value types and errors match in-process
+  DuckDB (`tests/worker/test_duckdb_cppworker.py` checks them
+  differentially). With `max_rows`, a SELECT runs as `SELECT * FROM (sql)
+  LIMIT max_rows + 1` when that keeps its column names.
+
 ## Limits, kills and deadlines
 
 | Limit | In the worker (soft) | In the parent (hard) |
