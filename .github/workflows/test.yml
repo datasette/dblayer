@@ -19,11 +19,13 @@ concurrency:
 
 # Hang diagnostics for every pytest run: a test still running after 240 s
 # dumps its threads, asyncio tasks and child processes (tests/hangdump.py,
-# also appended to hang-dump.txt); pytest-timeout fails it at 300 s with the
-# thread stacks. -v names each test as it starts, so a killed runner's log
-# ends at the test that was running.
+# also appended to hang-dump.txt); pytest-timeout fails it at 300 s. The
+# signal method fails just that test and the run goes on (the thread method
+# ended the whole run at the first slow test); a hang where Python cannot
+# take the signal is left to the job's timeout-minutes. -v names each test
+# as it starts, so a killed runner's log ends at the test that was running.
 env:
-  PYTEST_ADDOPTS: -v --durations=30 --timeout=300 --timeout-method=thread
+  PYTEST_ADDOPTS: -v --durations=30 --timeout=300 --timeout-method=signal
   DBLAYER_HANG_DUMP_S: "240"
   DBLAYER_HANG_DUMP_FILE: ${{ github.workspace }}/hang-dump.txt
 
