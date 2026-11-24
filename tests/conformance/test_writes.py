@@ -166,6 +166,29 @@ async def test_last_pk_none_after_upsert_that_updates(items):
 
 
 @pytest.mark.requires("implicit_rowid")
+async def test_last_pk_when_the_previous_rowid_is_reused_or_updated(items):
+    # A before/after comparison of last_insert_rowid() cannot tell these
+    # apart: inserting rowid 5 again after deleting it, and an upsert that
+    # updates the row the previous insert made.
+    r = await items.execute_write("insert into items (id, name) values (5, 'a')")
+    assert r.last_pk == 5
+    await items.execute_write("delete from items where id = 5")
+    r = await items.execute_write("insert into items (id, name) values (5, 'b')")
+    assert r.rowcount == 1 and r.last_pk == 5
+    r = await items.execute_write(
+        "insert into items (id, name, n) values (5, 'b', 2) on conflict (id) do update set n = 2"
+    )
+    assert r.rowcount == 1 and r.last_pk is None
+    r = await items.execute_write("insert into items (id, name) values (5, 'b') on conflict do nothing")
+    assert r.rowcount == 0 and r.last_pk is None
+    # SQL still sees the last real insert.
+    assert (await items.execute_write("insert into items (id, name) values (7, 'c')")).last_pk == 7
+    async with items.transaction() as tx:
+        await tx.execute("insert into items (name) select 'x' where 0")
+        assert (await tx.execute("select last_insert_rowid() as r")).rows == [(7,)]
+
+
+@pytest.mark.requires("implicit_rowid")
 async def test_last_pk_none_when_conflict_skipped(items):
     await items.execute_write("insert into items (id, name) values (1, 'a')")
     r = await items.execute_write(

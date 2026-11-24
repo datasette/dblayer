@@ -79,6 +79,15 @@ def _has_fts5() -> bool:
 
 _REINTERRUPT_S = 0.005
 
+_LASTROWID_SENTINEL = -(2**63)
+"""``last_insert_rowid()`` is set to this before an insert on a write
+connection, so an insert that reuses the previous insert's rowid (insert 5,
+delete it, insert 5 again) is told apart from one that inserted nothing:
+comparing the value before and after gets that case wrong. The standard
+module has no ``sqlite3_set_last_insert_rowid()``, so the value is set by
+writing that rowid into a one-row temp table (``_SENTINEL_TABLE``)."""
+_SENTINEL_TABLE = "temp.dblayer_last_insert_rowid"
+
 
 class _TimeLimit:
     """Install a progress-handler deadline for the duration of a block.
@@ -326,63 +335,96 @@ class SqliteConnection:
         verb = leading_keyword(sql)
         is_write = verb in _WRITE_VERBS
         is_insert = verb in ("INSERT", "REPLACE")
+        sentinel = False
         if is_insert:
             # last_insert_rowid() is per connection and is not touched by an
             # upsert that took the UPDATE path, by OR IGNORE / DO NOTHING
-            # skips or by WITHOUT ROWID tables. Comparing before and after
-            # tells us whether *this* statement inserted a rowid row.
+            # skips or by WITHOUT ROWID tables. A sentinel value set first
+            # tells us whether *this* statement inserted a rowid row; on a
+            # read connection (where the insert fails anyway) comparing
+            # before and after is enough.
             rowid_before = raw.execute("select last_insert_rowid()").fetchone()[0]
-        with _TimeLimit(raw, time_limit_ms), self._statement():
-            cur = raw.execute(sql, params)
-            try:
-                description = cur.description
-                rows: list[tuple[Any, ...]] = []
-                truncated = False
-                if description is not None:
-                    limit = None if max_rows is None else max_rows + 1
-                    size = 0
-                    while True:
-                        n = _FETCH_BATCH if limit is None else min(_FETCH_BATCH, limit - len(rows))
-                        if n <= 0:
-                            break
-                        batch = cur.fetchmany(n)
-                        if not batch:
-                            break
-                        if max_result_bytes is not None:
-                            for r in batch:
-                                size += _row_bytes(r)
-                            if size > max_result_bytes:
-                                raise ResourceLimitExceeded(
-                                    f"result exceeded max_result_bytes={max_result_bytes}"
-                                )
-                        rows.extend(batch)
-                    if max_rows is not None and len(rows) > max_rows:
-                        truncated = True
-                        del rows[max_rows:]
-                        if is_write:
-                            # sqlite3 only reports rowcount for RETURNING
-                            # statements once they have run to completion.
-                            while cur.fetchmany(_FETCH_BATCH):
-                                pass
-                rowcount = cur.rowcount
-                lastrowid = cur.lastrowid
-            finally:
-                cur.close()
-            if is_write and rowcount == -1:
-                # sqlite3 only recognises DML by its first keyword, so
-                # "WITH ... INSERT" reports -1. Ask SQLite directly.
-                rowcount, lastrowid = raw.execute(
-                    "select changes(), last_insert_rowid()"
-                ).fetchone()
-        last_pk = (
-            lastrowid
-            if is_insert and rowcount > 0 and lastrowid != rowid_before
-            else None
-        )
+            if self.write:
+                self._set_last_insert_rowid(_LASTROWID_SENTINEL)
+                sentinel = True
+        try:
+            with _TimeLimit(raw, time_limit_ms), self._statement():
+                cur = raw.execute(sql, params)
+                try:
+                    description = cur.description
+                    rows: list[tuple[Any, ...]] = []
+                    truncated = False
+                    if description is not None:
+                        limit = None if max_rows is None else max_rows + 1
+                        size = 0
+                        while True:
+                            n = _FETCH_BATCH if limit is None else min(_FETCH_BATCH, limit - len(rows))
+                            if n <= 0:
+                                break
+                            batch = cur.fetchmany(n)
+                            if not batch:
+                                break
+                            if max_result_bytes is not None:
+                                for r in batch:
+                                    size += _row_bytes(r)
+                                if size > max_result_bytes:
+                                    raise ResourceLimitExceeded(
+                                        f"result exceeded max_result_bytes={max_result_bytes}"
+                                    )
+                            rows.extend(batch)
+                        if max_rows is not None and len(rows) > max_rows:
+                            truncated = True
+                            del rows[max_rows:]
+                            if is_write:
+                                # sqlite3 only reports rowcount for RETURNING
+                                # statements once they have run to completion.
+                                while cur.fetchmany(_FETCH_BATCH):
+                                    pass
+                    rowcount = cur.rowcount
+                    lastrowid = cur.lastrowid
+                finally:
+                    cur.close()
+                if is_write and rowcount == -1:
+                    # sqlite3 only recognises DML by its first keyword, so
+                    # "WITH ... INSERT" reports -1. Ask SQLite directly.
+                    rowcount, lastrowid = raw.execute(
+                        "select changes(), last_insert_rowid()"
+                    ).fetchone()
+        except BaseException:
+            if sentinel:
+                with contextlib.suppress(Exception):
+                    self._set_last_insert_rowid(rowid_before)
+            raise
+        if sentinel:
+            if lastrowid == _LASTROWID_SENTINEL:
+                last_pk = None
+                # Nothing inserted: give SQL's last_insert_rowid() back.
+                self._set_last_insert_rowid(rowid_before)
+            else:
+                last_pk = lastrowid if rowcount > 0 else None
+        else:
+            last_pk = (
+                lastrowid
+                if is_insert and rowcount > 0 and lastrowid != rowid_before
+                else None
+            )
         columns = tuple(Column(d[0]) for d in description) if description else ()
         return Results.from_tuples(
             columns, rows, truncated=truncated, rowcount=rowcount, last_pk=last_pk
         )
+
+    def _set_last_insert_rowid(self, value: int) -> None:
+        """``sqlite3_set_last_insert_rowid()`` for the standard module: an
+        INSERT OR REPLACE of rowid ``value`` into a one-row temp table. The
+        table is created on first use; if a rollback took it away, again."""
+        sql = f"insert or replace into {_SENTINEL_TABLE} (rowid, x) values (?, 0)"
+        try:
+            self._raw.execute(sql, (value,))
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):
+                raise
+            self._raw.execute(f"create temp table if not exists {_SENTINEL_TABLE[5:]} (x)")
+            self._raw.execute(sql, (value,))
 
     async def execute_batch(
         self,

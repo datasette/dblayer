@@ -542,6 +542,8 @@ static void limit_install(conn *wc, progress_ctx *pc, job *j, int has_tl, int64_
 
 static void limit_remove(conn *wc) { sqlite3_progress_handler(wc->db, 0, NULL, NULL); }
 
+#define LASTROWID_SENTINEL INT64_MIN
+
 /* SqliteConnection._statement: refuse to start once cancelled. */
 static int stmt_enter(job *j, err_t *e) {
 #ifdef CWORKER_WASM
@@ -791,6 +793,11 @@ static int run_execute(job *j, conn *wc, const val *sqlv, const val *params, lim
 again:;
     sqlite3 *db = wc->db;
     sqlite3_int64 rowid_before = sqlite3_last_insert_rowid(db);
+    /* A sentinel, not a before/after comparison: an insert that reuses the
+     * previous insert's rowid (insert 5, delete, insert 5) must report it,
+     * and an upsert that updates that row must not. Put back if unused. */
+    if (is_insert)
+        sqlite3_set_last_insert_rowid(db, LASTROWID_SENTINEL);
     progress_ctx pc;
     sqlite3_stmt *st = NULL;
     int rc = SQLITE_DONE;
@@ -871,6 +878,8 @@ again:;
     sqlite3_finalize(st);
     limit_remove(wc);
     stmt_leave(j);
+    if (is_insert && sqlite3_last_insert_rowid(db) == LASTROWID_SENTINEL)
+        sqlite3_set_last_insert_rowid(db, rowid_before);
     if (truncated) {
         w_cstr(w, "truncated");
         w_bool(w, 1);
@@ -879,7 +888,7 @@ again:;
         w_cstr(w, "rowcount");
         w_int(w, rowcount);
     }
-    if (is_insert && rowcount > 0 && lastrowid != rowid_before) {
+    if (is_insert && rowcount > 0 && lastrowid != LASTROWID_SENTINEL) {
         w_cstr(w, "last_pk");
         w_int(w, lastrowid);
     }
@@ -889,6 +898,8 @@ fail:
     sqlite3_finalize(st);
     limit_remove(wc);
     stmt_leave(j);
+    if (is_insert && sqlite3_last_insert_rowid(db) == LASTROWID_SENTINEL)
+        sqlite3_set_last_insert_rowid(db, rowid_before);
     if (recover && !retried && !wc->write && e->sqlite_ext == SQLITE_READONLY_ROLLBACK) {
         /* _execute_recovering: a hot journal left by a killed writer. */
         retried = 1;
