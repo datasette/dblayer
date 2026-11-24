@@ -891,6 +891,9 @@ class _Instance:
             reason = self.kill_reason or ("memory" if self._near_limit() else "crash")
             raise _Trapped(reason, str(e).splitlines()[0] if str(e) else type(e).__name__) from None
 
+    def memory_bytes(self) -> int:
+        return self.memory.data_len(self.store)
+
     def _near_limit(self) -> bool:
         if self.memory_limit_bytes is None:
             return False
@@ -900,8 +903,21 @@ class _Instance:
             return False
 
     def discard(self) -> None:
+        """After a trap."""
         self.rt.traps += 1
+        self.close()
+
+    def close(self) -> None:
+        """Release the files and free the store (its linear memory goes back
+        to the OS now, not when a garbage collection gets to the cycle
+        through the epoch callback)."""
         self.files.release_all()
+        self.files.size_of = lambda: 0
+        self.files.size = 0
+        try:
+            self.store.close()
+        except Exception:
+            pass
 
 
 # -- the "process": an instance behind the WorkerProcess interface --------------------
@@ -918,6 +934,14 @@ class WasmConfig:
     deadline_slack_ms: int = 50
     max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES
     debug: bool = False
+    recycle_memory_mb: int | None = 64
+    """Linear memory never shrinks: an instance that once grew to hold a
+    big result keeps that memory. Past this size (and outside a
+    transaction or an open stream) it is replaced by a fresh instance
+    before the next request, which hands the memory back to the OS."""
+
+
+_RECYCLE_AFTER = frozenset({"execute", "execute_many", "batch", "schema", "schema_version", "commit", "rollback"})
 
 
 class _Call:
@@ -959,6 +983,9 @@ class WasmProcess:
         self._current: _Call | None = None
         self._timers: list[asyncio.TimerHandle] = []
         self.started_at = 0.0
+        self._open_msg: dict[str, Any] | None = None
+        self._needs_recycle = False
+        self.recycled = 0
 
     def __repr__(self) -> str:
         return f"<WasmProcess {'dead' if self.dead else 'alive'} {self.db_path}>"
@@ -974,17 +1001,36 @@ class WasmProcess:
 
     async def start(self) -> None:
         self.started_at = time.perf_counter()
+        async with self.lock:
+            await self._new_instance()
+
+    async def _new_instance(self) -> None:
+        """[self.lock held] Instantiate and say hello."""
         cfg = self.config
         limit = None if cfg.memory_limit_mb is None else int(cfg.memory_limit_mb) * 1024 * 1024
         rt = await run_blocking(self._executor(), _runtime, cfg.module)
         self._inst = await run_blocking(self._executor(), _Instance, rt, self.db_path, limit)
+        self.codec = get_codec("json")
         codecs = [cfg.codec] if cfg.codec == "json" else [cfg.codec, "json"]
-        reply = await self.call(
+        reply = await self._exchange(
             {"type": "hello", "protocol": PROTOCOL_VERSION, "codecs": codecs, "max_frame_bytes": cfg.max_frame_bytes},
-            owner=None,
+            owner=None, limit_ms=None, expect_frames=None, on_sent=None,
         )
         self.hello = reply
         self.codec = get_codec(reply.get("codec", "json"))
+
+    async def _recycle(self) -> None:
+        """[self.lock held] Replace an idle instance whose memory has grown:
+        a new instance, the same ``open`` replayed (no transaction is open,
+        so there is no state to carry over)."""
+        self._needs_recycle = False
+        old, self._inst = self._inst, None
+        if old is not None:
+            old.close()
+        await self._new_instance()
+        if self._open_msg is not None:
+            await self._exchange(dict(self._open_msg), owner=None, limit_ms=None, expect_frames=None, on_sent=None)
+        self.recycled += 1
 
     def _release(self) -> None:
         """Discard the instance (no call is running on it)."""
@@ -993,7 +1039,7 @@ class WasmProcess:
             t.cancel()
         self._timers.clear()
         if inst is not None:
-            inst.files.release_all()
+            inst.close()
 
     def kill(self, exc: BaseException | None = None, *, for_ids: Mapping[int, BaseException] | None = None) -> None:
         """Stop now: a running call traps at the next epoch tick; the
@@ -1057,10 +1103,14 @@ class WasmProcess:
         rt.enter()
         try:
             return inst.call(payload)
-        except _Trapped:
+        except _Trapped as t:
             with self._tlock:
                 call.active = False
             self._inst = None
+            if self.dead is None:
+                # Seen by the next call even if this one's caller is gone
+                # (cancelled): the connection then gets a new instance.
+                self.dead = WorkerCrashed(f"WebAssembly instance discarded after a trap ({t})")
             inst.discard()
             raise
         finally:
@@ -1098,34 +1148,62 @@ class WasmProcess:
     ) -> Any:
         async with self.lock:
             self._check()
-            if expect_frames is not None and msg.get("type") == "more":
-                msg.pop("id", None)
-                mid = msg["stream"]
-            else:
-                mid = msg["id"] = msg.get("id") or next(self._ids)
-            payload = self.codec.encode(msg)
-            if len(payload) > self.config.max_frame_bytes:
-                raise ResourceLimitExceeded(
-                    f"request too large to send: frame of {len(payload)} bytes exceeds the "
-                    f"{self.config.max_frame_bytes}-byte frame size cap"
-                )
-            if on_sent is not None:
-                on_sent(mid)
-            call = _Call(mid, limit_ms)
-            self._current = call
-            self.inflight = (mid, owner)
-            try:
-                out = await run_blocking(
-                    self._executor(), self._invoke, payload, call, on_cancel=lambda: self._on_cancel(call)
-                )
-            except _Trapped as t:
-                raise self._trapped(t, call) from None
-            finally:
-                self.inflight = None
-                self._current = None
-            if self.dead is not None:
-                raise self._kill_for.get(mid, self.dead)
-            frames = self._frames(out)
+            if self._needs_recycle:
+                await self._recycle()
+            reply = await self._exchange(
+                msg, owner=owner, limit_ms=limit_ms, expect_frames=expect_frames, on_sent=on_sent
+            )
+            if msg.get("type") == "open":
+                self._open_msg = {k: v for k, v in msg.items() if k != "id"}
+            elif (
+                expect_frames is None
+                and self.config.recycle_memory_mb is not None
+                and msg.get("type") in _RECYCLE_AFTER
+                and not reply.get("in_tx")
+                and self._inst is not None
+                and self._inst.memory_bytes() > self.config.recycle_memory_mb << 20
+            ):
+                self._needs_recycle = True
+        return reply
+
+    async def _exchange(
+        self,
+        msg: dict[str, Any],
+        *,
+        owner: object,
+        limit_ms: float | None,
+        expect_frames: int | None,
+        on_sent: Callable[[int], None] | None,
+    ) -> Any:
+        """[self.lock held] One request and its frames."""
+        if expect_frames is not None and msg.get("type") == "more":
+            msg.pop("id", None)
+            mid = msg["stream"]
+        else:
+            mid = msg["id"] = msg.get("id") or next(self._ids)
+        payload = self.codec.encode(msg)
+        if len(payload) > self.config.max_frame_bytes:
+            raise ResourceLimitExceeded(
+                f"request too large to send: frame of {len(payload)} bytes exceeds the "
+                f"{self.config.max_frame_bytes}-byte frame size cap"
+            )
+        if on_sent is not None:
+            on_sent(mid)
+        call = _Call(mid, limit_ms)
+        self._current = call
+        self.inflight = (mid, owner)
+        try:
+            out = await run_blocking(
+                self._executor(), self._invoke, payload, call, on_cancel=lambda: self._on_cancel(call)
+            )
+        except _Trapped as t:
+            raise self._trapped(t, call) from None
+        finally:
+            self.inflight = None
+            self._current = None
+        if self.dead is not None:
+            raise self._kill_for.get(mid, self.dead)
+        frames = self._frames(out)
         if msg.get("type") == "begin" and msg.get("deadline_ms") is not None:
             self._arm_tick(msg["deadline_ms"])
         mine = [f for f in frames if f.get("id") == mid]
@@ -1239,6 +1317,9 @@ class SqliteWasm(SqliteWorker):
       12% below it.
     * ``kill_grace_ms`` (default 50): how long past a time limit or a cancel
       a statement may run before its instance is trapped.
+    * ``recycle_memory_mb`` (default 64): replace an instance whose linear
+      memory has grown past this, between requests and outside a
+      transaction (linear memory never shrinks). ``None``: never.
     * ``module``: path to ``dblayer-sqlite.wasm`` (see ``find_module``).
     * ``sql_limits``, ``immutable``, ``create``, ``busy_timeout``: as
       ``SqliteWorker``.
@@ -1258,6 +1339,7 @@ class SqliteWasm(SqliteWorker):
         module: str | os.PathLike[str] | None = None,
         memory_limit_mb: int | None = None,
         kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
+        recycle_memory_mb: int | None = 64,
         codec: str | None = None,
         executor: Any = None,
         max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
@@ -1284,6 +1366,7 @@ class SqliteWasm(SqliteWorker):
             kill_grace_ms=kill_grace_ms,
             max_frame_bytes=max_frame_bytes,
             debug=debug,
+            recycle_memory_mb=recycle_memory_mb,
         )
         self.capabilities = _wasm_capabilities(self._local.capabilities)
 
