@@ -70,8 +70,12 @@ async def run_blocking[T](
     fut = loop.run_in_executor(
         executor or get_default_executor(), functools.partial(ctx.run, fn, *args)
     )
+    # asyncio.wait, not asyncio.shield: cancelling the wait leaves ``fut``
+    # alone, and a shielded future that fails after its waiter was
+    # cancelled is logged by asyncio as "exception in shielded future" (an
+    # ERROR line for every cancelled query).
     try:
-        return await asyncio.shield(fut)
+        await asyncio.wait((fut,))
     except asyncio.CancelledError:
         if on_cancel is not None and not fut.done():
             try:
@@ -80,11 +84,10 @@ async def run_blocking[T](
                 pass
         while not fut.done():
             try:
-                await asyncio.shield(fut)
+                await asyncio.wait((fut,))
             except asyncio.CancelledError:
                 continue
-            except BaseException:
-                break
-        if fut.done() and not fut.cancelled():
+        if not fut.cancelled():
             fut.exception()  # mark retrieved
         raise
+    return fut.result()
