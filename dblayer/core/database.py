@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+from datetime import timedelta
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from typing import Any
 
@@ -15,6 +16,7 @@ from .params import Params, rewrite
 from .pool import DEFAULT_MAX_READ_CONNECTIONS, Pool, PoolStats
 from .results import Results, Row, WriteResult, make_index
 from .schema import Schema, SchemaCache
+from .staged import StagedImport, sweep_staged
 from .transactions import Transaction, active_transaction
 
 __all__ = ["Database", "DEFAULT", "map_errors"]
@@ -58,6 +60,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         self.chunk_rows = chunk_rows
         self.deadline_ms = deadline_ms
         self.native_operations = native_operations
+        self._live_staging: set[str] = set()
         """When false, named operations always use the default
         implementations, never a backend's ``run_operation`` override."""
         self._pool = Pool(backend, max_read_connections=max_read_connections)
@@ -259,6 +262,31 @@ class Database(IntrospectionMixin, OperationsMixin):
             if not items:
                 return []
             return await tx._execute_batch(items)
+
+    # -- staged import ---------------------------------------------------------------
+
+    def staged_import(
+        self,
+        table: str,
+        *,
+        mode: str = "create",
+        pk: str | Sequence[str] | None = None,
+        alter: bool = False,
+        columns: Mapping[str, str | type] | None = None,
+    ) -> StagedImport:
+        """An all-or-nothing import made of short transactions; see
+        ``dblayer.core.staged``. ``mode`` is ``create``, ``replace`` or
+        ``append``. ``pk`` and ``columns`` define the table for ``create``
+        (otherwise the first chunk does); ``alter=True`` lets chunks add
+        columns."""
+        self._check_open()
+        return StagedImport(self, table, mode=mode, pk=pk, alter=alter, columns=columns)
+
+    async def sweep_staged(self, max_age: float | timedelta) -> list[str]:
+        """Drop staging tables (orphans of crashed imports) older than
+        ``max_age`` seconds; returns their names."""
+        self._check_open()
+        return await sweep_staged(self, max_age)
 
     # -- named operations ----------------------------------------------------------
 

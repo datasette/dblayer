@@ -99,3 +99,67 @@ async def test_foreign_keys_off_rebuild_of_referenced_table_keeps_children(db):
     await db.alter_table("p", types={"name": "blob"})
     assert (await db.execute("select count(*) from c")).rows[0][0] == 1
     assert (await db.execute("pragma foreign_key_check")).rows == []
+
+
+# -- staged import replace: dependents (spec: "the suite records which") ------
+
+
+async def _parent_child(db):
+    await db.execute_write("create table p (id integer primary key, name text)")
+    await db.execute_write(
+        "create table c (id integer primary key, pid integer references p(id) on delete cascade)"
+    )
+    await db.execute_write("insert into p values (1, 'a')")
+    await db.execute_write("insert into c values (1, 1)")
+
+
+async def test_replace_recreates_triggers(db):
+    await db.execute_write("create table t (id integer primary key, a text)")
+    await db.execute_write("create table log (msg text)")
+    await db.execute_write(
+        "create trigger t_ins after insert on t begin insert into log values (new.a); end"
+    )
+    async with db.staged_import("t", mode="replace") as imp:
+        await imp.write([{"id": 1, "a": "x"}])
+    # Staging writes did not fire it; it fires on the replaced table.
+    assert (await db.execute("select count(*) from log")).rows[0][0] == 0
+    await db.execute_write("insert into t (a) values ('y')")
+    assert (await db.execute("select msg from log")).rows == [("y",)]
+
+
+async def test_replace_referenced_table_foreign_keys_off(db):
+    # Recorded behaviour: works; children keep referencing the name and are
+    # not cascaded. Rows may now dangle (foreign_key_check reports them).
+    await _parent_child(db)
+    async with db.staged_import("p", mode="replace") as imp:
+        await imp.write([{"id": 2, "name": "b"}])
+    assert (await db.execute("select count(*) from c")).rows[0][0] == 1
+    assert (await db.foreign_keys("c"))[0].other_table == "p"
+    assert len((await db.execute("pragma foreign_key_check")).rows) == 1
+
+
+async def test_replace_referenced_table_foreign_keys_on_refused(tmp_path):
+    # Recorded behaviour: NotSupported at the swap, nothing changed.
+    db = Database(
+        SqliteInProcess(tmp_path / "fk.db", init=lambda c: c.execute("pragma foreign_keys = on"))
+    )
+    try:
+        await _parent_child(db)
+        with pytest.raises(NotSupported):
+            async with db.staged_import("p", mode="replace") as imp:
+                await imp.write([{"id": 1, "name": "new"}])
+        assert (await db.execute("select name from p")).rows == [("a",)]
+        assert (await db.execute("select count(*) from c")).rows[0][0] == 1
+        assert [n for n in (await db.schema()).tables if n.startswith("_dblayer_")] == []
+    finally:
+        await db.close()
+
+
+async def test_replace_preserves_unique_constraint(db):
+    await db.execute_write("create table t (id integer primary key, a text unique)")
+    async with db.staged_import("t", mode="replace") as imp:
+        await imp.write([{"id": 1, "a": "x"}])
+    from dblayer import IntegrityError
+
+    with pytest.raises(IntegrityError):
+        await db.execute_write("insert into t (a) values ('x')")
