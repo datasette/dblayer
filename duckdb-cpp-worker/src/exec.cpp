@@ -182,6 +182,39 @@ bool needs_zone(duckdb_prepared_statement p) {
     return false;
 }
 
+// With max_rows, run SELECT * FROM (sql) LIMIT max_rows + 1 instead, when
+// that prepares and keeps the column names. Through the C API DuckDB
+// computes a recursive CTE to its end before the first row arrives, so
+// without the LIMIT an unbounded one never returns; the duckdb Python
+// package does return its first rows (it is built on another API). The
+// statement as written is kept for anything the wrap would change
+// (duplicate column names become a_1) or cannot parse, so errors and
+// results are the same either way.
+void limit_rows(Conn &c, const std::string &sql, Prepared &p, int64_t limit) {
+    idx_t n = duckdb_prepared_statement_column_count(p.p);
+    std::vector<std::string> names;
+    for (idx_t i = 0; i < n; i++) {
+        const char *name = duckdb_prepared_statement_column_name(p.p, i);
+        std::string low = name ? name : "";
+        for (auto &ch : low) ch = (char)tolower((unsigned char)ch);
+        for (auto &seen : names)
+            if (seen == low) return;
+        names.push_back(low);
+    }
+    std::string body = sql;
+    while (!body.empty() && (isspace((unsigned char)body.back()) || body.back() == ';')) body.pop_back();
+    std::string wrapped = "SELECT * FROM (\n" + body + "\n) LIMIT " + std::to_string(limit);
+    duckdb_prepared_statement q = nullptr;
+    if (duckdb_prepare(c.c, wrapped.c_str(), &q) != DuckDBSuccess ||
+        duckdb_prepared_statement_type(q) != DUCKDB_STATEMENT_TYPE_SELECT ||
+        duckdb_prepared_statement_column_count(q) != n || duckdb_nparams(q) != duckdb_nparams(p.p)) {
+        duckdb_destroy_prepare(&q);
+        return;
+    }
+    duckdb_destroy_prepare(&p.p);
+    p.p = q;
+}
+
 // Our own BEGIN TRANSACTION READ ONLY around a statement on a read
 // connection outside a transaction.
 struct ReadOnlyWrapper {
@@ -286,6 +319,7 @@ void exec_one(Conn &c, Writer &wr, const std::string &sql, const val *params, do
         w_end(w);
         return;
     }
+    if (max_rows >= 0 && p.kind == "SELECT") limit_rows(c, sql, p, max_rows + 1);
     bind_params(p.p, params);
     std::string zone;
     if (needs_zone(p.p)) zone = session_zone(c);

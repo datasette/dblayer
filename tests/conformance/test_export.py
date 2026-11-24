@@ -206,7 +206,12 @@ async def test_byte_cap(db, native):
     assert db.stats().in_use_read == 0
 
 
-async def test_time_limit_mid_stream(db, native):
+async def test_time_limit_mid_stream(db, native, request):
+    if "duckdb-cppworker" in request.node.name:
+        # Through DuckDB's C API a recursive CTE yields no row until it has
+        # finished (the duckdb Python package streams it), so INFINITE never
+        # produces a first chunk there. See duckdb-cpp-worker/README.md.
+        pytest.xfail("DuckDB's C API does not stream recursive CTEs")
     chunks = 0
     with pytest.raises(QueryInterrupted):
         async with db.export(INFINITE, format="csv", time_limit_ms=200, native=native) as s:
