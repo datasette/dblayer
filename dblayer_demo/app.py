@@ -16,7 +16,7 @@ import jinja2
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
@@ -104,9 +104,16 @@ async def homepage(request: Request) -> Response:
             except DblayerError as e:
                 row["error"] = describe_error(e)
         rows.append(row)
+    fleet = _fleet(request)
     return TEMPLATES.TemplateResponse(
-        request, "index.html", {"rows": rows, "fleet": _fleet(request)}
+        request,
+        "index.html",
+        {"rows": rows, "fleet": fleet, "stats": await all_stats(fleet)},
     )
+
+
+async def stats_json(request: Request) -> Response:
+    return JSONResponse(await all_stats(_fleet(request)))
 
 
 async def database_page(request: Request) -> Response:
@@ -264,6 +271,7 @@ async def fleet_page(request: Request) -> Response:
         raise HTTPException(400, f"backend must be one of {', '.join(KINDS)}")
     if state is not None and state not in FLEET_STATES:
         raise HTTPException(400, f"state must be one of {', '.join(FLEET_STATES)}")
+    refresh = 3 if request.query_params.get("refresh") else None
     members = [
         m
         for m in fleet.members.values()
@@ -277,6 +285,7 @@ async def fleet_page(request: Request) -> Response:
             "members": members,
             "kind": kind,
             "state": state,
+            "refresh": refresh,
             "kinds": KINDS,
             "states": FLEET_STATES,
             "counts": state_counts(fleet),
@@ -327,6 +336,7 @@ def create_app(
     routes = [
         Route("/", homepage, name="index"),
         Route("/-/fleet", fleet_page, name="fleet"),
+        Route("/-/stats.json", stats_json, name="stats"),
         Route("/{database}", database_page, name="database"),
         Route("/{database}/-/query", query_page, name="query"),
         Route("/{database}/{table:path}", table_page, name="table"),

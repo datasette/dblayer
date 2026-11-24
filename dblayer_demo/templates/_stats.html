@@ -1,0 +1,36 @@
+{% set f = stats.fleet %}{% set p = stats.process %}
+<div class="stats" id="stats" aria-live="polite">
+{% if f %}
+<span>registered <b data-k="fleet.registered">{{ f.registered }}</b></span>
+<span>awake <b data-k="fleet.awake">{{ f.awake }}</b></span>
+<span>asleep <b data-k="fleet.asleep">{{ f.asleep }}</b></span>
+<span>cold <b data-k="fleet.cold">{{ f.cold }}</b></span>
+<span>open connections <b data-k="fleet.open_connections">{{ f.open_connections }}</b> / <b>{{ f.max_open_connections }}</b> cap</span>
+<span>waiting <b data-k="fleet.waiting">{{ f.waiting }}</b></span>
+<span>wakes <b data-k="fleet.wakes">{{ f.wakes }}</b></span>
+<span>sleeps <b data-k="fleet.sleeps">{{ f.sleeps }}</b></span>
+<span>idle closes <b data-k="fleet.idle_closes">{{ f.idle_closes }}</b></span>
+<span>cap evictions <b data-k="fleet.cap_evictions">{{ f.cap_evictions }}</b></span>
+<span>evictions <b data-k="fleet.evictions">{{ f.evictions }}</b></span>
+{% endif %}
+<span>threads <b data-k="process.threads">{{ p.threads }}</b></span>
+<span>open fds <b data-k="process.open_fds">{{ p.open_fds }}</b></span>
+<span>RSS <b data-k="process.rss_mb">{{ p.rss_mb }}</b> MB (peak <b data-k="process.peak_rss_mb">{{ p.peak_rss_mb }}</b>)</span>
+<span class="meta">live, from <a href="/-/stats.json">/-/stats.json</a></span>
+</div>
+<script>
+// Poll the stats every two seconds and update the numbers in place.
+(function () {
+  var box = document.getElementById("stats");
+  function tick() {
+    fetch("/-/stats.json").then(function (r) { return r.json(); }).then(function (data) {
+      box.querySelectorAll("[data-k]").forEach(function (el) {
+        var parts = el.getAttribute("data-k").split("."), v = data;
+        parts.forEach(function (k) { v = v == null ? v : v[k]; });
+        if (v !== undefined) el.textContent = v;
+      });
+    }).catch(function () {});
+  }
+  setInterval(tick, 2000);
+})();
+</script>
