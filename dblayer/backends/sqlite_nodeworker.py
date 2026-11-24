@@ -55,7 +55,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..errors import NotSupported
+from ..errors import NotSupported, WorkerCrashed
 from ..worker.protocol import available_codecs
 from .duckdb_worker import DatabaseWorker
 from .sqlite_worker import (
@@ -241,6 +241,15 @@ class PipelinedWorkerProcess(WorkerProcess):
         if expect_frames is None:
             return _unwrap(reply, self)
         return reply
+
+    def _dispatch(self, msg: dict[str, Any]) -> None:
+        super()._dispatch(msg)
+        if msg.get("fatal") and self.dead is None:
+            # The worker exits after a fatal reply (it terminated a thread
+            # whose statement would not stop). Stop using it now, even if
+            # the caller was cancelled and never unwraps the reply, so the
+            # pool replaces it before the next request.
+            self.kill(WorkerCrashed(f"worker {self.pid} exited after a fatal error: {msg['error'].get('message')}"))
 
     def cancel(self, owner: object) -> None:
         mid = self._by_owner.get(id(owner))

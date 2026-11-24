@@ -27,13 +27,29 @@ def no_orphan_workers():
     assert live_worker_pids() == []
 
 
-@pytest.fixture(params=["python", "c", "cpool"], ids=["py-worker", "c-worker", "c-pool"])
+@pytest.fixture(params=["python", "c", "cpool", "node"], ids=["py-worker", "c-worker", "c-pool", "node-worker"])
 def make_worker(request: pytest.FixtureRequest):
     """``SqliteWorker``, the C worker (``SqliteCWorker``) or the
     multi-tenant C pool (``SqliteCPool``, one process per test); the C ones
     are skipped when the binary is not built."""
     if request.param == "python":
         yield SqliteWorker
+        return
+    if request.param == "node":  # SQLite-WASM in Node (sqlite_nodeworker)
+        from dblayer.backends.sqlite_nodeworker import SqliteNodeWorker, unavailable
+
+        if reason := unavailable():
+            pytest.skip(reason)
+        if request.node.name.startswith("test_rlimit_as"):
+            pytest.skip("the Node worker does not use RLIMIT_AS (V8 reserves more address space than any useful "
+                        "limit; its WebAssembly memory maximum caps SQLite instead)")
+
+        def make_node(path: Any, **kwargs: Any) -> SqliteWorker:
+            if kwargs.get("init"):
+                pytest.skip("init hooks need the Python worker")
+            return SqliteNodeWorker(path, **kwargs)
+
+        yield make_node
         return
     from dblayer.backends.sqlite_cworker import SqliteCWorker, binary_unavailable
 

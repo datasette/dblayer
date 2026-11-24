@@ -75,9 +75,11 @@ async def test_max_result_bytes_stops_fetching_in_the_worker(tmp_path, make_work
 
 
 def test_memory_limit_capability_is_linux_only(tmp_path, make_worker):
-    caps = make_worker(tmp_path / "c.db").capabilities
+    backend = make_worker(tmp_path / "c.db")
+    caps = backend.capabilities
     assert caps.hard_kill
-    assert caps.memory_limit is LINUX
+    # The Node worker's WebAssembly memory maximum holds on every platform.
+    assert caps.memory_limit is (LINUX or type(backend).__name__ == "SqliteNodeWorker")
 
 
 @linux_only
