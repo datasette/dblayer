@@ -8,9 +8,14 @@ on:
 permissions:
   contents: read
 
+# One run at a time per branch. On main a newer push waits (GitHub keeps only
+# the newest waiting run) rather than cancelling the run in progress: with
+# several pushes a minute, cancelling would mean no run ever finishes, and
+# every job now has a timeout, so a waiting run starts within about 45
+# minutes at worst. Pull requests cancel: only their newest commit matters.
 concurrency:
   group: test-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Hang diagnostics for every pytest run: a test still running after 240 s
 # dumps its threads, asyncio tasks and child processes (tests/hangdump.py,
@@ -23,10 +28,15 @@ env:
   DBLAYER_HANG_DUMP_FILE: ${{ github.workspace }}/hang-dump.txt
 
 jobs:
-  linux:
-    name: Linux, Python ${{ matrix.python-version }}
+  # The Linux suite runs as one job per backend family (DBLAYER_CI_SHARD,
+  # tests/ci_shards.py): every test belongs to exactly one family, so these
+  # jobs together run the whole suite once, each on its own runner with only
+  # the builds its family needs. The core family runs on every supported
+  # Python; the heavy families on the newest.
+  core:
+    name: Linux core, Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -46,16 +56,81 @@ jobs:
           --health-retries 10
     env:
       DBLAYER_TEST_POSTGRES: postgresql://postgres:postgres@localhost:5432/dblayer_test
+      DBLAYER_CI_SHARD: core
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.4.0
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+      # In-process SQLite (stdlib and apsw), PostgreSQL (asyncpg and
+      # psycopg), the API, dialects and the demo app on those backends.
+      - name: Run the core family's tests
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras --group demo pytest -ra
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
+
+  workers:
+    name: Linux SQLite workers, Python 3.14
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DBLAYER_CI_SHARD: workers
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
       # The experimental C worker (cworker/): downloads the pinned SQLite
       # amalgamation and builds one binary, so the sqlite-cworker tests run.
       - name: Build the C worker
         run: make -C cworker
+      - name: Run the SQLite worker family's tests
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras --group demo pytest -ra
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
+
+  duckdb:
+    # In-process DuckDB and the Python DuckDB worker. The C++ and Rust
+    # DuckDB workers are built and tested by their own jobs below.
+    name: Linux DuckDB, Python 3.14
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DBLAYER_CI_SHARD: duckdb
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - name: Run the DuckDB family's tests
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras --group demo pytest -ra
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
+
+  wasm-node:
+    name: Linux SQLite in WebAssembly and Node.js, Python 3.14
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DBLAYER_CI_SHARD: wasm-node
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
       # SQLite in WebAssembly (sqlite-wasm): a cached, checksummed wasi-sdk
       # plus about 10 s of compiling.
       - uses: actions/cache@v4
@@ -71,9 +146,70 @@ jobs:
           node-version: "24"
       - name: Install the Node worker's npm packages
         run: npm ci --prefix nodeworker
-      # The demo group (starlette, httpx, ...) runs tests/demo against every
-      # backend, PostgreSQL included; without it those tests skip.
-      - name: Run tests with every optional backend and the demo app installed
+      - name: Run the WebAssembly and Node family's tests
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras --group demo pytest -ra
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
+
+  pglite:
+    # The experimental PGlite backend (pglite-worker/, PostgreSQL in
+    # WebAssembly in a Node.js process): the pinned npm package, no build.
+    # The server is only for the differential test against psycopg.
+    name: Linux PGlite worker, Python 3.14
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dblayer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DBLAYER_TEST_POSTGRES: postgresql://postgres:postgres@localhost:5432/dblayer_test
+      DBLAYER_CI_SHARD: pglite
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - name: Install the PGlite worker's npm packages
+        run: npm ci --prefix pglite-worker && node pglite-worker/src/main.mjs --version
+      - name: Run the PGlite family's tests
+        run: |
+          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
+          uv run --all-extras --group demo pytest -ra
+      - name: Diagnostics after a failure or timeout
+        if: failure() || cancelled()
+        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
+
+  clickhouse:
+    # ClickHouse embedded in-process (chDB, experimental): a pip extra.
+    name: Linux ClickHouse, Python 3.14
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DBLAYER_CI_SHARD: clickhouse
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - name: Run the ClickHouse family's tests
         run: |
           scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
           uv run --all-extras --group demo pytest -ra
@@ -313,48 +449,6 @@ jobs:
         run: |
           scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
           uv run --all-extras pytest -ra -k "cworker or c-worker" tests/worker tests/faults tests/conformance
-      - name: Diagnostics after a failure or timeout
-        if: failure() || cancelled()
-        run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
-
-  pglite-worker:
-    # The experimental PGlite backend (pglite-worker/, PostgreSQL in
-    # WebAssembly in a Node.js process): the pinned npm package, no build.
-    # Other jobs do not install it, so the pglite tests skip there. The
-    # server is only for the differential test against psycopg.
-    name: PGlite worker (Linux)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: dblayer_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      DBLAYER_TEST_POSTGRES: postgresql://postgres:postgres@localhost:5432/dblayer_test
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.4.0
-        with:
-          python-version: "3.14"
-          enable-cache: true
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: "24"
-      - name: Install the PGlite worker's npm packages
-        run: npm ci --prefix pglite-worker && node pglite-worker/src/main.mjs --version
-      - name: Run the PGlite backend's tests
-        run: |
-          scripts/ci-diag.sh snapshot; scripts/ci-diag.sh monitor 60 & trap "kill $!" EXIT
-          uv run --all-extras --group demo pytest -ra -k pglite tests/conformance tests/worker tests/faults tests/scale tests/demo
       - name: Diagnostics after a failure or timeout
         if: failure() || cancelled()
         run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true

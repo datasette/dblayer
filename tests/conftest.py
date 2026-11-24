@@ -369,6 +369,13 @@ BACKENDS: list[BackendSpec] = [
 ]
 
 
+def pytest_collection_modifyitems(config, items) -> None:  # type: ignore[no-untyped-def]
+    """``DBLAYER_CI_SHARD``: run one backend family (see ``tests/ci_shards.py``)."""
+    from . import ci_shards
+
+    ci_shards.select(config, items)
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_protocol(item, nextitem):  # type: ignore[no-untyped-def]
     """``DBLAYER_HANG_DUMP_S``: dump stacks, tasks and child processes for a
