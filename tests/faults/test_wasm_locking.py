@@ -65,6 +65,17 @@ def _spawn(script: str, *args: str) -> subprocess.Popen[str]:
     )
 
 
+async def _read_sum(db: Database) -> int:
+    """Both halves of the invariant in one read transaction, with a pause
+    between them: with locks, the transaction's SHARED lock keeps the other
+    process's commit out until it ends; without, the commit lands between."""
+    async with db.transaction(mode="read") as tx:
+        a = (await tx.execute("select sum(v) as s from a")).rows[0]["s"]
+        await asyncio.sleep(0.002)
+        b = (await tx.execute("select sum(v) as s from b")).rows[0]["s"]
+    return a + b
+
+
 NATIVE_WRITER = """
 import sqlite3, sys, time
 conn = sqlite3.connect(sys.argv[1], timeout=30, isolation_level=None)
@@ -95,8 +106,7 @@ async def test_no_torn_reads_while_another_process_writes(tmp_path):
 
         async def reader() -> None:
             while p.poll() is None:
-                r = await db.execute("select (select sum(v) from a) + (select sum(v) from b) as s")
-                sums.append(r.rows[0]["s"])
+                sums.append(await _read_sum(db))
 
         await asyncio.gather(*(reader() for _ in range(3)))
         out, err = p.communicate(timeout=60)
@@ -128,11 +138,11 @@ async def test_the_torn_read_test_detects_missing_locks(tmp_path, monkeypatch):
             nonlocal good, bad
             while p.poll() is None:
                 try:
-                    r = await db.execute("select (select sum(v) from a) + (select sum(v) from b) as s")
+                    total = await _read_sum(db)
                 except QueryError:
                     bad += 1
                     continue
-                if r.rows[0]["s"] == 1000:
+                if total == 1000:
                     good += 1
                 else:
                     bad += 1
