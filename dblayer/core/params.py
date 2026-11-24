@@ -55,6 +55,7 @@ __all__ = [
     "rewrite",
     "leading_keyword",
     "dollar_parameters",
+    "statement_count",
 ]
 
 type Params = Mapping[str, Any] | Sequence[Any] | None
@@ -131,6 +132,7 @@ class Placeholder:
 # helper; the grammar itself is handled by the scanner below.
 _INTERESTING = re.compile(r"""['"`\[\-/$:?()]|[A-Za-z_]""")
 _INTERESTING_NO_WORDS = re.compile(r"""['"`\[\-/$:?]""")
+_INTERESTING_SEMICOLONS = re.compile(r"""['"`\[\-/$:?();]|[A-Za-z_]""")
 
 
 def _is_ident_char(ch: str) -> bool:
@@ -146,18 +148,26 @@ def _is_name_char(ch: str) -> bool:
 
 
 def _scan(
-    sql: str, flavor: SqlFlavor, words: bool, dollars: bool = False
+    sql: str,
+    flavor: SqlFlavor,
+    words: bool,
+    dollars: bool = False,
+    semicolons: bool = False,
 ) -> Iterator[tuple[str, int, int]]:
     """Yield significant tokens as ``(kind, start, end)``.
 
     kinds: ``named``, ``qmark``, ``numbered``; when ``words`` is true,
     ``word``, ``(`` and ``)``; when ``dollars`` is true, ``dollar`` (a
-    ``$1`` parameter). Strings, comments and quoted identifiers are
+    ``$1`` parameter); when ``semicolons`` is true (with ``words``), ``;``. Strings, comments and quoted identifiers are
     consumed silently.
     """
     n = len(sql)
     i = 0
-    jump = _INTERESTING if words else _INTERESTING_NO_WORDS
+    jump = (
+        _INTERESTING_SEMICOLONS
+        if semicolons
+        else (_INTERESTING if words else _INTERESTING_NO_WORDS)
+    )
     while i < n:
         m = jump.search(sql, i)
         if m is None:
@@ -229,7 +239,7 @@ def _scan(
                 j += 1
             yield ("numbered" if j > i + 1 else "qmark", i, j)
             i = j
-        elif c == "(" or c == ")":
+        elif c == "(" or c == ")" or c == ";":
             yield (c, i, i + 1)
             i += 1
         else:
@@ -487,6 +497,22 @@ def dollar_parameters(
         for kind, start, end in _scan(sql, flavor, words=False, dollars=True)
         if kind == "dollar"
     )
+
+
+@functools.lru_cache(maxsize=2048)
+def statement_count(sql: str, flavor: SqlFlavor = SQLITE_FLAVOR) -> int:
+    """How many statements ``sql`` holds: ``;``-separated parts with any
+    code in them, ignoring strings, comments and quoted identifiers
+    (``"select 1;"`` is one, ``"select 1; select 2"`` two, ``""`` none)."""
+    count = 0
+    code = False
+    for kind, _start, _end in _scan(sql, flavor, words=True, semicolons=True):
+        if kind == ";":
+            count += code
+            code = False
+        else:
+            code = True
+    return count + code
 
 
 _STATEMENT_WORDS = frozenset(

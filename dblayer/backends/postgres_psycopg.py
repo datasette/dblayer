@@ -67,9 +67,12 @@ queries, settings, native upsert) is shared through ``_postgres_common``.
 * **Closing from another event loop** needs nothing special:
   ``AsyncConnection.close()`` is libpq's ``PQfinish``, which does not use
   the event loop.
-* **Statements without parameters** use the simple query protocol (psycopg's
-  choice), so ``"select 1; select 2"`` runs both and returns the last
-  result, where asyncpg refuses more than one statement.
+* **One statement per call.** psycopg sends a statement without parameters
+  with the simple query protocol, which would run ``"select 1; select 2"``
+  whole and return the *first* result; asyncpg's extended protocol refuses
+  it. The backend counts statements (``core.params.statement_count``) and
+  refuses more than one with ``QueryError`` code ``MULTIPLE_STATEMENTS``,
+  as the DuckDB backend does.
 
 Capability rounding is as for the asyncpg backend.
 """
@@ -83,7 +86,7 @@ from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from ..core.params import POSTGRES_FLAVOR, leading_keyword
+from ..core.params import POSTGRES_FLAVOR, leading_keyword, statement_count
 from ..core.results import Column, Results, WriteResult
 from ..core.schema import Schema
 from ..errors import DblayerError, QueryError, ResourceLimitExceeded
@@ -438,6 +441,14 @@ class PsycopgConnection:
         max_result_bytes: int | None = None,
     ) -> Results:
         args = list(params) if params else []
+        if not args and ";" in sql and statement_count(sql, POSTGRES_FLAVOR) > 1:
+            # psycopg sends a statement without parameters with the simple
+            # query protocol, which would run every statement in it (and
+            # return the first result). One statement per call, as on the
+            # other backends (the extended protocol refuses more itself).
+            raise QueryError(
+                "only one statement can be executed at a time", "MULTIPLE_STATEMENTS"
+            )
         return await self._timed(
             self._execute(sql, args, time_limit_ms, max_rows, max_result_bytes), time_limit_ms
         )

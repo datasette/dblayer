@@ -128,7 +128,7 @@ def app_name(schema: str) -> str:
 DRIVERS = ("asyncpg", "psycopg")
 
 
-def make(driver: str = "asyncpg", **kwargs: Any) -> Any:
+def make(driver: str = "asyncpg", *, dsn: str | None = None, **kwargs: Any) -> Any:
     """A PostgreSQL backend (``Postgres`` on asyncpg, or ``PostgresPsycopg``)
     on a new, empty schema (created lazily on the first connection)."""
     if driver == "asyncpg":
@@ -137,11 +137,12 @@ def make(driver: str = "asyncpg", **kwargs: Any) -> Any:
         from dblayer.backends.postgres_psycopg import PostgresPsycopg as cls
     else:
         raise ValueError(f"unknown driver {driver!r}")
-    if _dsn_database(DSN) != TEST_DATABASE:  # never build one for another database
-        raise RuntimeError(f"refusing DSN {DSN!r}: it must name {TEST_DATABASE!r}")
+    dsn = DSN if dsn is None else dsn
+    if _dsn_database(dsn) != TEST_DATABASE:  # never build one for another database
+        raise RuntimeError(f"refusing DSN {dsn!r}: it must name {TEST_DATABASE!r}")
     schema = kwargs.pop("schema", None) or new_schema()
     kwargs.setdefault("application_name", app_name(schema))
-    return cls(DSN, schema=schema, **kwargs)
+    return cls(dsn, schema=schema, **kwargs)
 
 
 @functools.cache

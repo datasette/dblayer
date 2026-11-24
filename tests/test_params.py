@@ -291,3 +291,26 @@ def test_dollar_parameters():
     sql = "select $1, '$2', $3::int, \"$4\", $tag$ $5 $tag$, a$6, $$ $7 $$ -- $8\n, $10"
     found = [(sql[s:e], n) for s, e, n in dollar_parameters(sql, POSTGRES_FLAVOR)]
     assert found == [("$1", 1), ("$3", 3), ("$10", 10)]
+
+
+@pytest.mark.parametrize(
+    "sql, n",
+    [
+        ("select 1", 1),
+        ("select 1;", 1),
+        ("select 1; select 2", 2),
+        ("select ';' from t", 1),
+        ("select 1 -- ; drop table t\n", 1),
+        ("select 1 /* ; drop */", 1),
+        ("select $$a; b$$", 1),
+        ('select 1 as ";"', 1),
+        ("select 1; -- trailing comment", 1),
+        ("", 0),
+        (";;", 0),
+        ("insert into t values (1); drop table t", 2),
+    ],
+)
+def test_statement_count(sql, n):
+    from dblayer.core.params import statement_count
+
+    assert statement_count(sql, POSTGRES_FLAVOR) == n
