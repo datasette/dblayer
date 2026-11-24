@@ -820,7 +820,15 @@ class PostgresConnection:
     async def rollback(self) -> None:
         # Cheap no-op without a transaction: the pool calls this on every
         # connection it gets back.
-        if self._closed or self._raw.is_closed() or not self._in_tx():
+        if self._closed:
+            return
+        if self._raw.is_closed():
+            # The server ended the session (idle_in_transaction timeout, a
+            # restart...): nothing to roll back, but the pool must not
+            # reuse it, and a failed reset makes the pool close it.
+            self._end_tx()
+            raise ConnectionError("the server closed this connection")
+        if not self._in_tx():
             self._end_tx()
             return
         try:

@@ -218,3 +218,197 @@ async def test_upsert_rows_is_one_statement_per_group(db, spy):
     r = await db.upsert_rows("t", [{"id": 3, "a": "x"}, {"id": 3, "a": "y"}])
     assert r.rowcount == 2 and spy["upsert_rows"] == 1
     assert (await db.execute("select a from t where id = 3")).rows == [("y",)]
+
+
+# -- the spec's "what this backend must demonstrate" ---------------------------
+# 1. The conformance suite passes: the "postgres" entry in conftest.BACKENDS.
+
+
+async def test_two_write_transactions_progress_at_the_same_time(db):
+    # Each transaction waits inside its block until the other has written.
+    # With a single write slot the second could not even begin: deadlock,
+    # caught by the timeout.
+    await db.execute_write("create table t (id integer primary key, who text)")
+    barrier = asyncio.Barrier(2)
+    pids = []
+
+    async def writer(who: str, id: int) -> None:
+        async with db.transaction() as tx:
+            await tx.execute("insert into t values (:id, :who)", {"id": id, "who": who})
+            pids.append((await tx.execute("select pg_backend_pid()")).rows[0][0])
+            await asyncio.wait_for(barrier.wait(), 5)
+            # Both are open and have written; neither sees the other's row.
+            assert (await tx.execute("select who from t")).rows == [(who,)]
+
+    await asyncio.wait_for(asyncio.gather(writer("a", 1), writer("b", 2)), 10)
+    assert len(set(pids)) == 2
+    assert (await db.execute("select who from t order by id")).rows == [("a",), ("b",)]
+    assert db.stats().open_write == 2
+
+
+async def test_concurrent_conflicting_writers_raise_write_conflict(db):
+    # A deadlock between two write transactions surfaces as WriteConflict.
+    from dblayer import WriteConflict
+
+    await db.execute_write("create table t (id integer primary key, n integer)")
+    await db.execute_write("insert into t values (1, 0), (2, 0)")
+    barrier = asyncio.Barrier(2)
+
+    async def writer(first: int, second: int) -> str:
+        try:
+            async with db.transaction() as tx:
+                await tx.execute("update t set n = n + 1 where id = :id", {"id": first})
+                await barrier.wait()
+                await tx.execute("update t set n = n + 1 where id = :id", {"id": second})
+        except WriteConflict:
+            return "conflict"
+        return "ok"
+
+    results = await asyncio.wait_for(asyncio.gather(writer(1, 2), writer(2, 1)), 10)
+    assert sorted(results) == ["conflict", "ok"]
+
+
+async def test_server_rolls_back_a_transaction_whose_client_is_suspended(make_pg):
+    # The event loop is blocked (time.sleep), so the client's own deadline
+    # timer cannot run. The server's idle_in_transaction_session_timeout
+    # (deadline + grace) ends the session, which releases the row lock; a
+    # second client, on another thread, sees that while this one is still
+    # frozen. When the loop resumes, the transaction is expired.
+    import threading
+    import time
+
+    from dblayer import TransactionExpired
+
+    db = make_pg(deadline_ms=300, backend={"server_deadline_grace_ms": 200})
+    await db.execute_write("create table t (id integer primary key, n integer)")
+    await db.execute_write("insert into t values (1, 0)")
+    released_after: list[float] = []
+
+    async def other_client(start: float) -> None:
+        conn = await pg.connect()
+        try:
+            await conn.execute(f'set search_path = "{db._backend.schema}"')
+            await conn.execute("set lock_timeout = '3s'")
+            await conn.execute("update t set n = 100 where id = 1")
+            released_after.append(time.monotonic() - start)
+        finally:
+            await conn.close()
+
+    with pytest.raises(TransactionExpired):
+        async with db.transaction() as tx:
+            await tx.execute("update t set n = n + 1 where id = 1")  # row lock
+            start = time.monotonic()
+            thread = threading.Thread(target=lambda: pg.run_sync(other_client(start)))
+            thread.start()
+            time.sleep(1.5)  # the whole client is suspended
+            frozen_for = time.monotonic() - start
+            thread.join(5)
+            await tx.execute("select 1")
+    assert released_after, "the other client never got the row lock"
+    # Released by the server around 500 ms (300 + 200), while frozen.
+    assert 0.3 < released_after[0] < frozen_for
+    assert (await db.execute("select n from t")).rows == [(100,)]
+    # The dead session was not put back in the pool.
+    async with db.transaction() as tx:
+        await tx.execute("update t set n = 0 where id = 1")
+
+
+async def test_sleep_closes_every_server_connection(make_pg):
+    db = make_pg(max_read_connections=3)
+    schema = db._backend.schema
+    await db.execute_write("create table t (x integer)")
+    await asyncio.gather(*(db.execute("select pg_sleep(0.05)") for _ in range(3)))
+
+    async def write() -> None:
+        async with db.transaction() as tx:
+            await tx.execute("select pg_sleep(0.05)")
+
+    await asyncio.gather(write(), write())  # two writers at once
+    assert db.stats().open_total == 5
+    assert await pg.sessions(schema) == 5
+    await db.sleep()
+    assert db.stats().open_total == 0
+    assert await pg.sessions(schema) == 0
+    # A connection checked out during sleep is closed when it comes back.
+    async with db.transaction() as tx:
+        await tx.execute("select 1")
+        await db.sleep()
+        assert await pg.sessions(schema) == 1
+    assert await pg.sessions(schema) == 0
+    # And the database wakes as usual.
+    assert (await db.execute("select count(*) from t")).rows == [(0,)]
+
+
+async def test_schema_change_by_another_client_seen_after_refresh_and_ttl(make_pg):
+    db = make_pg(backend={"schema_ttl": 0.6})
+    schema = db._backend.schema
+    other = make_pg(schema=schema)  # another client: own backend, same schema
+    await db.execute_write("create table a (x integer)")
+    assert await db.table_names() == ["a"]
+    hint = db.change_hint()
+
+    await other.execute_write("create table b (x integer)")
+    assert await db.table_names() == ["a"]  # cached: no cheap way to know
+    assert db.change_hint() == hint
+    await db.refresh_schema()
+    assert await db.table_names() == ["a", "b"]
+    assert db.change_hint() != hint
+
+    await other.execute_write("create table c (x integer)")
+    assert await db.table_names() == ["a", "b"]
+    await asyncio.sleep(0.7)  # past the TTL: the hint has moved on
+    assert await db.table_names() == ["a", "b", "c"]
+    # Own writes are seen at once, as on every backend.
+    await db.execute_write("create table d (x integer)")
+    assert await db.table_names() == ["a", "b", "c", "d"]
+
+
+async def test_schema_version_tracks_ddl_from_any_client(make_pg):
+    db = make_pg()
+    other = make_pg(schema=db._backend.schema)
+    v0 = await db.schema_version()
+    await other.execute_write("create table t (x integer)")
+    v1 = await db.schema_version()
+    await other.execute_write("insert into t values (1)")
+    assert await db.schema_version() == v1  # data is not schema
+    for ddl in (
+        "alter table t add column y text",
+        "alter table t alter column y set default 'z'",
+        "create index t_x on t (x)",
+        "create view v as select x from t",
+        "create or replace view v as select x, y from t",
+        "alter table t rename column y to z",
+        "alter table t add constraint t_pos check (x > 0)",
+    ):
+        before = await db.schema_version()
+        await other.execute_write(ddl)
+        assert await db.schema_version() != before, ddl
+    assert len({v0, v1}) == 2
+
+
+# -- the parameter rewriter against the real server -----------------------------
+
+
+@pytest.mark.parametrize(
+    "sql, params, expected",
+    [
+        ("select :x::int + 1", {"x": 41}, (42,)),
+        ("select cast(:x as text) || '::' || :y::text", {"x": "a", "y": 1}, ("a::1",)),
+        ("select $$ :nope ? $$ as s, :x as x", {"x": 1}, (" :nope ? ", 1)),
+        ("select $tag$ it's :nope $tag$, :x", {"x": "y"}, (" it's :nope ", "y")),
+        ("select E'it\\'s :nope', :x", {"x": 2}, ("it's :nope", 2)),
+        ("select /* /* :nope */ ? */ :x", {"x": 3}, (3,)),
+        ("select '{\"a\": 1}'::jsonb ? 'a', :k", {"k": "v"}, (True, "v")),
+        ("select :doc::jsonb ? :key", {"doc": '{"a": 1}', "key": "a"}, (True,)),
+        ("select :doc::jsonb ?| array['b', :key]", {"doc": '{"a": 1}', "key": "a"}, (True,)),
+        # [2:3] is a slice; [:n] is an index by parameter (the rewriter's
+        # documented rule); a slice to a parameter needs a space: [1: :n].
+        ("select (array[10, 20, 30])[2:3], (array[10, 20, 30])[:n]", {"n": 1}, ([20, 30], 10)),
+        ("select (array[10, 20, 30])[1: :n]", {"n": 2}, ([10, 20],)),
+        ("select ? || ?, ?::int * 2", ["a", "b", "21"], ("ab", 42)),
+        ('select 1 as ":x"', None, (1,)),
+    ],
+)
+async def test_rewriter_against_server(db, sql, params, expected):
+    r = await db.execute(sql, params)
+    assert tuple(r.rows[0]) == expected
