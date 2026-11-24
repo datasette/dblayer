@@ -1,0 +1,17 @@
+{
+  "name": "dblayer-pglite-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Experimental dblayer worker: PostgreSQL compiled to WebAssembly (PGlite) in a Node.js process, speaking docs/worker-protocol.md",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.17"
+  }
+}

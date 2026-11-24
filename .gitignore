@@ -28,3 +28,7 @@ duckdb-cpp-worker/vendor/
 
 # Node worker (nodeworker/): `npm ci --prefix nodeworker` installs here
 nodeworker/node_modules/
+
+# PGlite worker (pglite-worker/): `npm ci --prefix pglite-worker` installs here
+pglite-worker/node_modules/
+pglite-worker/scratch/
