@@ -311,9 +311,8 @@ def _param(v: Any) -> tuple[str, str]:
             return "Int64", str(v)
         if 0 <= v < 2**64:
             return "UInt64", str(v)
-        if -(2**127) <= v < 2**127:
-            return "Int128", str(v)
-        return "Int256", str(v)
+        # Int128/Int256 exist, but come back through Arrow as raw bytes.
+        raise ParameterError(f"integer {v} does not fit in 64 bits", code="BAD_PARAMETERS")
     if isinstance(v, float):
         if v != v:
             return "Float64", "nan"
