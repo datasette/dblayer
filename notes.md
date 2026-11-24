@@ -121,3 +121,21 @@ Simon agreed to raise the floor from the spec's 3.11 to 3.12. The SQLite backend
 - **Operations on a `tx` shared between tasks are not atomic**; a per-operation lock would fix it.
 - **The orphan sweep can delete a live import owned by another process** if it is older than `max_age`. A heartbeat row or an advisory lock would close this.
 - **Process note:** vague "commit when a chunk passes" briefs produced one commit per milestone. A named list of commit points plus a 10-minute ceiling produced eleven.
+
+## Upstream suggestions log (sqlite-utils and Datasette)
+
+Kept from 2026-11-23 on. Each entry is a credible bug fix or feature change for another project, with how well it has been checked. "Subagent-reported" means a subagent saw it while building; nobody has yet written a minimal reproduction against the upstream project itself.
+
+### sqlite-utils
+
+- **`transform()` drops triggers.** Dropping the old table drops its triggers and `transform` does not recreate them. dblayer's rebuild replays them from `sqlite_master`. Subagent-reported.
+- **`transform()` silently loses CHECK constraints, `STRICT` and `WITHOUT ROWID`.** The new table is built from column definitions only. Suggest either carrying them over or refusing with an error; dblayer refuses. Subagent-reported.
+- **`transform()` inside a transaction with `foreign_keys=ON`.** The `defer_foreign_keys` approach either cascade-deletes child rows when the old table is dropped, or fails at COMMIT with "FOREIGN KEY constraint failed" although `PRAGMA foreign_key_check` is empty. Subagent-reported on SQLite 3.53; needs a minimal script before filing.
+- **Drop-and-rename fails when a view names the table** ("error in view v: no such table: main.p"). `PRAGMA legacy_alter_table=ON` around the rename avoids it. Applies to `transform()` on a table with a dependent view. Subagent-reported.
+- **Prefer native `ALTER TABLE ... RENAME COLUMN` for pure renames.** SQLite rewrites indexes, triggers, views and child foreign keys itself, which a rebuild does not. Feature suggestion.
+
+### Datasette
+
+- **`rowcount` is -1 for `WITH ... INSERT/UPDATE/DELETE`** in Python's `sqlite3`. Anything in Datasette that reports rows affected from `cursor.rowcount` is wrong for CTE-prefixed writes; `select changes()` on the same connection gives the right number. Subagent-reported; not yet checked against Datasette's write API.
+- **A time limit or cancel that arrives before a statement starts is lost,** because `sqlite3_interrupt` on an idle connection is a no-op. Relevant to any future "cancel this query" feature in Datasette, which would need to re-interrupt until the call returns. Subagent-reported.
+- **Readers can block a writer's COMMIT in rollback-journal mode** for up to `busy_timeout`. Suggests Datasette should recommend or default to WAL for mutable databases. Subagent-reported.
