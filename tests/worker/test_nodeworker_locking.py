@@ -38,6 +38,8 @@ import pytest
 from dblayer import Database, QueryError
 from dblayer.backends.sqlite_nodeworker import SqliteNodeWorker, find_node, find_script, unavailable
 
+from ..helpers import wait_until
+
 UNAVAILABLE = unavailable()
 pytestmark = pytest.mark.skipif(UNAVAILABLE is not None, reason=UNAVAILABLE or "")
 
@@ -91,9 +93,14 @@ async def test_the_guard_locks_native_sqlite_out(tmp_path):
             _native(path, timeout=0).execute("select count(*) from t")
         # the worker's own connections are not affected by its guard
         assert (await db.execute("select count(*) from t")).rows == [(1,)]
+        proc = db._backend.process  # type: ignore[attr-defined]
     finally:
         await db.close()
-    # the worker gone, the file is free
+    # The worker gone, the file is free. close() does not wait for the
+    # process to exit, and the guard goes only with it (as documented in
+    # sqlite_nodeworker), so wait for the exit: asserting straight after
+    # close() failed once on Linux CI with "database is locked".
+    await wait_until(lambda: proc.popen.poll() is not None)
     assert _native(path, timeout=0).execute("select count(*) from t").fetchall() == [(1,)]
 
 
