@@ -9,6 +9,8 @@ import pytest
 
 from dblayer import Database, Registry
 
+from ..helpers import EVENTUALLY_S, wait_until
+
 SLOW = (
     "with recursive c(x) as (select 1 union all select x + 1 from c where x < 50000) "
     "select count(*) from c"
@@ -49,21 +51,23 @@ async def test_caller_waits_when_nothing_is_idle(make_backend):
         await a.execute_write("create table t (x integer)")
         await b.execute_write("create table t (x integer)")
         release = asyncio.Event()
+        held = []
 
         async def hold(db):
             async with db.transaction() as tx:
                 await tx.execute("insert into t (x) values (1)")
+                held.append(db)
                 await release.wait()
 
         holders = [asyncio.create_task(hold(a)), asyncio.create_task(hold(b))]
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: len(held) == 2)
         reader = asyncio.create_task(c.execute("select 42"))
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: registry._hub.waiting == 1)
         assert not reader.done()
         assert registry._hub.waiting == 1
         assert registry._hub.open == 2
         release.set()
-        assert (await asyncio.wait_for(reader, 2)).rows == [(42,)]
+        assert (await asyncio.wait_for(reader, EVENTUALLY_S)).rows == [(42,)]
         await asyncio.gather(*holders)
         assert registry._hub.open <= 2
 
@@ -73,22 +77,24 @@ async def test_cancelled_waiter_does_not_leak_a_place(make_backend):
         a, c, d = (registry.add(n, Database(make_backend())) for n in "acd")
         await a.execute_write("create table t (x integer)")
         release = asyncio.Event()
+        holding = asyncio.Event()
 
         async def hold():
             async with a.transaction() as tx:
                 await tx.execute("insert into t (x) values (1)")
+                holding.set()
                 await release.wait()
 
         holder = asyncio.create_task(hold())
-        await asyncio.sleep(0.02)
+        await holding.wait()
         waiter = asyncio.create_task(c.execute("select 1"))
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: registry._hub.waiting == 1)
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
         release.set()
         await holder
-        assert (await asyncio.wait_for(d.execute("select 7"), 2)).rows == [(7,)]
+        assert (await asyncio.wait_for(d.execute("select 7"), EVENTUALLY_S)).rows == [(7,)]
         assert registry._hub.open == 1
         assert registry._hub.waiting == 0
 
@@ -97,7 +103,7 @@ async def test_checked_in_connection_goes_to_a_waiter(make_backend):
     async with Registry(max_open_connections=1) as registry:
         a, b = (registry.add(n, Database(make_backend())) for n in "ab")
         first = asyncio.create_task(a.execute(SLOW))
-        await asyncio.sleep(0.005)
+        await wait_until(lambda: registry._hub.open == 1)  # a holds the place
         second = asyncio.create_task(b.execute("select 1"))
         await asyncio.gather(first, second)
         # a's connection was closed on check-in to make room for b.
