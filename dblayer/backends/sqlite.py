@@ -21,6 +21,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import functools
 import os
 import sqlite3
@@ -28,7 +30,7 @@ import threading
 import time
 import urllib.parse
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Executor
 from pathlib import Path
 from typing import Any
@@ -134,6 +136,9 @@ def _row_bytes(row: Sequence[Any]) -> int:
         else:
             size += 8
     return size
+
+
+_REINTERRUPT_S = 0.005
 
 
 class _TimeLimit:
@@ -341,11 +346,52 @@ class SqliteConnection:
         self._raw = raw
         self.write = write
         self._closed = False
+        # Cancellation, shared between the event loop and the worker
+        # thread: see _on_cancel.
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._active = False
+        self._stmt = 0
 
     async def _run[T](self, fn: Callable[..., T], *args: Any) -> T:
-        return await run_blocking(
-            self._backend.executor, fn, *args, on_cancel=self._raw.interrupt
-        )
+        self._cancelled = False
+        return await run_blocking(self._backend.executor, fn, *args, on_cancel=self._on_cancel)
+
+    def _on_cancel(self) -> None:
+        """The awaiting task was cancelled (event loop thread).
+
+        ``sqlite3_interrupt()`` is a no-op when no statement is running, so
+        one call made just before the thread steps into the statement is
+        lost and an unbounded query then runs forever. A statement that has
+        not started sees ``_cancelled`` instead; one that is running (or
+        about to) is interrupted again every few ms until it returns. Only
+        the statement itself is interrupted, never what runs after it."""
+        with self._lock:
+            self._cancelled = True
+            stmt = self._stmt
+        self._interrupt_while_active(asyncio.get_running_loop(), stmt)
+
+    def _interrupt_while_active(self, loop: asyncio.AbstractEventLoop, stmt: int) -> None:
+        with self._lock:
+            if not self._active or self._stmt != stmt:
+                return
+            self._raw.interrupt()
+        loop.call_later(_REINTERRUPT_S, self._interrupt_while_active, loop, stmt)
+
+    @contextlib.contextmanager
+    def _statement(self) -> Iterator[None]:
+        """Worker-thread side of a statement that may run for a long time:
+        refuse to start once cancelled, and mark it active meanwhile."""
+        with self._lock:
+            if self._cancelled:
+                raise sqlite3.OperationalError("interrupted")
+            self._stmt += 1
+            self._active = True
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._active = False
 
     # -- execute ---------------------------------------------------------------
 
@@ -378,7 +424,7 @@ class SqliteConnection:
             # skips or by WITHOUT ROWID tables. Comparing before and after
             # tells us whether *this* statement inserted a rowid row.
             rowid_before = raw.execute("select last_insert_rowid()").fetchone()[0]
-        with _TimeLimit(raw, time_limit_ms):
+        with _TimeLimit(raw, time_limit_ms), self._statement():
             cur = raw.execute(sql, params)
             try:
                 description = cur.description
@@ -449,7 +495,8 @@ class SqliteConnection:
 
     async def execute_many(self, sql: str, params_seq: Sequence[NativeParams]) -> WriteResult:
         def run() -> WriteResult:
-            cur = self._raw.executemany(sql, params_seq)
+            with self._statement():
+                cur = self._raw.executemany(sql, params_seq)
             try:
                 return WriteResult(rowcount=cur.rowcount)
             finally:
