@@ -139,3 +139,19 @@ Kept from 2026-11-23 on. Each entry is a credible bug fix or feature change for 
 - **`rowcount` is -1 for `WITH ... INSERT/UPDATE/DELETE`** in Python's `sqlite3`. Anything in Datasette that reports rows affected from `cursor.rowcount` is wrong for CTE-prefixed writes; `select changes()` on the same connection gives the right number. Subagent-reported; not yet checked against Datasette's write API.
 - **A time limit or cancel that arrives before a statement starts is lost,** because `sqlite3_interrupt` on an idle connection is a no-op. Relevant to any future "cancel this query" feature in Datasette, which would need to re-interrupt until the call returns. Subagent-reported.
 - **Readers can block a writer's COMMIT in rollback-journal mode** for up to `busy_timeout`. Suggests Datasette should recommend or default to WAL for mutable databases. Subagent-reported.
+
+## 2026-11-23: continuous integration
+
+### Built
+
+- `.github/workflows/test.yml` runs on every push to `main` and on pull requests. Three jobs: Linux on Python 3.12, 3.13 and 3.14 with a PostgreSQL 18 service container and all optional backends installed; macOS on 3.14; and a "stdlib-only" Linux job with no extras, which proves the core and SQLite backends need only the standard library.
+- First green run: all five jobs passed. This is the first time the suite has run on Linux, so the `/proc/self/fd` branch of the file-descriptor helper is now exercised too.
+
+### Found
+
+- `astral-sh/setup-uv` publishes no floating major tag (`@v10` does not resolve), so it is pinned to `v10.4.0`.
+- With subagents pushing every few minutes, `cancel-in-progress: true` meant no run ever finished. It is now `false`: the running run completes and only the newest queued one is kept.
+
+### Idea
+
+- CI gives a Linux machine for the worker backend's hard-limit tests (`RLIMIT_AS`, kill), which cannot run on this Mac. Milestone 4's fault tests should be written to run there.
