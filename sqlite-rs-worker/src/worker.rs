@@ -2168,11 +2168,18 @@ fn dispatch(sh: &Arc<Shared>, msg: Value) {
         match lane_of_request(&st, target) {
             Some((_, ctl, true)) => cancel_job(sh, &st, &ctl, R_CANCELLED),
             Some((_, ctl, false)) => ctl.cancelled.store(true, SeqCst),
-            None => {
-                if let Some(lane) = st.streams.get(&target).map(|s| s.lane) {
-                    enqueue(&mut st, lane, Job::new(Kind::CloseStream, Some(target), Value::Nil), false);
-                }
-            }
+            None => {}
+        }
+        // An open stream is also closed, whether or not a job was found
+        // (the C worker's fix, worker.c): the job that last pumped the
+        // stream stays its lane's current job from sending its last frame
+        // until the lane clears it, and a cancel arriving in that window
+        // only marked the finished job, so the stream stayed open with no
+        // reply and its statement active (a stale interrupt then failed the
+        // connection's next statement). A job still pumping fails and drops
+        // the stream first; this close then finds nothing and sends nothing.
+        if let Some(lane) = st.streams.get(&target).map(|s| s.lane) {
+            enqueue(&mut st, lane, Job::new(Kind::CloseStream, Some(target), Value::Nil), false);
         }
         return;
     }

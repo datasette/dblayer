@@ -2379,12 +2379,22 @@ static void dispatch(job *j) {
         pthread_mutex_lock(&g_mu);
         job *found = NULL;
         lane *ln = lane_of_request(target, &found);
-        stream *s = ln ? NULL : stream_find(target);
+        stream *s = stream_find(target);
         if (found && found == ln->current) {
             cancel_job(found, R_CANCELLED);
         } else if (found) {
             atomic_store(&found->cancelled, 1);
-        } else if (s) {
+        }
+        /* An open stream is also closed, whether or not a job was found: a
+         * stream's cursor outlives the request or `more` that last pumped
+         * it, and that job stays its lane's `current` from sending its last
+         * frame until the lane thread clears it. A cancel arriving in that
+         * window only marked the finished job, so the stream stayed open:
+         * no reply ever came, its statement stayed active, and the
+         * interrupt SQLite then never clears failed the connection's next
+         * statement. If the job is still pumping, it fails and drops the
+         * stream first, and this close finds nothing and sends nothing. */
+        if (s) {
             job *c = job_new(J_CLOSE_STREAM);
             c->has_id = 1;
             c->id = target;
