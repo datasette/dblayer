@@ -101,6 +101,29 @@ they skip until the module is built. How locking works without WASI file
 locks, and what is given up (WAL), is in `docs/sqlite-wasm.md`;
 `benchmarks/wasm_overhead.py` measures it against the other SQLite backends.
 
+### DuckDB in a Rust worker (experimental)
+
+`duckdb-rs-worker/` is a DuckDB worker process written in Rust, linked
+against the official prebuilt libduckdb 2.0.1 (the version of the Python
+`duckdb` package, so files are interchangeable). It starts in about 10 ms
+and costs about 2 MB before it opens a database, against about 140 ms and
+45 MB for the Python DuckDB worker, and runs each connection on its own
+thread. Build it (needs cargo and `curl`; it downloads the library once
+into the git-ignored `duckdb-rs-worker/vendor/`, checked against a pinned
+SHA-256):
+
+```bash
+make -C duckdb-rs-worker
+```
+
+`DuckDBRustWorker(path)` (`dblayer/backends/duckdb_rsworker.py`) uses it;
+its tests are `duckdb-rsworker` in the conformance suite,
+`tests/worker/test_duckdb_rsworker.py` and the `duckdb-rsworker` DuckDB
+fault and value-type tests, which skip until the binary exists.
+`DBLAYER_DUCKDB_RS_WORKER=/path/to/binary` points them at another build;
+`make -C duckdb-rs-worker test` runs the Rust unit tests;
+`benchmarks/duckdb_memory.py native` compares it with the Python worker.
+
 ## Demo app
 
 `dblayer_demo/` is a small Datasette-like Starlette app built only on

@@ -183,6 +183,37 @@ class in `cause.type`, the same `sqlite_errorname` as `code`, and the
 module's own `ProgrammingError` texts (binding counts, one statement at a
 time, `Could not decode to UTF-8 ...`).
 
+### Rust DuckDB worker (`duckdb-rs-worker/`)
+
+`dblayer.backends.duckdb_rsworker.DuckDBRustWorker`: the DuckDB engine of
+the Python worker (`DuckDBWorker`), as a Rust program linked against
+libduckdb 2.0.1. One process owns one database file (`DatabaseWorker`
+placement) and every connection of it.
+
+- `hello` adds `"implementation": "rust"`, `"ops": false`,
+  `"native_ops": ["append"]`, `"concurrent": true` and `duckdb_version`
+  (no `sqlite_version` or `python`).
+- `"concurrent": true`: each `open` starts a thread that owns the new
+  connection and runs its requests in arrival order; requests for
+  different connections run at the same time, so the parent sends them
+  without waiting for earlier replies (`ConcurrentWorkerProcess`). `cancel`
+  and `more` are acted on by the main thread at once. Replies are written
+  whole, under one lock.
+- `op` supports one operation, `append` (`args`: `table`, `columns`,
+  `rows` as lists in column order), which inserts through DuckDB's
+  appender; the parent's `insert_rows` uses it after creating or altering
+  the table with the default code. Any other `op` gets `NotSupported`.
+- `open` accepts any engine name containing `duckdb` (the parent sends
+  `dblayer.backends.duckdb_rsworker:engine`); its `config` is
+  `DuckDB.__init__`'s keyword arguments.
+- Results, column type names, value types and errors are those of the
+  Python worker: values are converted as the `duckdb` Python client
+  converts them, then encoded as `protocol.py` encodes those objects
+  (`TIMESTAMP WITH TIME ZONE` is sent as the UTC instant with the session's
+  `TimeZone`, which the parent applies). Errors carry the Python client's
+  exception class in `cause.type` (`_duckdb.CatalogException`) and its
+  messages for parameter binding.
+
 ## Limits, kills and deadlines
 
 | Limit | In the worker (soft) | In the parent (hard) |
