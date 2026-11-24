@@ -122,6 +122,19 @@ async def test_unsupported_parameter_type(db):
         "optimize table items",
         "select 1; drop table items",
         "select 1 format CSV",
+        # The scalar file() is not stopped by readonly=1, and chDB reads any
+        # absolute path with it.
+        "select file('/etc/hosts')",
+        "select `fi\\x6Ce`('/etc/hosts')",
+        "select \"fi\\x6Ce\"('/etc/hosts')",
+        "select * from python('x')",
+        # Lexer agreement: ClickHouse's '# ' comments and backslash escapes
+        # in quoted names hid INTO OUTFILE from the scanner, and the engine
+        # wrote the file (found and fixed here).
+        "select 1 # '\n into outfile '/tmp/dblayer-clickhouse-outfile.txt'",
+        "select 1 as \"a\\\"\" into outfile '/tmp/dblayer-clickhouse-outfile.txt'",
+        "select 1 as `a\\`` into outfile '/tmp/dblayer-clickhouse-outfile.txt'",
+        "select 1 #! '\n into outfile '/tmp/dblayer-clickhouse-outfile.txt'",
     ],
 )
 async def test_untrusted_reads_cannot_write_or_reach_the_host(items, sql):
@@ -129,6 +142,71 @@ async def test_untrusted_reads_cannot_write_or_reach_the_host(items, sql):
         await items.execute(sql)
     assert not Path("/tmp/dblayer-clickhouse-outfile.txt").exists()
     assert (await items.execute("select count() from items")).rows[0][0] == 10
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select * from file('/etc/hosts', 'LineAsString')",
+        "select file('/etc/hosts')",
+        "insert into function file('dblayer-x.csv', 'CSV', 'x Int64') select 1",
+        "insert into items (id, name) values (500, file('/etc/hosts'))",
+        "insert into items (id, name) select 500, line from url('http://127.0.0.1:9/', 'LineAsString')",
+        "create table ft (line String) engine = File('LineAsString', '/etc/hosts')",
+        "create table ft (line String) engine = URL('http://127.0.0.1:9/', 'LineAsString')",
+        "create table ft engine = Memory as select * from s3('http://127.0.0.1:9/x.csv')",
+        "create dictionary dd (id UInt64, v String) primary key id "
+        "source(file(path '/etc/hosts' format 'TSV')) layout(flat()) lifetime(0)",
+        "create or replace dictionary dd (id UInt64) primary key id source(null()) layout(flat()) lifetime(0)",
+        "attach table ft from '/etc' (x String) engine = Memory",
+        "backup table items to File('dblayer-backup')",
+        "select `fi\\x6Ce`('/etc/hosts')",
+    ],
+)
+async def test_writes_cannot_reach_the_host_unless_allowed(items, sql):
+    with pytest.raises(QueryError) as e:
+        await items.execute_write(sql)
+    assert e.value.code == "HOST_ACCESS"
+
+
+async def test_host_access_allowed_on_write_connections(tmp_path):
+    """allow_host_access=True lifts the checks on the write path only."""
+    backend = ch.make(allow_host_access=True)
+    d = Database(backend)
+    try:
+        r = await d.execute_write("select count() > 0 from file('/etc/hosts', 'LineAsString')")
+        assert r.rows == [(1,)] or r.rows == [(True,)]
+        with pytest.raises(QueryError):
+            await d.execute("select file('/etc/hosts')")
+    finally:
+        await d.close()
+        await ch.cleanup(backend)
+
+
+async def test_host_function_lists_cover_this_clickhouse(db):
+    """Every table function and engine of the running ClickHouse is either
+    known safe or refused, so a new version's additions fail here."""
+    from dblayer.backends import clickhouse as mod
+
+    fns = {r[0] for r in (await db.execute("select name from system.table_functions")).rows}
+    engines = {r[0] for r in (await db.execute("select name from system.table_engines")).rows}
+    unknown_fns = fns - mod._SAFE_TABLE_FUNCTIONS - mod._HOST_TABLE_FUNCTIONS
+    assert not unknown_fns, f"classify these table functions: {sorted(unknown_fns)}"
+    host_engines = engines - mod._SAFE_ENGINES
+    for name in sorted(host_engines):
+        with pytest.raises(QueryError):
+            await db.execute_write(f"create table e_{name.lower()} (x String) engine = {name}")
+
+
+async def test_ordinary_sql_is_not_refused(items):
+    """The checks do not catch ordinary names: a column called file, the
+    format() string function, backslashes in strings, a profile column."""
+    await items.execute_write("create table docs (id Int64, file String, profile String) order by id")
+    await items.execute_write("insert into docs values (1, 'a\\\\b', 'p')")
+    r = await items.execute(
+        "select file, format('{}-{}', file, profile), 'file(' as s, `file` from docs # note\n"
+    )
+    assert r.rows == [("a\\b", "a\\b-p", "file(", "a\\b")]
 
 
 async def test_writes_cannot_use_outfile_unless_allowed(items, tmp_path):
@@ -313,6 +391,43 @@ async def test_native_insert_is_used_and_checks_keys(items):
         await items.insert_rows("items", [{"id": 200}, {"id": 200}])
     with pytest.raises(IntegrityError):
         await items.insert_rows("items", [{"id": 100, "name": "again"}])
+
+
+async def test_execute_many_insert_goes_by_column_name(db):
+    """execute_many of INSERT ... VALUES ($1, ...) is sent as one Arrow
+    stream; Arrow columns are matched by name, so the column list in the
+    SQL, not the table's order, decides where each value lands."""
+    await db.execute_write(
+        "create table m (id Int64, a Nullable(String), b Nullable(Float64), d Nullable(Date)) order by id"
+    )
+    async with db.transaction() as tx:
+        r = await tx.execute_many(
+            "insert into m (b, id, a) values (:b, :id, :a)",
+            [{"b": 1.5, "id": 2, "a": "x"}, {"b": None, "id": 1, "a": None}],
+        )
+        assert r.rowcount == 2
+        # A Date column is not converted by the Arrow path: VALUES instead.
+        r = await tx.execute_many(
+            "insert into m (id, d) values (:id, :d)", [{"id": 3, "d": "2024-01-02"}]
+        )
+        assert r.rowcount == 1
+    rows = (await db.execute("select id, a, b, toString(d) from m order by id")).rows
+    assert rows == [(1, None, None, None), (2, "x", 1.5, None), (3, None, None, "2024-01-02")]
+
+
+async def test_many_placeholders_inline_numbers(items):
+    ids = list(range(1, 201))
+    sql = "select count() from items where id in (" + ", ".join(f":p{i}" for i in ids) + ")"
+    r = await items.execute(sql, {f"p{i}": i for i in ids})
+    assert r.rows == [(10,)]
+    from dblayer.backends.clickhouse import bind
+
+    native, values = bind(
+        "select " + ", ".join(f"${i}" for i in range(1, 70)),
+        [-(2**63), 2**64 - 1, 1.5, -2.5, None, True, "s'; drop"] + list(range(62)),
+    )
+    assert native.startswith("select (-9223372036854775808), 18446744073709551615, 1.5, (-2.5), NULL, true, {p7:String}")
+    assert values == {"p7": "s'; drop"}
 
 
 async def test_staged_replace_uses_exchange(items):

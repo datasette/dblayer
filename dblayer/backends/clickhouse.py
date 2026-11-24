@@ -341,19 +341,54 @@ def _param(v: Any) -> tuple[str, str]:
     )
 
 
+_INLINE_NUMBERS_ABOVE = 64
+
+
+def _number_literal(v: Any) -> str | None:
+    """SQL text of a number (or NULL) generated here, never from the
+    caller's text, so it cannot carry SQL; None for anything else."""
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int) and -(2**63) <= v < 2**64:
+        return str(v) if v >= 0 else f"({v})"
+    if isinstance(v, float):
+        if v != v:
+            return "nan"
+        if v in (float("inf"), float("-inf")):
+            return "inf" if v > 0 else "(-inf)"
+        return repr(v) if v >= 0 else f"({v!r})"
+    return None
+
+
 def bind(sql: str, params: NativeParams, suffix: str = "") -> tuple[str, dict[str, str]]:
     """Replace the core's ``$n`` placeholders with ``{pn:Type}`` and return
-    the values in ClickHouse's escaped text form."""
+    the values in ClickHouse's escaped text form.
+
+    ClickHouse parses each typed parameter separately (about 25 us each:
+    an ``IN`` list of 500 took 14 ms, against 2.4 ms as literals), so in a
+    statement with more than 64 placeholders numbers and NULLs are written
+    as literals made here from the Python value; strings and bytes stay
+    parameters."""
     spans = dollar_parameters(sql, CLICKHOUSE_FLAVOR)
     if not spans:
         return sql, {}
     values = list(params.values()) if isinstance(params, Mapping) else list(params)
+    inline = len(spans) > _INLINE_NUMBERS_ABOVE
     out: list[str] = []
     pos = 0
     bound: dict[str, str] = {}
     for start, end, n in spans:
         if n > len(values):
             raise ParameterError(f"no value for parameter ${n}", code="MISSING_PARAMETER")
+        if inline:
+            lit = _number_literal(values[n - 1])
+            if lit is not None:
+                out.append(sql[pos:start])
+                out.append(lit)
+                pos = end
+                continue
         typ, text = _param(values[n - 1])
         name = f"p{n}{suffix}"
         out.append(sql[pos:start])
@@ -377,6 +412,54 @@ _WRITE_KINDS = frozenset(
         "UNDROP", "MOVE", "BACKUP", "RESTORE",
     }
 )
+# Without host access (always so on read connections) these are refused
+# before they reach ClickHouse. readonly=1 refuses table functions, but not
+# the scalar file() function, which reads any file the process can read:
+# chDB does not confine it to user_files_path. The names are every table
+# function and table engine of ClickHouse 26.11 except those that only touch
+# this server's own tables or generate data; a test compares them with
+# system.table_functions and system.table_engines, so a new version's new
+# names fail a test instead of passing unnoticed.
+_SAFE_TABLE_FUNCTIONS = frozenset(
+    {
+        "numbers", "numbers_mt", "zeros", "zeros_mt", "generateRandom", "generateSeries",
+        "generate_series", "values", "null", "merge", "view", "viewIfPermitted", "viewExplain",
+        "loop", "primes", "format", "input", "SQLStandardValues", "fuzzJSON", "fuzzQuery",
+        "obfuscate", "mergeTreeIndex", "mergeTreeProjection", "mergeTreeAnalyzeIndexes",
+        "mergeTreeAnalyzeIndexesUUID", "mergeTreeCodecBlockCounts", "mergeTreeTextIndex",
+    }
+)
+_HOST_TABLE_FUNCTIONS = frozenset(
+    {
+        "arrowstream", "azureBlobStorage", "azureBlobStorageCluster", "bigquery", "cluster",
+        "clusterAllReplicas", "cosn", "dictionary", "elasticsearch", "eval", "executable", "file",
+        "fileCluster", "filesystem", "gcs", "hudi", "hudiCluster", "iceberg", "icebergAzure",
+        "icebergAzureCluster", "icebergCluster", "icebergLocal", "icebergLocalCluster",
+        "icebergS3", "icebergS3Cluster", "jdbc", "mongodb", "mysql", "odbc", "oss", "paimon",
+        "paimonAzure", "paimonAzureCluster", "paimonCluster", "paimonLocal", "paimonS3",
+        "paimonS3Cluster", "postgresql", "prometheusQuery", "prometheusQueryRange", "python",
+        "redis", "remote", "remoteSecure", "s3", "s3Cluster", "sqlite", "timeSeriesData",
+        "timeSeriesMetricFamilies", "timeSeriesMetrics", "timeSeriesSamples",
+        "timeSeriesSelector", "timeSeriesTags", "timeSeriesTimeRanges", "traceView", "url",
+        "urlCluster", "ytsaurus",
+    }
+)
+# Matched without regard to case (a wrong case is an unknown function to
+# ClickHouse, so refusing it costs nothing). "file" is also the scalar
+# function; catboostEvaluate loads a model from a path.
+_HOST_FUNCTIONS = frozenset(n.lower() for n in _HOST_TABLE_FUNCTIONS) | {"catboostevaluate"}
+_SAFE_ENGINES = frozenset(
+    {
+        "MergeTree", "AggregatingMergeTree", "CoalescingMergeTree", "CollapsingMergeTree",
+        "GraphiteMergeTree", "ReplacingMergeTree", "SummingMergeTree",
+        "VersionedCollapsingMergeTree", "Memory", "Log", "TinyLog", "StripeLog", "Null", "Set",
+        "Join", "Buffer", "View", "MaterializedView", "Merge", "GenerateRandom", "Loop", "Alias",
+        "FuzzJSON", "FuzzQuery", "Obfuscate",
+    }
+)
+# ATTACH TABLE t FROM '/dir', BACKUP ... TO File(...), RESTORE name host paths.
+_HOST_STATEMENTS = frozenset({"ATTACH", "BACKUP", "RESTORE"})
+
 _REFUSED = {
     "BEGIN": "BEGIN/COMMIT/ROLLBACK are managed by dblayer (and ClickHouse has no transactions)",
     "START": "BEGIN/COMMIT/ROLLBACK are managed by dblayer (and ClickHouse has no transactions)",
@@ -409,12 +492,21 @@ def _analyse(sql: str, *, host_access: bool) -> _Statement:
         return st
     if kind in _REFUSED:
         raise QueryError(_REFUSED[kind], "STATEMENT_NOT_ALLOWED")
+    if not host_access and kind in _HOST_STATEMENTS:
+        raise QueryError(f"{kind} statements can reach the host; refused", "HOST_ACCESS")
     depth = 0
     prev: str | None = None
+    before: str | None = None
     verb_end: int | None = None
     words: list[tuple[str, int, int, int]] = []
     for tok, start, end in _scan(sql, CLICKHOUSE_FLAVOR, words=True):
         if tok == "(":
+            if not host_access and prev is not None and prev.lower() in _HOST_FUNCTIONS:
+                raise QueryError(
+                    f"{sql[words[-1][1]:words[-1][2]]}() can read or write files, run programs "
+                    "or reach the network; refused",
+                    "HOST_ACCESS",
+                )
             depth += 1
             prev = None
             continue
@@ -427,6 +519,18 @@ def _analyse(sql: str, *, host_access: bool) -> _Statement:
             continue
         w = sql[start:end].upper()
         words.append((w, start, end, depth))
+        if not host_access and kind == "CREATE":
+            if prev == "DICTIONARY" and before in ("CREATE", "REPLACE", "TEMPORARY"):
+                raise QueryError(
+                    "dictionaries can read files and reach the network; refused", "HOST_ACCESS"
+                )
+            if prev == "ENGINE" and sql[start:end] not in _SAFE_ENGINES:
+                raise QueryError(
+                    f"table engine {sql[start:end]} is not allowed (it may reach files or "
+                    "the network)",
+                    "HOST_ACCESS",
+                )
+        before = prev
         if not host_access and ((prev == "INTO" and w == "OUTFILE") or (prev == "FROM" and w == "INFILE")):
             raise QueryError(
                 "INTO OUTFILE / FROM INFILE would touch files on the host; refused",
@@ -830,6 +934,14 @@ class ClickHouse:
         return conn
 
 
+_TSV_ESCAPE = re.compile(r"\\(.)", re.DOTALL)
+_TSV_CHARS = {"n": "\n", "t": "\t", "r": "\r", "0": "\0", "b": "\b", "f": "\f"}
+
+
+def _unescape_tsv(text: str) -> str:
+    return _TSV_ESCAPE.sub(lambda m: _TSV_CHARS.get(m.group(1), m.group(1)), text)
+
+
 def _setting(v: Any) -> str:
     if isinstance(v, bool):
         return "1" if v else "0"
@@ -920,12 +1032,31 @@ class ClickHouseConnection:
     # -- statements ------------------------------------------------------------------
 
     def _check(self, sql: str) -> _Statement:
-        st = _analyse(sql, host_access=self.write and self._backend.allow_host_access)
+        host_access = self.write and self._backend.allow_host_access
+        st = _analyse(sql, host_access=host_access)
+        if not host_access and st.kind is not None and "\\" in sql:
+            # A backslash can spell a name inside a quoted identifier
+            # (`fi\x6Ce` is file): check ClickHouse's own reading too.
+            canonical = self._canonical(sql)
+            if canonical is not None:
+                _analyse(canonical, host_access=False)
         if st.kind is not None and not self.write and st.kind in _WRITE_KINDS:
             raise QueryError(
                 f"attempt to write a read-only connection ({st.kind} statement)", "READ_ONLY"
             )
         return st
+
+    def _canonical(self, sql: str) -> str | None:
+        """The statement as ClickHouse's parser reads it (``formatQuery``:
+        quoted names unescaped where possible); None if it does not parse,
+        in which case running it fails too."""
+        try:
+            data = self._conn.query(
+                "SELECT formatQuery({q:String})", "TSV", params={"q": sql.translate(_ESCAPES)}
+            ).bytes()
+        except Exception:
+            return None
+        return _unescape_tsv(data.decode("utf-8", "replace").removesuffix("\n"))
 
     async def execute(
         self,
@@ -1089,6 +1220,10 @@ class ClickHouseConnection:
         if st.kind is None or not params_seq:
             return WriteResult(rowcount=0)
         values_at = _values_tuple(sql) if st.kind == "INSERT" else None
+        if values_at is not None and _only_placeholders(sql[values_at:]):
+            n = self._insert_arrow(sql[:values_at], params_seq)
+            if n is not None:
+                return WriteResult(rowcount=n)
         if values_at is None:
             total = 0
             for p in params_seq:
@@ -1112,6 +1247,46 @@ class ClickHouseConnection:
                 res = self._conn.query(tag + head + ", ".join(parts), "TSV", params=values)
             total += res.rows_written()
         return WriteResult(rowcount=total)
+
+    def _insert_arrow(self, head: str, params_seq: Sequence[NativeParams]) -> int | None:
+        """``INSERT INTO t (cols) VALUES ($1, ..., $n)`` for many rows, sent as
+        one Arrow stream (about 50 times faster than VALUES with parameters).
+        Arrow columns are matched to the table's by name, so this needs the
+        explicit column list and converts each value to the column's type
+        as the native ``insert_rows`` does. None to decline (no column list,
+        a qualified table name, a type this path does not convert, values
+        that do not make a clean column): the caller uses VALUES."""
+        target = _insert_target(head)
+        if target is None:
+            return None
+        table, cols = target
+        rows = [list(p.values()) if isinstance(p, Mapping) else list(p) for p in params_seq]
+        if any(len(r) != len(cols) for r in rows):
+            return None
+        info = _table_info(self._conn, table)
+        if info is None:
+            return None
+        types = info[0]
+        if any(c not in types for c in cols) or len(set(cols)) != len(cols):
+            return None
+        data = _arrow_stream(cols, [types[c] for c in cols], [dict(zip(cols, r)) for r in rows])
+        if data is None:
+            return None
+        if self._in_tx:
+            self._tx_writes += 1
+        d = self._backend.dialect
+        with self._statement(None) as tag:
+            ins = self._conn.send_insert(
+                f"{tag}INSERT INTO {d.quote_identifier(table)} ({d.quote_identifiers(cols)})",
+                "ArrowStream",
+            )
+            try:
+                ins.append(data)
+                return ins.finish().rows_written
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    ins.cancel()
+                raise
 
     def stream(
         self,
@@ -1294,6 +1469,42 @@ def _values_tuple(sql: str) -> int | None:
                             return toks[k + 1][1] if not sql[e:].strip() else None
             return None
     return None
+
+
+_PLACEHOLDER_TUPLE = re.compile(r"\(\s*\$1(\s*,\s*\$\d+)*\s*\)\s*")
+
+
+_IDENT = r'(?:"(?:[^"]|"")*"|`(?:[^`]|``)*`|[A-Za-z_][A-Za-z0-9_]*)'
+_INSERT_HEAD = re.compile(
+    rf"\s*(?:/\*.*?\*/\s*)?INSERT\s+INTO\s+({_IDENT})\s*\(\s*({_IDENT}(?:\s*,\s*{_IDENT})*)\s*\)\s*VALUES\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _unquote(ident: str) -> str:
+    if ident[0] == '"':
+        return ident[1:-1].replace('""', '"')
+    if ident[0] == "`":
+        return ident[1:-1].replace("``", "`")
+    return ident
+
+
+def _insert_target(head: str) -> tuple[str, list[str]] | None:
+    """Table and column names of ``INSERT INTO t (a, b) VALUES``; None for
+    anything else (no column list, ``db.t``, a SELECT ...)."""
+    m = _INSERT_HEAD.fullmatch(head)
+    if m is None:
+        return None
+    cols = re.findall(_IDENT, m.group(2))
+    return _unquote(m.group(1)), [_unquote(c) for c in cols]
+
+
+def _only_placeholders(tuple_sql: str) -> bool:
+    """``($1, $2, ...)`` in order, nothing else."""
+    if not _PLACEHOLDER_TUPLE.fullmatch(tuple_sql):
+        return False
+    nums = [int(x) for x in re.findall(r"\$(\d+)", tuple_sql)]
+    return nums == list(range(1, len(nums) + 1))
 
 
 def _as_mutation(st: _Statement, sql: str) -> str:

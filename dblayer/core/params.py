@@ -99,7 +99,12 @@ class SqlFlavor:
     nested_block_comments: bool = False
     escape_strings: bool = False
     backslash_strings: bool = False
-    """Every ``'...'`` string takes backslash escapes (ClickHouse)."""
+    """Every ``'...'`` string, and every ``"..."`` and ```...``` quoted
+    name, takes backslash escapes (ClickHouse)."""
+    hash_comments: bool = False
+    """``#`` starts a comment to the end of the line (ClickHouse: ``# `` and
+    ``#!``; any other ``#`` is a syntax error there, so treating every ``#``
+    as a comment never hides text the engine would run)."""
 
 
 SQLITE_FLAVOR = SqlFlavor("sqlite", bracket_identifiers=True)
@@ -117,7 +122,11 @@ DUCKDB_FLAVOR = SqlFlavor(
 # escapes in every '...' string, nested /* */ comments, $$heredoc$$ and
 # `backtick` identifiers; [ ] is an array literal.
 CLICKHOUSE_FLAVOR = SqlFlavor(
-    "clickhouse", dollar_quotes=True, nested_block_comments=True, backslash_strings=True
+    "clickhouse",
+    dollar_quotes=True,
+    nested_block_comments=True,
+    backslash_strings=True,
+    hash_comments=True,
 )
 
 _DEFAULT_FLAVOR = {
@@ -140,9 +149,9 @@ class Placeholder:
 # Characters at which the scanner has to look closely. Everything else is
 # skipped in bulk. This is only a "jump to the next interesting character"
 # helper; the grammar itself is handled by the scanner below.
-_INTERESTING = re.compile(r"""['"`\[\-/$:?()]|[A-Za-z_]""")
-_INTERESTING_NO_WORDS = re.compile(r"""['"`\[\-/$:?]""")
-_INTERESTING_SEMICOLONS = re.compile(r"""['"`\[\-/$:?();]|[A-Za-z_]""")
+_INTERESTING = re.compile(r"""['"`\[\-/$:?()#]|[A-Za-z_]""")
+_INTERESTING_NO_WORDS = re.compile(r"""['"`\[\-/$:?#]""")
+_INTERESTING_SEMICOLONS = re.compile(r"""['"`\[\-/$:?();#]|[A-Za-z_]""")
 
 
 def _is_ident_char(ch: str) -> bool:
@@ -193,9 +202,20 @@ def _scan(
             )
             i = _skip_string(sql, i, backslash)
         elif c == '"':
-            i = _skip_quoted(sql, i, '"')
+            i = _skip_string(sql, i, True, '"') if flavor.backslash_strings else _skip_quoted(sql, i, '"')
         elif c == "`":
-            i = _skip_quoted(sql, i, "`") if flavor.backtick_identifiers else i + 1
+            if not flavor.backtick_identifiers:
+                i += 1
+            elif flavor.backslash_strings:
+                i = _skip_string(sql, i, True, "`")
+            else:
+                i = _skip_quoted(sql, i, "`")
+        elif c == "#":
+            if flavor.hash_comments:
+                end = sql.find("\n", i + 1)
+                i = n if end == -1 else end + 1
+            else:
+                i += 1
         elif c == "[":
             if flavor.bracket_identifiers:
                 end = sql.find("]", i + 1)
@@ -265,7 +285,7 @@ def _scan(
             i = j
 
 
-def _skip_string(sql: str, i: int, backslash: bool) -> int:
+def _skip_string(sql: str, i: int, backslash: bool, q: str = "'") -> int:
     n = len(sql)
     j = i + 1
     while j < n:
@@ -273,8 +293,8 @@ def _skip_string(sql: str, i: int, backslash: bool) -> int:
         if backslash and ch == "\\":
             j += 2
             continue
-        if ch == "'":
-            if j + 1 < n and sql[j + 1] == "'":
+        if ch == q:
+            if j + 1 < n and sql[j + 1] == q:
                 j += 2
                 continue
             return j + 1
