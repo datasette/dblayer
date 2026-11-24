@@ -96,6 +96,36 @@ worker fault and value-type tests) skip until then.
 sanitized one from `make -C duckdb-cpp-worker SANITIZE=1`. See
 `duckdb-cpp-worker/README.md`.
 
+### ClickHouse on chDB (experimental)
+
+`ClickHouse` (`dblayer/backends/clickhouse.py`, extra `clickhouse`) runs
+ClickHouse 26.11 embedded in the Python process through
+[chDB](https://github.com/chdb-io/chdb) 4.5. chDB has no build for Python
+3.15 yet (it loads a per-version pybind11 library), so use
+`uv run --python 3.14 --all-extras ...`; on 3.15 its tests skip and the
+demo lists it as unavailable. One chDB server per process: every
+`ClickHouse` backend of a process is one ClickHouse database in one shared
+data directory, and the server stops when the last connection closes.
+
+What differs, all declared as capability flags: no transactions
+(`transactions`: statements apply as they run; a rolled-back block's
+writes are kept and logged), no enforced keys (`unique_constraints`: named
+operations check keys themselves, plain SQL `INSERT` accepts duplicates),
+no foreign keys, no separate blob type, no duplicate result column names,
+no snapshot reads. Read connections run with `readonly=1`, plus dblayer's
+own refusal of `INTO OUTFILE`, the scalar `file()` function and every
+table function or engine that reaches files, programs or the network
+(write connections too unless `allow_host_access=True`). Every database of
+the process can read the others: use it for data you would put in one
+server. Time limits and cancellation use `KILL QUERY`.
+`engine_export=True` lets ClickHouse write CSV and JSON exports itself
+(about 8x faster, parse-equal rather than byte-identical to the Python
+encoder). Tests: `clickhouse` in the conformance suite and
+`tests/test_clickhouse_backend.py`. `benchmarks/clickhouse.py` compares it
+with DuckDB and SQLite (provisional, under load: group by over 10 million
+rows 48 ms against DuckDB's 24 ms and SQLite's 3.2 s; a point read 4 ms
+against 1.5 and 0.8 ms).
+
 ### In-process SQLite on apsw (experimental)
 
 `SqliteApsw` (`dblayer/backends/sqlite_apsw.py`, extra `apsw`) is the

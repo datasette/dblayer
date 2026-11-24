@@ -1,8 +1,8 @@
 """ClickHouse backend (experimental): chDB, ClickHouse embedded in-process.
 
 Facts this module relies on were checked against chDB 4.5.1 (ClickHouse
-26.11.1.1) by ``scripts/clickhouse_verify.py``; ``docs/clickhouse.md`` has
-the design and the capability matrix.
+26.11.1.1) by ``scripts/clickhouse_verify.py``; the README's ClickHouse
+section has the capability summary.
 
 * **One embedded server per process.** chDB refuses a second data
   directory while any connection to the first is open. So a ``ClickHouse``
@@ -30,9 +30,18 @@ the design and the capability matrix.
   backend counts matching rows first (one extra ``SELECT count()``).
 * **Read connections** run with ``readonly=1``: no writes, no DDL, no
   settings changes, no table functions (``file``, ``url``, ``remote``,
-  ``s3`` ...). ``INTO OUTFILE`` is *not* stopped by ``readonly=1`` and is
-  refused here, with ``FORMAT`` clauses (results are decoded from Arrow),
-  ``SET`` and ``USE``, and more than one statement per call.
+  ``s3`` ...). Two host accesses are *not* stopped by ``readonly=1`` and
+  are refused here: ``INTO OUTFILE`` and the scalar ``file()`` function
+  (chDB reads any absolute path with it). So are ``FORMAT`` clauses
+  (results are decoded from Arrow), ``SET`` and ``USE``, and more than one
+  statement per call. These checks run on the core's scanner, which must
+  read SQL as ClickHouse's lexer does (``#`` comments, backslash escapes
+  in quoted names); SQL containing a backslash is checked again in
+  ClickHouse's own reading of it (``formatQuery``). Write connections get
+  the same host checks unless ``allow_host_access``.
+* **Not isolated:** every database of the process is one ClickHouse
+  server, and ``readonly=1`` reads any of them (``other.table``,
+  ``merge()``, ``system.processes`` shows other connections' SQL).
 * **Time limits** are enforced with ``KILL QUERY`` from a control
   connection (every statement carries a ``/* dblayer-...:n */`` tag), since
   settings cannot change per call on a ``readonly=1`` connection. ClickHouse
@@ -805,6 +814,10 @@ class ClickHouse:
         """Count the rows an UPDATE / DELETE matches before running it (the
         engine does not report it). False: rowcount is -1."""
         self.allow_host_access = allow_host_access
+        """Let *write* connections reach the host: INTO OUTFILE / FROM
+        INFILE, file() / url() / s3() and the other table functions, File /
+        URL / ... engines, dictionaries, ATTACH, BACKUP, RESTORE. Read
+        connections never can."""
         self.export_formats: frozenset[str] = (
             frozenset({"csv", "json"}) if engine_export else frozenset()
         )
@@ -815,8 +828,6 @@ class ClickHouse:
         docs/export-formats.md for text and integers, not identical as the
         contract asks. ``engine_export=True`` turns it on (CSV and the JSON
         shapes) for callers who accept that; the benchmark measures both."""
-        """Let *write* connections use INTO OUTFILE / FROM INFILE. Read
-        connections never can."""
         self.settings = dict(settings or {})
         self.executor = executor
         self.dialect = ClickHouseDialect()

@@ -21,6 +21,28 @@ primary key, user_id, category, value; ``users``: 10,000 rows):
 
 Prints ``uptime``'s load average before each section: other work on the
 machine skews every figure, which are provisional unless run alone.
+
+Provisional results, M-series Mac, 2026-11-24, load average 19-25 (seven
+other agents running), ``--rows 1000000 --big``, chDB 4.5.1, DuckDB and
+SQLite on 2 threads / defaults:
+
+    import chdb 1.36 s; first statement, server down 267 ms; second
+      database while up 133 ms; wake after sleep 39 ms
+    RSS MB: before import 42, after import 180, server up 191,
+      after 1M insert + group by 329, after sleep 329 (not returned)
+                         clickhouse   duckdb    sqlite
+    group by 1M              8 ms      4 ms    412 ms
+    join+group by 1M        11 ms      4 ms    372 ms
+    group by 10M            48 ms     24 ms   3165 ms
+    join+group by 10M       82 ms     64 ms   2962 ms
+    point read (median)    4.0 ms    0.9-1.5   0.6-0.8 ms
+    disk 1M / 10M      9.4 / 156 MB  12 / 107  23 / 238 MB
+    insert_rows 1M: native Arrow 8.1 s, default path (Arrow execute_many)
+      6.4 s, multi-row VALUES ~654 s (scaled from 20,000), row by row
+      3.7 ms a row; DuckDB 1.1 s, SQLite 1.4 s. The key check that the
+      engine does not do (500-key IN lookups) dominates ClickHouse's time.
+    export 1M: CSV engine 0.12 s / Python 1.02 s; JSON engine 0.17 s /
+      Python 1.11 s.
 """
 
 from __future__ import annotations
@@ -205,6 +227,28 @@ async def inserts(root: Path, n: int, results: dict) -> None:
         results[(tag, f"insert_rows {n:,}")] = dt
         print(f"{tag:24} insert_rows {n:,}: {dt:.2f}s ({n / dt:,.0f} rows/s)", flush=True)
         await db.close()
+    # The default path's execute_many sends Arrow too; this is the
+    # multi-row VALUES statement it falls back to (1,000 rows a statement).
+    from dblayer.backends.clickhouse import ClickHouseConnection
+
+    arrow = ClickHouseConnection._insert_arrow
+    ClickHouseConnection._insert_arrow = lambda self, head, params_seq: None  # type: ignore[method-assign]
+    try:
+        db = Database(make("clickhouse", root, "ins_values"), native_operations=False, time_limit_ms=None, deadline_ms=None)
+        await db.create_table("events", cols, pk="id")
+        m = min(n, 20_000)  # ~1,600 rows/s: measured on 20,000 and scaled
+        t0 = time.perf_counter()
+        await db.insert_rows("events", rows[:m], batch_size=100_000)
+        dt = (time.perf_counter() - t0) * n / m
+        results[("clickhouse VALUES batches", f"insert_rows {n:,} (scaled from {m:,})")] = dt
+        print(
+            f"{'clickhouse VALUES batches':24} insert_rows {n:,}: {dt:.2f}s ({n / dt:,.0f} rows/s; "
+            f"{m:,} rows, scaled)",
+            flush=True,
+        )
+        await db.close()
+    finally:
+        ClickHouseConnection._insert_arrow = arrow  # type: ignore[method-assign]
     db = Database(make("clickhouse", root, "ins_rowwise"), time_limit_ms=None, deadline_ms=None)
     await db.create_table("events", cols, pk="id")
     k = 2000
