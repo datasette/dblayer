@@ -1,5 +1,5 @@
 """Split the suite into backend families for CI: ``DBLAYER_CI_SHARD=workers``
-runs only the tests of that family. Every collected test belongs to exactly
+runs only the tests of that family (``core,duckdb``: of those families). Every collected test belongs to exactly
 one family, so the shard jobs together run the whole suite once.
 
 A test's family comes from its backend parameter when it has one (the
@@ -104,11 +104,12 @@ def select(config: pytest.Config, items: list[pytest.Item]) -> None:
     shard = os.environ.get("DBLAYER_CI_SHARD")
     if not shard:
         return
-    if shard not in FAMILIES:
-        raise pytest.UsageError(f"DBLAYER_CI_SHARD={shard!r}: expected one of {', '.join(FAMILIES)}")
+    wanted = {f.strip() for f in shard.split(",")}
+    if wanted - set(FAMILIES):
+        raise pytest.UsageError(f"DBLAYER_CI_SHARD={shard!r}: expected families from {', '.join(FAMILIES)}")
     keep, drop = [], []
     for item in items:
-        (keep if family(item) == shard else drop).append(item)
+        (keep if family(item) in wanted else drop).append(item)
     if drop:
         config.hook.pytest_deselected(items=drop)
         items[:] = keep

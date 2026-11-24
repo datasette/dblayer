@@ -222,9 +222,17 @@ jobs:
         run: scripts/ci-diag.sh snapshot; cat hang-dump.txt 2>/dev/null || true
 
   macos:
-    name: macOS, Python 3.14
+    # The whole suite on macOS, in two halves by backend family (the runner
+    # has 3 CPUs and 7 GB; the suite in one job took 31 minutes of tests).
+    name: macOS ${{ matrix.families }}, Python 3.14
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        families: ["core,duckdb,clickhouse", "workers,wasm-node,pglite"]
+    env:
+      DBLAYER_CI_SHARD: ${{ matrix.families }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.4.0
