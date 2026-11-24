@@ -68,7 +68,7 @@ def test_fleet_mix_adds_up() -> None:
     for size in [0, 1, 9, 10, 30, 1000, 1234]:
         assert sum(fleet_mix(size).values()) == max(size, 0)
     assert fleet_mix(1000) == {
-        "sqlite": 600, "sqlite-cworker": 200, "duckdb": 100, "duckdb-worker": 50,
+        "sqlite": 500, "sqlite-cworker": 200, "sqlite-cpool": 100, "duckdb": 100, "duckdb-worker": 50,
         "postgres": 30, "sqlite-worker": 20,
     }
 
@@ -220,6 +220,12 @@ async def test_one_member_of_every_backend_kind_browses(
         # A C worker member is a SQLite file copied from the SQLite template.
         cw = next(m for m in fleet.members.values() if m.kind == "sqlite-cworker")
         assert cw.path is not None and cw.path.read_bytes()[:16] == b"SQLite format 3\x00"
+        # A multi-tenant C pool member likewise, served by the fleet's own pool.
+        assert "sqlite-cpool" in seen
+        cp = next(m for m in fleet.members.values() if m.kind == "sqlite-cpool")
+        assert cp.path is not None and cp.path.read_bytes()[:16] == b"SQLite format 3\x00"
+        pool = fleet._cpool_instance
+        assert pool is not None and 1 <= len(pool.processes()) <= pool.size
     try:
         import duckdb  # noqa: F401
     except ImportError:

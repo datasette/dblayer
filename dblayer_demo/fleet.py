@@ -16,7 +16,7 @@ import statistics
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dblayer import Database, Registry
 from dblayer.backends.base import Backend
@@ -34,6 +34,9 @@ from .databases import (
     sqlite_worker_backend,
 )
 from .seed import VIEW_NAME, seed
+
+if TYPE_CHECKING:
+    from dblayer.backends.sqlite_cpool import CPool
 
 __all__ = ["Fleet", "FleetMember", "FanoutBusy", "fleet_mix", "KINDS", "FANOUT_MAX"]
 
@@ -53,10 +56,11 @@ MAX_CONCURRENT_MATERIALISE = 8
 class FanoutBusy(Exception):
     pass
 
-KINDS = ("sqlite", "sqlite-cworker", "duckdb", "duckdb-worker", "postgres", "sqlite-worker")
+KINDS = ("sqlite", "sqlite-cworker", "sqlite-cpool", "duckdb", "duckdb-worker", "postgres", "sqlite-worker")
 BACKEND_CLASS = {
     "sqlite": "SqliteInProcess",
     "sqlite-cworker": "SqliteCWorker",
+    "sqlite-cpool": "SqliteCPool",
     "duckdb": "DuckDB",
     "duckdb-worker": "DuckDBWorker",
     "postgres": "Postgres",
@@ -66,6 +70,7 @@ TEMPLATE_KIND = {
     "sqlite": "sqlite",
     "sqlite-worker": "sqlite",
     "sqlite-cworker": "sqlite",
+    "sqlite-cpool": "sqlite",
     "duckdb": "duckdb",
     "duckdb-worker": "duckdb",
 }
@@ -82,6 +87,7 @@ _TOWNS = (
 _KIND_LABEL = {
     "sqlite": "SQLite",
     "sqlite-cworker": "SQLite C worker",
+    "sqlite-cpool": "SQLite multi-tenant C worker",
     "duckdb": "DuckDB",
     "duckdb-worker": "DuckDB worker",
     "postgres": "PostgreSQL",
@@ -92,23 +98,27 @@ _KIND_LABEL = {
 def fleet_mix(size: int) -> dict[str, int]:
     """How many of each backend: mostly in-process SQLite (cheapest asleep
     and awake), 20% SQLite in a C worker process (about 3 ms and 3 MB per
-    awake database, so a process each is affordable), 10% in-process DuckDB
+    awake database, so a process each is affordable), 10% SQLite on the
+    multi-tenant C pool (a thread and about 190 KB per awake database inside
+    two shared processes), 10% in-process DuckDB
     (about 5 MB per awake instance, not all of it returned on sleep), 5%
     DuckDB in a worker process (a process per awake database, gone on
     sleep), 3% PostgreSQL schemas (each awake one holds server connections)
     and 2% SQLite in a Python worker (about 60 ms and 38 MB per process).
-    1,000 gives 600 / 200 / 100 / 50 / 30 / 20."""
+    1,000 gives 500 / 200 / 100 / 100 / 50 / 30 / 20."""
     if size <= 0:
         return {k: 0 for k in KINDS}
     duckdb = round(size * 0.10)
     small = size >= 10
     cworker = max(1, round(size * 0.20)) if small else 0
+    cpool = max(1, round(size * 0.10)) if small else 0
     duckdb_worker = max(1, round(size * 0.05)) if small else 0
     postgres = max(1, round(size * 0.03)) if small else 0
     worker = max(1, round(size * 0.02)) if small else 0
     return {
-        "sqlite": size - cworker - duckdb - duckdb_worker - postgres - worker,
+        "sqlite": size - cworker - cpool - duckdb - duckdb_worker - postgres - worker,
         "sqlite-cworker": cworker,
+        "sqlite-cpool": cpool,
         "duckdb": duckdb,
         "duckdb-worker": duckdb_worker,
         "postgres": postgres,
@@ -161,6 +171,7 @@ class Fleet:
         default_factory=lambda: asyncio.Semaphore(MAX_CONCURRENT_MATERIALISE)
     )
     _hot: list[Database] | None = None
+    _cpool_instance: "CPool | None" = None
 
     def __post_init__(self) -> None:
         c = self.config
@@ -212,7 +223,7 @@ class Fleet:
                     path = self.dir / f"{name}.db"
                 elif kind in ("duckdb", "duckdb-worker"):
                     path = self.dir / f"{name}.duckdb"
-                elif kind in ("sqlite-worker", "sqlite-cworker"):
+                elif kind in ("sqlite-worker", "sqlite-cworker", "sqlite-cpool"):
                     path = self.dir / f"{name}.db"
                 spec = DemoSpec(
                     slug=name,
@@ -265,6 +276,12 @@ class Fleet:
             assert member.path is not None
             # Raises Unavailable (the build command) until the binary exists.
             return sqlite_cworker_backend(member.path)
+        if member.kind == "sqlite-cpool":
+            assert member.path is not None
+            sqlite_cworker_backend(member.path)  # Unavailable (the build command) until built
+            from dblayer.backends.sqlite_cpool import SqliteCPool
+
+            return SqliteCPool(member.path, pool=self._cpool())
         if member.kind == "duckdb-worker":
             assert member.path is not None
             # The same small settings as in-process members; the worker
@@ -286,7 +303,7 @@ class Fleet:
         kinds that cannot run here (DuckDB not installed)."""
         errors: dict[str, str] = {}
         kinds = []
-        if self.mix.get("sqlite") or self.mix.get("sqlite-worker") or self.mix.get("sqlite-cworker"):
+        if any(self.mix.get(k) for k in KINDS if TEMPLATE_KIND.get(k) == "sqlite"):
             kinds.append("sqlite")
         if self.mix.get("duckdb") or self.mix.get("duckdb-worker"):
             kinds.append("duckdb")
@@ -509,8 +526,20 @@ class Fleet:
 
     # -- shutdown --------------------------------------------------------------
 
+    def _cpool(self) -> "CPool":
+        """The fleet's own multi-tenant C pool: two processes for every
+        ``sqlite-cpool`` member, closed with the fleet."""
+        if self._cpool_instance is None:
+            from dblayer.backends.sqlite_cpool import CPool
+
+            self._cpool_instance = CPool(2)
+        return self._cpool_instance
+
     async def close(self) -> None:
         await self.registry.close()
+        if self._cpool_instance is not None:
+            self._cpool_instance.close()
+            self._cpool_instance = None
 
 
 def _duckdb(path: Path, executor: object) -> Backend:

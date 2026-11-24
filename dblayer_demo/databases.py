@@ -390,3 +390,9 @@ async def close_all(demos: list[DemoDatabase]) -> None:
     for demo in demos:
         if demo.db is not None:
             await demo.db.close()
+    if any(d.spec.backend == "SqliteCPool" for d in demos):
+        # The featured database's pool processes would otherwise outlive
+        # the app's event loop (their linger timer dies with it).
+        from dblayer.backends.sqlite_cpool import close_default_pool
+
+        close_default_pool()

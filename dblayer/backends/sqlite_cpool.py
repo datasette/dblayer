@@ -66,7 +66,7 @@ from .sqlite_worker import (
     _Waiter,
 )
 
-__all__ = ["CPool", "SqliteCPool", "MultiWorkerConfig", "MuxWorkerProcess", "default_pool"]
+__all__ = ["CPool", "SqliteCPool", "MultiWorkerConfig", "MuxWorkerProcess", "default_pool", "close_default_pool"]
 
 RETRYABLE_TYPES = frozenset({"execute", "batch", "schema", "schema_version"})
 
@@ -510,6 +510,14 @@ def default_pool() -> CPool:
     if _default is None:
         _default = CPool()
     return _default
+
+
+def close_default_pool() -> None:
+    """Stop the processes of ``default_pool()``, if it was ever used. For
+    an application's shutdown: a process left idle waits for a ``linger``
+    timer on the event loop, which never fires once that loop has ended."""
+    if _default is not None:
+        _default.close()
 
 
 class SqliteCPool(SqliteCWorker):
