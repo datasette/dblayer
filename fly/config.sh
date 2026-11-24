@@ -17,10 +17,11 @@ MAX_LIFETIME_S="${MAX_LIFETIME_S:-10800}"
 # the results off (fetch.sh releases it early), then exits.
 HOLD_S="${HOLD_S:-1800}"
 REPO_URL="${REPO_URL:-https://github.com/datasette/dblayer.git}"
-IMAGE_LABEL="${IMAGE_LABEL:-bench-v1}"
-IMAGE="registry.fly.io/${FLY_APP}:${IMAGE_LABEL}"
-
 FLY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$FLY_DIR/.." && pwd)"
+# The image tag is a hash of what goes into the image, so a changed script
+# always gets a new tag (re-pushing one tag was not picked up reliably).
+IMAGE_LABEL="${IMAGE_LABEL:-bench-$(cat "$FLY_DIR/Dockerfile" "$FLY_DIR"/machine/* | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-12)}"
+IMAGE="registry.fly.io/${FLY_APP}:${IMAGE_LABEL}"
 
 log() { printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*" >&2; }

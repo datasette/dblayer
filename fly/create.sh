@@ -15,6 +15,9 @@ if fly volumes list -a "$FLY_APP" --json | jq -e --arg v "$FLY_VOLUME" '.[] | se
     log "volume $FLY_VOLUME exists"
 else
     log "creating volume $FLY_VOLUME (${FLY_VOLUME_GB} GB) in $FLY_REGION"
+    # --vm-size: place the volume on a host with room for the machine (without
+    # it, the first trial's volume landed on a host that could not start a
+    # performance-8x). No scheduled snapshots: the volume lives for one run.
     fly volumes create "$FLY_VOLUME" -a "$FLY_APP" --region "$FLY_REGION" --size "$FLY_VOLUME_GB" \
-        --require-unique-zone=false --yes
+        --vm-size "$FLY_VM_SIZE" --scheduled-snapshots=false --require-unique-zone=false --yes
 fi

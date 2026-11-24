@@ -28,9 +28,11 @@ LABEL="${BENCH_LABEL:-}"
 REPO_URL="${REPO_URL:-https://github.com/datasette/dblayer.git}"
 PY="${BENCH_PYTHON:-3.14}"
 STARTED=$(date +%s)
+export REF MODE REPO_URL
 
 OUT=/data/out
 SRC=/data/src
+export OUT SRC
 rm -rf "$OUT" /data/tmp
 mkdir -p "$OUT/logs" /data/tmp /data/cache
 export TMPDIR=/data/tmp
@@ -105,7 +107,9 @@ t0=$(date +%s)
 timeout -k 60 $((MAX - HOLD - 1200)) \
     uv run --python "$PY" --all-extras --group demo python benchmarks/run_all.py $mode_flag \
         --out "$OUT/results" --label "$LABEL" 2>&1 | tee "$OUT/logs/run_all.log" | grep -E '^(===|RESULTS_DIR)'
-printf '{"stage": "benchmarks", "status": "%s", "seconds": %d}\n' "${PIPESTATUS[0]}" $(( $(date +%s) - t0 )) >> "$OUT/stages.jsonl"
+rc=${PIPESTATUS[0]}; outcome=ok; [ "$rc" != 0 ] && outcome=failed; [ "$rc" = 124 ] && outcome=timeout
+printf '{"stage": "benchmarks", "status": "%s", "returncode": %d, "seconds": %d}\n' \
+    "$outcome" "$rc" $(( $(date +%s) - t0 )) >> "$OUT/stages.jsonl"
 
 if [ "$RUN_TESTS" = 1 ]; then
     # What is left of the lifetime, keeping the hold and a margin: never past it.
