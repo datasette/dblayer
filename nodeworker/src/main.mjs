@@ -141,11 +141,23 @@ class Executor {
         ...(YOUNG_MB ? { maxYoungGenerationSizeMb: YOUNG_MB } : {}),
         ...(memoryLimitMb ? { maxOldGenerationSizeMb: Math.max(64, memoryLimitMb) } : {}),
       },
-      stdout: true, // the worker's stdout is not our fd 1
-      stderr: false,
+      // Both of the thread's streams come here and go to fd 2 with writeSync:
+      // letting Node pipe them to process.stdout/stderr initialises those
+      // streams, which turns fd 1 non-blocking (and replies then crawl
+      // through EAGAIN). Measured on Node 24.
+      stdout: true,
+      stderr: true,
     });
     if (!wasmModule) compiled.then(() => this.worker.postMessage({ kind: 'module', module: wasmModule }));
-    this.worker.stdout.on('data', (d) => process.stderr.write(d));
+    const toStderr = (d) => {
+      try {
+        fs.writeSync(2, d);
+      } catch {
+        // stderr closed
+      }
+    };
+    this.worker.stdout.on('data', toStderr);
+    this.worker.stderr.on('data', toStderr);
     this.worker.on('message', (m) => this.onMessage(m));
     this.worker.on('error', (e) => this.onError(e));
     this.worker.on('exit', (code) => {
