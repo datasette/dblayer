@@ -126,6 +126,25 @@ async def _cpool_cleanup(backend: Backend) -> None:
     await _reap_workers(backend)
 
 
+_rspool: list = []  # the same for sqlite-rspool (the Rust port of the multi-tenant worker)
+
+
+def _sqlite_rspool(tmp_path: Path) -> Backend:
+    from dblayer.backends.sqlite_rspool import RustPool, SqliteRustPool
+
+    global _counter
+    _counter += 1
+    if not _rspool:
+        _rspool.append(RustPool(2, linger=0))
+    return SqliteRustPool(tmp_path / f"db{_counter}.db", pool=_rspool[0])  # type: ignore[return-value]
+
+
+def _rsworker_available() -> str | None:
+    from dblayer.backends.sqlite_rspool import binary_unavailable
+
+    return binary_unavailable()
+
+
 def _cworker_available() -> str | None:
     from dblayer.backends.sqlite_cworker import binary_unavailable
 
@@ -298,6 +317,9 @@ BACKENDS: list[BackendSpec] = [
     ),
     # Multi-tenant C worker processes shared by every database (sqlite_cpool).
     BackendSpec("sqlite-cpool", _sqlite_cpool, available=_cworker_available, native_operations=True,
+                cleanup=_cpool_cleanup),
+    # The same pool machinery running the Rust worker (sqlite-rs-worker/).
+    BackendSpec("sqlite-rspool", _sqlite_rspool, available=_rsworker_available, native_operations=True,
                 cleanup=_cpool_cleanup),
     # SQLite compiled to WebAssembly, in-process under wasmtime
     # (experimental; `make -C cworker wasm`). Operations run in the parent.

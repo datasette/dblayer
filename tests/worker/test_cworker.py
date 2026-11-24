@@ -31,8 +31,9 @@ from dblayer.backends.sqlite_cworker import (
 from dblayer.backends.sqlite_worker import WorkerConnection, WorkerProcess
 from dblayer.worker.protocol import available_codecs
 
-UNAVAILABLE = binary_unavailable()
-pytestmark = pytest.mark.skipif(UNAVAILABLE is not None, reason=UNAVAILABLE or "")
+# Every test runs on the C worker and on its Rust port (sqlite-rs-worker/),
+# each skipped when not built.
+from ..native_impl import autouse_native_impl, native_impl  # noqa: E402,F401
 
 CODECS = ["json"] + (["msgpack"] if "msgpack" in available_codecs() else [])
 
@@ -40,7 +41,9 @@ CODECS = ["json"] + (["msgpack"] if "msgpack" in available_codecs() else [])
 # -- the binary --------------------------------------------------------------------
 
 
-def test_binary_lookup_order(tmp_path, monkeypatch):
+def test_binary_lookup_order(tmp_path, monkeypatch, native_impl):
+    if native_impl == "rust":
+        pytest.skip("the C worker's lookup (the Rust one: test_rspool.py)")
     real = find_binary()  # from $DBLAYER_CWORKER if set, else the default
     monkeypatch.delenv(ENV_VAR, raising=False)
     if binary_unavailable() is None:
@@ -62,16 +65,17 @@ def test_init_hooks_are_refused(tmp_path):
         SqliteCWorker(tmp_path / "x.db", init=["tests.worker.hooks:hog"])
 
 
-def test_version_flag():
+def test_version_flag(native_impl):
     out = subprocess.run([find_binary(), "--version"], capture_output=True, text=True, check=True).stdout
-    assert out.startswith("dblayer-cworker protocol 1, SQLite 3.")
+    name = "dblayer-cworker" if native_impl == "c" else "dblayer-sqlite-rsworker"
+    assert out.startswith(f"{name} protocol 1, SQLite 3.")
 
 
 # -- through Database --------------------------------------------------------------
 
 
 @pytest.mark.parametrize("codec", CODECS)
-async def test_hello_and_round_trip(tmp_path, codec):
+async def test_hello_and_round_trip(tmp_path, codec, native_impl):
     db = Database(SqliteCWorker(tmp_path / "a.db", codec=codec))
     try:
         await db.execute_write("create table t (id integer primary key, v)")
@@ -81,7 +85,7 @@ async def test_hello_and_round_trip(tmp_path, codec):
         assert r.rows == [(1, b"\x00\xff")]
         conn = db._pool._idle_read[0].conn  # type: ignore[union-attr]
         hello = conn.process.hello
-        assert hello["implementation"] == "c" and hello["ops"] is False
+        assert hello["implementation"] == native_impl and hello["ops"] is False
         assert hello["codec"] == codec
         assert hello["sqlite_version"].startswith("3.")
     finally:

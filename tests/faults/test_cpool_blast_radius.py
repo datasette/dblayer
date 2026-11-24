@@ -20,8 +20,9 @@ import pytest
 from dblayer import Database, QueryInterrupted, WorkerCrashed
 from dblayer.backends.sqlite_cworker import binary_unavailable
 
-UNAVAILABLE = binary_unavailable()
-pytestmark = pytest.mark.skipif(UNAVAILABLE is not None, reason=UNAVAILABLE or "")
+# Every test runs on the C worker and on its Rust port (sqlite-rs-worker/),
+# each skipped when not built.
+from ..native_impl import autouse_native_impl, native_impl  # noqa: E402,F401
 
 EVADING = "select instr(printf('%.*c', 2000000, 'a'), printf('%.*c', 100000, 'a') || 'b')"
 READ = "select count(*), (with recursive c(x) as (select 1 union all select x + 1 from c where x < 100000) select count(*) from c) from t"

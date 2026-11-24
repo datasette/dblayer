@@ -21,8 +21,9 @@ import pytest
 from dblayer.backends.sqlite_cworker import binary_unavailable, find_binary
 from dblayer.worker.protocol import FrameDecoder, frame, get_codec
 
-UNAVAILABLE = binary_unavailable()
-pytestmark = pytest.mark.skipif(UNAVAILABLE is not None, reason=UNAVAILABLE or "")
+# Every test runs on the C worker and on its Rust port (sqlite-rs-worker/),
+# each skipped when not built.
+from ..native_impl import autouse_native_impl, native_impl  # noqa: E402,F401
 
 UNBOUNDED = "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c"
 

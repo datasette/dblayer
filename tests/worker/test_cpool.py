@@ -18,8 +18,9 @@ from dblayer import Database, ResourceLimitExceeded
 from dblayer.backends.sqlite_cworker import SqliteCWorker, binary_unavailable, c_shared_workers
 from dblayer.backends.sqlite_worker import WorkerProcess
 
-UNAVAILABLE = binary_unavailable()
-pytestmark = pytest.mark.skipif(UNAVAILABLE is not None, reason=UNAVAILABLE or "")
+# Every test runs on the C worker and on its Rust port (sqlite-rs-worker/),
+# each skipped when not built.
+from ..native_impl import autouse_native_impl, native_impl  # noqa: E402,F401
 
 COUNTING = "with recursive c(x) as (select 1 union all select x + 1 from c where x < 2000000) select count(*) from c"
 
@@ -228,12 +229,12 @@ def test_options_that_belong_to_the_pool_are_refused(tmp_path):
     assert b.pool is pool and b.capabilities.hard_kill
 
 
-async def test_hello_of_a_pool_process(tmp_path, pool):
+async def test_hello_of_a_pool_process(tmp_path, pool, native_impl):
     db = make(pool, tmp_path / "h.db")
     try:
         await db.execute("select 1")
         hello = pool.processes()[0].hello
-        assert hello["multi"] is True and hello["implementation"] == "c"
+        assert hello["multi"] is True and hello["implementation"] == native_impl
         assert isinstance(pool.processes()[0], WorkerProcess)
     finally:
         await db.close()
