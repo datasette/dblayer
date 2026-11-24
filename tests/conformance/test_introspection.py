@@ -134,7 +134,9 @@ async def test_schema_cache_sees_own_writes(db):
 
 async def test_schema_cache_sees_other_writers(make_backend):
     # Two Database objects on the same backend: changes through one are seen
-    # by the other's cache (via change hint or version check).
+    # by the other's cache (via change hint or version check). A backend
+    # with no cheap change hint (PostgreSQL: a TTL token) sees them after
+    # the TTL or refresh_schema(); its own tests cover the TTL.
     from dblayer import Database
 
     backend = make_backend()
@@ -144,6 +146,8 @@ async def test_schema_cache_sees_other_writers(make_backend):
         await a.execute_write("create table one (x integer)")
         assert await b.table_names() == ["one"]
         await a.execute_write("create table two (x integer)")
+        if not b.capabilities.cheap_change_hint:
+            await b.refresh_schema()
         assert sorted(await b.table_names()) == ["one", "two"]
     finally:
         await a.close()

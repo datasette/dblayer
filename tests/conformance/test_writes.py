@@ -116,7 +116,11 @@ async def test_writes_are_serialised(items):
 
     await asyncio.gather(*(bump() for _ in range(25)))
     assert (await items.execute("select n from items where id = 1")).rows[0][0] == 25
-    assert items.stats().open_write <= 1
+    if items.capabilities.concurrent_writers:
+        # No write queue: the server arbitrates, up to the pool's writers.
+        assert 1 <= items.stats().open_write <= items._get_pool().max_write_connections
+    else:
+        assert items.stats().open_write <= 1
 
 
 async def test_write_time_limit_rolls_back_statement(items):
