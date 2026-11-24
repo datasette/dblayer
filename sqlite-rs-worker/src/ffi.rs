@@ -118,6 +118,16 @@ unsafe extern "C" {
     fn dup(fd: c_int) -> c_int;
     fn dup2(fd: c_int, fd2: c_int) -> c_int;
     fn signal(sig: c_int, handler: usize) -> usize;
+    fn pthread_attr_init(attr: *mut c_void) -> c_int;
+    fn pthread_attr_setstacksize(attr: *mut c_void, size: usize) -> c_int;
+    fn pthread_attr_destroy(attr: *mut c_void) -> c_int;
+    fn pthread_create(
+        thread: *mut usize,
+        attr: *const c_void,
+        start: extern "C" fn(*mut c_void) -> *mut c_void,
+        arg: *mut c_void,
+    ) -> c_int;
+    fn pthread_detach(thread: usize) -> c_int;
     fn _exit(code: c_int) -> !;
     #[cfg(target_os = "linux")]
     fn getrlimit(resource: c_int, rl: *mut RLimit) -> c_int;
@@ -597,6 +607,52 @@ pub fn set_rlimit_as(_mb: i64) -> bool {
 
 /// The safe wrappers against the real SQLite: run under ASan and TSan
 /// (`make asan`, `make tsan`); Miri cannot call C, so they are ignored there.
+/// Start a detached thread running `f` with a `stack`-byte stack, straight
+/// through pthread_create, as the C worker starts its lanes. Not
+/// `std::thread`: std maps a signal stack for every new thread from inside
+/// that thread, and if that mmap fails (under the worker's RLIMIT_AS, with
+/// SQLite holding most of it) std panics there, which with panic=abort
+/// takes the whole process and every tenant on it down. Here every
+/// allocation happens before pthread_create returns, so a thread that
+/// cannot be had is an error for the caller to report. Without the signal
+/// stack a stack overflow is a plain SIGSEGV (as in the C worker), not
+/// std's message.
+pub fn spawn_detached(stack: usize, f: Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<()> {
+    extern "C" fn start(arg: *mut c_void) -> *mut c_void {
+        // SAFETY: `arg` is the Box leaked below, handed to exactly one thread.
+        let f = unsafe { Box::from_raw(arg as *mut Box<dyn FnOnce() + Send>) };
+        f();
+        std::ptr::null_mut()
+    }
+    // pthread_attr_t: 56 bytes on glibc x86_64, 64 on aarch64 and macOS.
+    let mut attr = [0u64; 16];
+    let a = attr.as_mut_ptr() as *mut c_void;
+    let arg = Box::into_raw(Box::new(f)) as *mut c_void;
+    // SAFETY: plain POSIX calls on a zeroed attr buffer larger than any
+    // platform's pthread_attr_t.
+    let rc = unsafe {
+        let mut rc = pthread_attr_init(a);
+        if rc == 0 {
+            rc = pthread_attr_setstacksize(a, stack);
+            if rc == 0 {
+                let mut t: usize = 0;
+                rc = pthread_create(&mut t, a, start, arg);
+                if rc == 0 {
+                    pthread_detach(t);
+                }
+            }
+            pthread_attr_destroy(a);
+        }
+        rc
+    };
+    if rc != 0 {
+        // SAFETY: no thread was created, so `arg` is still ours.
+        drop(unsafe { Box::from_raw(arg as *mut Box<dyn FnOnce() + Send>) });
+        return Err(std::io::Error::from_raw_os_error(rc));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

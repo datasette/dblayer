@@ -2134,10 +2134,10 @@ fn open_lane(sh: &Arc<Shared>, job: Job) {
     q.push_back(job);
     st.lanes.insert(lane, Lane { is_main: false, q, current: None, conn: None, cond: Arc::new(Condvar::new()) });
     let sh2 = sh.clone();
-    let spawned = std::thread::Builder::new()
-        .name(format!("lane-{lane}"))
-        .stack_size(LANE_STACK_BYTES)
-        .spawn(move || lane_main(sh2, lane));
+    // A lane starts under the process's RLIMIT_AS: ffi::spawn_detached, so
+    // a thread that cannot be had is this open's ResourceLimitExceeded,
+    // never an abort of every tenant (as std::thread could; see there).
+    let spawned = crate::ffi::spawn_detached(LANE_STACK_BYTES, Box::new(move || lane_main(sh2, lane)));
     match spawned {
         Ok(_) => st.nthread_lanes += 1,
         Err(e) => {

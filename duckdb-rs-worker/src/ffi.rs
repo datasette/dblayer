@@ -1049,6 +1049,74 @@ unsafe extern "C" {
     fn getrlimit(resource: i32, rlim: *mut RLimit) -> i32;
     fn dup(fd: i32) -> i32;
     fn dup2(fd: i32, fd2: i32) -> i32;
+    fn pthread_attr_init(attr: *mut c_void) -> i32;
+    fn pthread_attr_setstacksize(attr: *mut c_void, size: usize) -> i32;
+    fn pthread_attr_destroy(attr: *mut c_void) -> i32;
+    fn pthread_create(
+        thread: *mut usize,
+        attr: *const c_void,
+        start: extern "C" fn(*mut c_void) -> *mut c_void,
+        arg: *mut c_void,
+    ) -> i32;
+    fn pthread_join(thread: usize, ret: *mut *mut c_void) -> i32;
+    fn pthread_detach(thread: usize) -> i32;
+}
+
+/// A thread started by `spawn_raw`: join it or detach it.
+pub struct RawThread(usize);
+
+impl RawThread {
+    pub fn join(self) {
+        // SAFETY: a joinable thread from pthread_create, joined once (self is consumed).
+        unsafe { pthread_join(self.0, ptr::null_mut()) };
+    }
+
+    pub fn detach(self) {
+        // SAFETY: as join.
+        unsafe { pthread_detach(self.0) };
+    }
+}
+
+/// Start a thread running `f` with a `stack`-byte stack, straight through
+/// pthread_create. Not `std::thread` for threads started after RLIMIT_AS
+/// is set: std maps each new thread's signal stack from inside that
+/// thread, and if that mmap fails under the limit std panics where it
+/// cannot unwind, aborting the worker, so an `open` that should fail with
+/// "could not start a thread" killed the process instead (found in the
+/// Rust SQLite worker under a 128 MB limit). Here every allocation happens
+/// before pthread_create returns, so failure is an error to report.
+/// Without the signal stack a stack overflow is a plain SIGSEGV.
+pub fn spawn_raw(stack: usize, f: Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<RawThread> {
+    extern "C" fn start(arg: *mut c_void) -> *mut c_void {
+        // SAFETY: `arg` is the Box leaked below, handed to exactly one thread.
+        let f = unsafe { Box::from_raw(arg as *mut Box<dyn FnOnce() + Send>) };
+        f();
+        ptr::null_mut()
+    }
+    // pthread_attr_t: 56 bytes on glibc x86_64, 64 on aarch64 and macOS.
+    let mut attr = [0u64; 16];
+    let a = attr.as_mut_ptr() as *mut c_void;
+    let arg = Box::into_raw(Box::new(f)) as *mut c_void;
+    let mut t: usize = 0;
+    // SAFETY: plain POSIX calls on a zeroed attr buffer larger than any
+    // platform's pthread_attr_t.
+    let rc = unsafe {
+        let mut rc = pthread_attr_init(a);
+        if rc == 0 {
+            rc = pthread_attr_setstacksize(a, stack);
+            if rc == 0 {
+                rc = pthread_create(&mut t, a, start, arg);
+            }
+            pthread_attr_destroy(a);
+        }
+        rc
+    };
+    if rc != 0 {
+        // SAFETY: no thread was created, so `arg` is still ours.
+        drop(unsafe { Box::from_raw(arg as *mut Box<dyn FnOnce() + Send>) });
+        return Err(std::io::Error::from_raw_os_error(rc));
+    }
+    Ok(RawThread(t))
 }
 
 /// Linux only: cap the address space at `current_bytes + limit_bytes`, as

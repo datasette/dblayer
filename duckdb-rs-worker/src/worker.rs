@@ -39,6 +39,9 @@ pub const DEFAULT_MAX_FRAME_BYTES: u64 = 256 * 1024 * 1024;
 const FETCH_BATCH: usize = 1024;
 const REINTERRUPT: Duration = Duration::from_millis(5);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// A connection thread's stack: std::thread's default, kept when these
+/// threads moved to ffi::spawn_raw.
+const CONN_STACK_BYTES: usize = 2 * 1024 * 1024;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -337,7 +340,7 @@ fn cancel_job(shared: &Arc<ConnShared>, timer: &Arc<Timer>, ctl: &Arc<JobCtl>, r
 
 struct ConnHandle {
     shared: Arc<ConnShared>,
-    thread: std::thread::JoinHandle<()>,
+    thread: ffi::RawThread,
 }
 
 pub struct Server {
@@ -346,7 +349,7 @@ pub struct Server {
     rlimit_as: bool,
     conns: HashMap<i64, ConnHandle>,
     next_conn: i64,
-    closed_threads: Vec<std::thread::JoinHandle<()>>,
+    closed_threads: Vec<ffi::RawThread>,
 }
 
 pub struct ReadError;
@@ -596,9 +599,9 @@ impl Server {
             streams: HashMap::new(),
             dirty: std::cell::Cell::new(false),
         };
-        let thread = std::thread::Builder::new()
-            .name(format!("conn-{cid}"))
-            .spawn(move || worker.run(rx))
+        // Started under RLIMIT_AS: ffi::spawn_raw (see there), with std's
+        // default 2 MiB stack, so failing to get a thread is this error.
+        let thread = ffi::spawn_raw(CONN_STACK_BYTES, Box::new(move || worker.run(rx)))
             .map_err(|e| qerr(format!("worker error: could not start a thread: {e}"), "WORKER"))?;
         self.conns.insert(cid, ConnHandle { shared, thread });
         Ok(cid)
@@ -615,20 +618,28 @@ impl Server {
         }
         for (rx, t) in waits {
             let _ = rx.recv();
-            let _ = t.join();
+            t.join();
         }
         for t in self.closed_threads.drain(..) {
-            let _ = t.join();
+            t.join();
         }
     }
 
     /// End of input: stop what runs, roll back, close and exit, within
     /// SHUTDOWN_GRACE even if a statement ignores every interrupt.
     fn shutdown(&mut self) {
-        std::thread::spawn(|| {
-            std::thread::sleep(SHUTDOWN_GRACE);
-            std::process::exit(0);
-        });
+        // Under RLIMIT_AS too: std::thread::spawn would abort if it could
+        // not get the thread; without the guard the shutdown is merely
+        // not time-bounded.
+        if let Ok(t) = ffi::spawn_raw(
+            64 * 1024,
+            Box::new(|| {
+                std::thread::sleep(SHUTDOWN_GRACE);
+                std::process::exit(0);
+            }),
+        ) {
+            t.detach();
+        }
         let jobs: Vec<(i64, Arc<JobCtl>)> = lock(&self.g.jobs).values().cloned().collect();
         for (cid, ctl) in jobs {
             match self.conns.get(&cid) {

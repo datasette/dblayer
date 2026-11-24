@@ -30,10 +30,20 @@ impl Timer {
     pub fn start() -> Arc<Timer> {
         let t = Arc::new(Timer { state: Mutex::new(State::default()), cv: Condvar::new() });
         let t2 = Arc::clone(&t);
+        // Returns once the thread runs, not merely once it is spawned: std
+        // maps a thread's signal stack from inside it, and main sets
+        // RLIMIT_AS right after this; a limit landing first made that
+        // mmap fail and abort the worker.
+        let running = Arc::new(std::sync::Barrier::new(2));
+        let r2 = Arc::clone(&running);
         std::thread::Builder::new()
             .name("timer".into())
-            .spawn(move || t2.run())
+            .spawn(move || {
+                r2.wait();
+                t2.run()
+            })
             .expect("start the timer thread");
+        running.wait();
         t
     }
 

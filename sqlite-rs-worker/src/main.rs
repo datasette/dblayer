@@ -105,17 +105,31 @@ fn main() {
     let memory_limit_mb = o.memory_limit_mb;
     let sh = worker::Shared::new(o, out);
     let (w, r) = (sh.clone(), sh.clone());
-    let spawned = std::thread::Builder::new().name("watchdog".into()).spawn(move || worker::watchdog_main(w)).and_then(|_| {
-        std::thread::Builder::new().name("reader".into()).spawn(move || {
-            let stdin = std::io::stdin();
-            worker::reader_main(r, stdin.lock())
+    // Both threads must be running, not merely spawned, before RLIMIT_AS
+    // is set: std maps each thread's signal stack from inside the new
+    // thread, so a limit set as soon as spawn() returned could make that
+    // mmap fail and std panic ("failed to allocate an alternative stack":
+    // the worker aborted at open with memory_limit_mb=128 on Linux).
+    let running = Arc::new(std::sync::Barrier::new(3));
+    let (rw, rr) = (Arc::clone(&running), Arc::clone(&running));
+    let spawned = std::thread::Builder::new()
+        .name("watchdog".into())
+        .spawn(move || {
+            rw.wait();
+            worker::watchdog_main(w)
         })
-    });
+        .and_then(|_| {
+            std::thread::Builder::new().name("reader".into()).spawn(move || {
+                rr.wait();
+                let stdin = std::io::stdin();
+                worker::reader_main(r, stdin.lock())
+            })
+        });
     if spawned.is_err() {
         eprintln!("dblayer-sqlite-rsworker: cannot start threads");
         std::process::exit(1);
     }
-    // After the threads exist, so their stacks are already mapped.
+    running.wait();
     if memory_limit_mb > 0 {
         sh.set_rlimit_as(ffi::set_rlimit_as(memory_limit_mb));
     }

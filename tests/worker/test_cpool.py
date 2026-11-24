@@ -245,3 +245,34 @@ async def test_hello_of_a_pool_process(tmp_path, pool, native_impl):
         assert isinstance(pool.processes()[0], WorkerProcess)
     finally:
         await db.close()
+
+
+@pytest.mark.skipif(not os.uname().sysname == "Linux", reason="RLIMIT_AS is enforced only on Linux")
+async def test_opens_past_a_tight_memory_limit_fail_alone(tmp_path):
+    """Under a tight RLIMIT_AS, 40 databases opened at once on one
+    multi-tenant process (a 4 MB-stack thread each, 160 MB of stacks
+    against a 64 MB limit): every open either works or fails with
+    ResourceLimitExceeded, and the process, with every tenant that got in,
+    survives. The Rust port aborted at its first open under such a limit
+    (std's per-thread signal stack mmap failed and panicked)."""
+    from dblayer.backends.sqlite_cpool import CPool
+
+    one_proc = CPool(1, linger=0, memory_limit_mb=64)
+    dbs = [make(one_proc, tmp_path / f"m{i}.db") for i in range(40)]
+    try:
+        results = await asyncio.gather(*(d.execute("select 1") for d in dbs), return_exceptions=True)
+        failed = [r for r in results if isinstance(r, BaseException)]
+        assert all(isinstance(e, ResourceLimitExceeded) for e in failed), failed
+        assert len(failed) < len(dbs), "no open succeeded"
+        procs = one_proc.processes()
+        assert len(procs) == 1
+        pid = procs[0].pid
+        for d, r in zip(dbs, results):
+            if not isinstance(r, BaseException):
+                assert (await d.execute("select 2")).rows == [(2,)]
+        assert [p.pid for p in one_proc.processes()] == [pid]
+        print(f"\n[cpool] 40 opens under a 64 MB limit: {len(dbs) - len(failed)} in, {len(failed)} refused")
+    finally:
+        for d in dbs:
+            await d.close()
+        one_proc.close()
