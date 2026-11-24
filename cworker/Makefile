@@ -3,6 +3,7 @@
 #   make -C cworker                  # build/dblayer-cworker (SQLite amalgamation compiled in)
 #   make -C cworker SQLITE=system    # link the system libsqlite3 instead
 #   make -C cworker SANITIZE=1       # build-asan/dblayer-cworker with ASan + UBSan
+#   make -C cworker SANITIZE=thread  # build-tsan/dblayer-cworker with ThreadSanitizer
 #   make -C cworker wasm             # build-wasm/dblayer-sqlite.wasm (see Makefile.wasm)
 #
 # The amalgamation is downloaded once into vendor/ (git-ignored) and checked
@@ -26,7 +27,10 @@ ifeq ($(shell uname -s),Linux)
 LIBS += -ldl
 endif
 
-ifdef SANITIZE
+ifeq ($(SANITIZE),thread)
+BUILD ?= build-tsan
+SAN := -fsanitize=thread -fno-omit-frame-pointer
+else ifdef SANITIZE
 BUILD ?= build-asan
 SAN := -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined
 else
@@ -91,7 +95,7 @@ $(SQLITE_ZIP):
 	mv $@.tmp $@
 
 clean:
-	rm -rf build build-asan build-wasm
+	rm -rf build build-asan build-tsan build-wasm
 
 distclean: clean
 	rm -rf vendor
