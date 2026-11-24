@@ -132,6 +132,7 @@ puts no `\n` after the last row; this format does, as JSON Lines asks.)
 ## Parity
 
 Per native backend and format, tested in `tests/test_export_parity.py`
+and `tests/test_export_parity_edges.py`
 (400 seeded random rows with the edge values: subnormal and huge floats,
 `-0.0`, 2^53 + 1, 64-bit extremes, empty strings, NUL, control
 characters, CR/LF/tab/quote/comma, non-BMP text, empty and random blobs,
@@ -190,6 +191,31 @@ Contract recommendation: a backend that claims a format natively must be
 **identical** for the portable value types (integers, floats, text,
 blobs, NULL, booleans) and **parse-equal** for dates, times, timestamps,
 decimals and UUIDs; nested types stay unspecified.
+
+`tests/test_export_parity_edges.py` adds, on all three backends and in
+every format: NaN and the infinities (CSV `NaN`/`Infinity`/`-Infinity`,
+JSON `null`; SQLite stores NaN as NULL), a single 5 MiB value, NULL
+against the empty string, 64-bit extremes, control characters and NUL,
+the empty result and statements that cannot be wrapped: all
+byte-identical. One known difference: on psycopg an empty result
+exported through the *fallback* has no header row (psycopg's
+`cursor.stream()` reports no columns for it); the native COPY path
+writes the header, which is the correct output.
+
+What the contract should require of an engine with output formats of
+its own (ClickHouse `CSVWithNames`, `JSONEachRow`, `TabSeparated`; DuckDB
+`COPY ... TO`): it may claim a format family only if its bytes meet this
+definition for the portable types, proven by running this parity suite
+against it. Engine writers rarely do as shipped (LF line ends, unquoted
+empty strings, raw blobs, bare `nan`/`inf`, backslash-escaped TSV,
+`1` for `1.0`), so the contract should let a backend claim per encoding
+(`"csv"` without `"tsv"`), and say that the core writes the header row,
+the JSON envelope and the truncation marker itself: the source yields
+row bytes only, so an engine format whose framing differs (a JSON array
+it closes itself, a `WithNames` header) must be asked for rows only.
+`max_rows` must be enforced by the source with a truncation flag (a
+`LIMIT n + 1` wrapper is enough); `time_limit_ms` is the source's to
+enforce, with the core's own timer 100 ms behind it as a backstop.
 
 Backends with no native export use the fallback for everything: in-process
 SQLite, the Python SQLite worker, `sqlite-cpool`, `sqlite-wasm`, apsw,
