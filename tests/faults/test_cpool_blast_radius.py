@@ -90,6 +90,7 @@ async def test_kill_for_one_tenant_retries_others_reads_and_fails_writes_loudly(
     pool = CPool(1, linger=0, kill_grace_ms=GRACE_MS, quarantine_s=60)
     paths = {name: tmp_path / f"{name}.db" for name in ("culprit", "r1", "r2", "r3", "r4", "w", "tx")}
     dbs = {name: Database(SqliteCPool(p, pool=pool), name=name) for name, p in paths.items()}
+    started: set[int | None] = set()
     try:
         for d in dbs.values():
             await d.execute_write("create table t (id integer primary key, v)")
@@ -97,6 +98,7 @@ async def test_kill_for_one_tenant_retries_others_reads_and_fails_writes_loudly(
             await d.execute("select 1")
         assert len(pool.processes()) == 1
         victim = pool.processes()[0]
+        started.add(victim.pid)
 
         load = Load([dbs[n] for n in ("r1", "r2", "r3", "r4")], dbs["w"])
         tasks = load.tasks()
@@ -164,6 +166,8 @@ async def test_kill_for_one_tenant_retries_others_reads_and_fails_writes_loudly(
         await dbs["culprit"].execute("select 1")
         ordinary = [p for p in pool.processes() if not p.quarantine]
         assert pool.quarantine_proc is not None and pool.quarantine_proc.alive
+        started.add(pool.quarantine_proc.pid)
+        started.update(p.pid for p in ordinary)
         assert len(ordinary) == 1
         retried = pool.stats.reads_retried
         load2 = Load([dbs[n] for n in ("r1", "r2", "r3", "r4")], dbs["w"], first_id=1_000_000)
@@ -178,12 +182,18 @@ async def test_kill_for_one_tenant_retries_others_reads_and_fails_writes_loudly(
         assert pool.stats.kills == 2 and pool.stats.reads_retried == retried  # nobody else was on it
         assert ordinary[0].alive
     finally:
+        ours = started | {p.pid for p in pool.processes()}
         for d in dbs.values():
             await d.close()
         pool.close()
-    from dblayer.backends.sqlite_worker import reap_workers
+    from dblayer.backends.sqlite_worker import live_worker_pids
 
-    assert not reap_workers(timeout=5.0)
+    # Every process this pool started has exited. (Not reap_workers():
+    # that waits for every worker in this interpreter, other tests' too.)
+    deadline = time.monotonic() + 5.0
+    while ours & set(live_worker_pids()) and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert not ours & set(live_worker_pids())
     for p in paths.values():
         _integrity(p)
 
