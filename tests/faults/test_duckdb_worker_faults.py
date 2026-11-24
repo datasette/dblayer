@@ -12,6 +12,7 @@ import pytest
 pytest.importorskip("duckdb")
 
 from dblayer import Database, QueryInterrupted, ResourceLimitExceeded, WorkerCrashed  # noqa: E402
+from dblayer.backends.duckdb_cppworker import DuckDBCppWorker, binary_unavailable  # noqa: E402
 from dblayer.backends.duckdb_worker import DuckDBWorker  # noqa: E402
 
 from ..scale.harness import current_rss  # noqa: E402
@@ -20,12 +21,23 @@ from .conftest import LINUX, linux_only  # noqa: E402
 UNBOUNDED = "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c"
 
 
+@pytest.fixture(params=["duckdb-worker", "duckdb-cppworker"])
+def Worker(request: pytest.FixtureRequest) -> type[DuckDBWorker]:
+    """The Python DuckDB worker, and the C++ one (skipped when not built)."""
+    if request.param == "duckdb-cppworker":
+        reason = binary_unavailable()
+        if reason:
+            pytest.skip(reason)
+        return DuckDBCppWorker
+    return DuckDBWorker
+
+
 async def _setup(db: Database) -> None:
     await db.execute_write("create table t as select range i from range(1000)")
 
 
-async def test_time_limit_interrupts_without_a_kill(tmp_path):
-    b = DuckDBWorker(tmp_path / "a.duckdb")
+async def test_time_limit_interrupts_without_a_kill(tmp_path, Worker):
+    b = Worker(tmp_path / "a.duckdb")
     db = Database(b)
     try:
         await _setup(db)
@@ -42,12 +54,12 @@ async def test_time_limit_interrupts_without_a_kill(tmp_path):
         await db.close()
 
 
-async def test_worker_that_ignores_its_time_limit_is_killed_and_replaced(tmp_path):
+async def test_worker_that_ignores_its_time_limit_is_killed_and_replaced(tmp_path, Worker):
     """A request that blocks the whole worker (the test-only ``sleep``
     debug message: nothing in the worker can interrupt it) is killed at
     its limit plus the grace; the database then works on a new process,
     which can open the file because the kill released DuckDB's lock."""
-    b = DuckDBWorker(tmp_path / "k.duckdb", debug=True, kill_grace_ms=200)
+    b = Worker(tmp_path / "k.duckdb", debug=True, kill_grace_ms=200)
     db = Database(b)
     try:
         await _setup(db)
@@ -67,8 +79,8 @@ async def test_worker_that_ignores_its_time_limit_is_killed_and_replaced(tmp_pat
         await db.close()
 
 
-async def test_external_kill_mid_transaction_loses_only_uncommitted_rows(tmp_path):
-    b = DuckDBWorker(tmp_path / "x.duckdb")
+async def test_external_kill_mid_transaction_loses_only_uncommitted_rows(tmp_path, Worker):
+    b = Worker(tmp_path / "x.duckdb")
     db = Database(b)
     try:
         await _setup(db)
@@ -88,8 +100,8 @@ async def test_external_kill_mid_transaction_loses_only_uncommitted_rows(tmp_pat
         await db.close()
 
 
-async def test_idle_worker_killed_from_outside_is_replaced(tmp_path):
-    b = DuckDBWorker(tmp_path / "i.duckdb")
+async def test_idle_worker_killed_from_outside_is_replaced(tmp_path, Worker):
+    b = Worker(tmp_path / "i.duckdb")
     db = Database(b, idle_timeout=None)
     try:
         await _setup(db)
@@ -103,10 +115,10 @@ async def test_idle_worker_killed_from_outside_is_replaced(tmp_path):
         await db.close()
 
 
-async def test_duckdb_memory_limit_applies_inside_the_worker(tmp_path):
+async def test_duckdb_memory_limit_applies_inside_the_worker(tmp_path, Worker):
     """DuckDB's own ``memory_limit`` still works in the worker: the query
     fails with ResourceLimitExceeded and the worker carries on."""
-    b = DuckDBWorker(tmp_path / "m.duckdb", memory_limit="64MB")
+    b = Worker(tmp_path / "m.duckdb", memory_limit="64MB")
     db = Database(b)
     try:
         await _setup(db)
@@ -119,19 +131,19 @@ async def test_duckdb_memory_limit_applies_inside_the_worker(tmp_path):
         await db.close()
 
 
-def test_memory_limit_capability(tmp_path):
-    caps = DuckDBWorker(tmp_path / "c.duckdb").capabilities
+def test_memory_limit_capability(tmp_path, Worker):
+    caps = Worker(tmp_path / "c.duckdb").capabilities
     assert caps.hard_kill
     assert caps.memory_limit  # DuckDB's own memory_limit, everywhere
-    assert DuckDBWorker(tmp_path / "c.duckdb", memory_limit=None).capabilities.memory_limit is LINUX
+    assert Worker(tmp_path / "c.duckdb", memory_limit=None).capabilities.memory_limit is LINUX
 
 
 @linux_only
-async def test_rlimit_as_bounds_the_whole_worker(tmp_path):
+async def test_rlimit_as_bounds_the_whole_worker(tmp_path, Worker):
     """With DuckDB's own limit set high, RLIMIT_AS on the worker stops an
     allocation the engine would have allowed. The worker fails the query
     (or dies and is replaced); the parent's memory is untouched."""
-    b = DuckDBWorker(tmp_path / "r.duckdb", memory_limit="16GB", memory_limit_mb=768)
+    b = Worker(tmp_path / "r.duckdb", memory_limit="16GB", memory_limit_mb=768)
     db = Database(b)
     try:
         await _setup(db)

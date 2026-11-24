@@ -111,15 +111,32 @@ select date '2024-01-02' d, time '12:34:56.789' t, timestamp '2024-01-02 03:04:0
 """
 
 
+def _worker_class(kind: str) -> type:
+    """The Python DuckDB worker, or the C++ one (skipped when not built)."""
+    if kind == "cpp":
+        from dblayer.backends.duckdb_cppworker import DuckDBCppWorker, binary_unavailable
+
+        reason = binary_unavailable()
+        if reason:
+            pytest.skip(reason)
+        return DuckDBCppWorker
+    from dblayer.backends.duckdb_worker import DuckDBWorker
+
+    return DuckDBWorker
+
+
+WORKERS = ["python", "cpp"]
+
+
+@pytest.mark.parametrize("worker", WORKERS)
 @pytest.mark.parametrize("codec_name", CODECS)
-async def test_duckdb_values_match_in_process(tmp_path, codec_name):
+async def test_duckdb_values_match_in_process(tmp_path, codec_name, worker):
     pytest.importorskip("duckdb")
     from dblayer import Database
     from dblayer.backends.duckdb import DuckDB
-    from dblayer.backends.duckdb_worker import DuckDBWorker
 
     local = Database(DuckDB(tmp_path / "a.duckdb"))
-    remote = Database(DuckDBWorker(tmp_path / "b.duckdb", codec=codec_name))
+    remote = Database(_worker_class(worker)(tmp_path / "b.duckdb", codec=codec_name))
     try:
         a = await local.execute(DUCKDB_VALUES_SQL)
         b = await remote.execute(DUCKDB_VALUES_SQL)
@@ -135,13 +152,13 @@ async def test_duckdb_values_match_in_process(tmp_path, codec_name):
         await remote.close()
 
 
+@pytest.mark.parametrize("worker", WORKERS)
 @pytest.mark.parametrize("codec_name", CODECS)
-async def test_duckdb_value_parameters_round_trip(tmp_path, codec_name):
+async def test_duckdb_value_parameters_round_trip(tmp_path, codec_name, worker):
     pytest.importorskip("duckdb")
     from dblayer import Database
-    from dblayer.backends.duckdb_worker import DuckDBWorker
 
-    db = Database(DuckDBWorker(tmp_path / "p.duckdb", codec=codec_name))
+    db = Database(_worker_class(worker)(tmp_path / "p.duckdb", codec=codec_name))
     try:
         await db.execute_write(
             "create table t (d date, ts timestamp, dec decimal(18,3), u uuid, iv interval, tz timestamptz)"
