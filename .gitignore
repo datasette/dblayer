@@ -18,5 +18,5 @@ demo-data/
 
 # C worker: build output and the downloaded SQLite amalgamation (make -C cworker)
 cworker/build/
-cworker/build-asan/
+cworker/build-*/
 cworker/vendor/

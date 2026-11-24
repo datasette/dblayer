@@ -1015,8 +1015,13 @@ static int h_open(job *j, wbuf *w, err_t *e) {
         return -1;
     }
     sqlite3_busy_timeout(db, tmp.busy_ms);
-    if (heap_mb > 0)
-        sqlite3_hard_heap_limit64(heap_mb * 1024 * 1024);
+    if (heap_mb > 0) {
+        /* The pragma, as the Python engine does: Apple's SDK header does
+         * not declare sqlite3_hard_heap_limit64(). */
+        char *pragma = xasprintf("pragma hard_heap_limit = %lld", (long long)heap_mb * 1024 * 1024);
+        sqlite3_exec(db, pragma, NULL, NULL, NULL);
+        free(pragma);
+    }
     if (limits_v && limits_v->t == V_MAP) {
         for (size_t i = 0; i < limits_v->u.a.n; i++) {
             const val *k = &limits_v->u.a.v[2 * i], *v = &limits_v->u.a.v[2 * i + 1];

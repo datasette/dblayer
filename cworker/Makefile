@@ -40,7 +40,12 @@ SQLITE_DEFS := -DSQLITE_THREADSAFE=1 -DSQLITE_ENABLE_FTS3 -DSQLITE_ENABLE_FTS3_P
 	-DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_DBSTAT_VTAB \
 	-DSQLITE_DQS=3
 
+DEFS :=
 ifeq ($(SQLITE),system)
+ifeq ($(shell uname -s),Darwin)
+# Apple's libsqlite3 is built with SQLITE_OMIT_LOAD_EXTENSION.
+DEFS += -DCWORKER_NO_LOAD_EXTENSION
+endif
 SQLITE_INC :=
 SQLITE_OBJ :=
 SQLITE_LIB := -lsqlite3
@@ -63,7 +68,7 @@ $(BIN): $(OBJ) $(SQLITE_OBJ)
 	$(CC) $(OPT) $(SAN) -o $@ $^ $(SQLITE_LIB) $(LIBS)
 
 $(BUILD)/%.o: src/%.c $(HDR) $(SQLITE_DEP) | $(BUILD)
-	$(CC) $(OPT) $(SAN) $(WARN) $(SQLITE_INC) -c -o $@ $<
+	$(CC) $(OPT) $(SAN) $(WARN) $(DEFS) $(SQLITE_INC) -c -o $@ $<
 
 $(BUILD)/sqlite3.o: $(SQLITE_DIR)/sqlite3.c | $(BUILD)
 	$(CC) $(OPT) $(SAN) $(SQLITE_DEFS) -c -o $@ $<

@@ -98,3 +98,24 @@ jobs:
       # Proves the core and SQLite backends need only the standard library.
       - name: Run tests
         run: uv run pytest -ra
+
+  cworker-system-sqlite:
+    # Informational: the C worker linked against Ubuntu's libsqlite3 instead
+    # of the pinned amalgamation, to see what a different SQLite changes.
+    name: C worker with the system libsqlite3 (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - name: Install libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      - name: Build the C worker against libsqlite3
+        run: make -C cworker SQLITE=system BUILD=build-system && cworker/build-system/dblayer-cworker --version
+      - name: Run the C worker's tests
+        env:
+          DBLAYER_CWORKER: ${{ github.workspace }}/cworker/build-system/dblayer-cworker
+        run: uv run --all-extras pytest -ra -k "cworker or c-worker" tests/worker tests/faults tests/conformance
