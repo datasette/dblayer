@@ -1,0 +1,82 @@
+
+SQLite worker overhead (python 3.14.8)
+
+One-row read by primary key, round trip (median / p90 us); one-row update (median us)
+  in-process           read    180.1 /    238.8   write   1314.0
+  apsw                 read    235.5 /    316.7   write   1132.3
+  apsw-inline          read     51.5 /     71.9   write   1144.7
+  worker-json          read    484.4 /    608.7   write   1477.1
+  worker-msgpack       read    610.2 /   1175.4   write   2932.6
+  cworker-json         read    156.0 /    219.4   write   1280.0
+  cworker-msgpack      read    128.1 /    176.0   write   1055.4
+  cpool-json           read    149.6 /    198.1   write   1040.9
+  cpool-msgpack        read    147.1 /    253.2   write   1405.7
+  nodeworker-json      read    616.5 /    885.3   write   1973.8
+  nodeworker-msgpack   read    574.4 /    812.8   write   1996.3
+
+Read of 1,000 rows (4 columns: int, text, real, 16-byte blob): total ms, us per row
+  in-process           execute      2.02 ms   2.02 us/row   stream      2.54 ms   2.54 us/row
+  apsw                 execute      1.12 ms   1.12 us/row   stream      1.56 ms   1.56 us/row
+  apsw-inline          execute      2.10 ms   2.10 us/row   stream      2.35 ms   2.35 us/row
+  worker-json          execute      6.58 ms   6.58 us/row   stream      5.06 ms   5.06 us/row
+  worker-msgpack       execute      4.18 ms   4.18 us/row   stream      3.55 ms   3.55 us/row
+  cworker-json         execute      3.61 ms   3.61 us/row   stream      4.22 ms   4.22 us/row
+  cworker-msgpack      execute      1.35 ms   1.35 us/row   stream      1.33 ms   1.33 us/row
+  cpool-json           execute      3.03 ms   3.03 us/row   stream      3.02 ms   3.02 us/row
+  cpool-msgpack        execute      1.36 ms   1.36 us/row   stream      1.38 ms   1.38 us/row
+  nodeworker-json      execute      6.96 ms   6.96 us/row   stream      6.51 ms   6.51 us/row
+  nodeworker-msgpack   execute      5.05 ms   5.05 us/row   stream      3.75 ms   3.75 us/row
+
+Read of 100,000 rows (4 columns: int, text, real, 16-byte blob): total ms, us per row
+  in-process           execute    178.07 ms   1.78 us/row   stream    150.72 ms   1.51 us/row
+  apsw                 execute    139.84 ms   1.40 us/row   stream    152.15 ms   1.52 us/row
+  apsw-inline          execute    142.66 ms   1.43 us/row   stream    153.63 ms   1.54 us/row
+  worker-json          execute    650.14 ms   6.50 us/row   stream    578.41 ms   5.78 us/row
+  worker-msgpack       execute    441.30 ms   4.41 us/row   stream    271.68 ms   2.72 us/row
+  cworker-json         execute    399.62 ms   4.00 us/row   stream    326.47 ms   3.26 us/row
+  cworker-msgpack      execute    284.83 ms   2.85 us/row   stream    143.45 ms   1.43 us/row
+  cpool-json           execute    429.58 ms   4.30 us/row   stream    315.26 ms   3.15 us/row
+  cpool-msgpack        execute    236.56 ms   2.37 us/row   stream     94.80 ms   0.95 us/row
+  nodeworker-json      execute    521.45 ms   5.21 us/row   stream    434.41 ms   4.34 us/row
+  nodeworker-msgpack   execute    308.67 ms   3.09 us/row   stream    193.11 ms   1.93 us/row
+
+Insert with alter (2 rows, add one column): median us
+  in-process           interactive transaction   2896.5   one named operation   2940.8
+  apsw                 interactive transaction   2977.2   one named operation   2811.0
+  apsw-inline          interactive transaction   3782.4   one named operation   3878.9
+  worker-json          interactive transaction   8298.6   one named operation   6585.3
+  worker-msgpack       interactive transaction   6190.8   one named operation   5588.2
+  cworker-json         interactive transaction   3219.3   one named operation   3052.9
+  cworker-msgpack      interactive transaction   3482.5   one named operation   3695.6
+  cpool-json           interactive transaction   3751.8   one named operation   3825.8
+  cpool-msgpack        interactive transaction   3190.8   one named operation   3471.1
+  nodeworker-json      interactive transaction   9168.5   one named operation   9471.8
+  nodeworker-msgpack   interactive transaction   7910.3   one named operation   8051.9
+
+SQLite versions: in-process sqlite3 3.53.1; apsw 3.54.1.0 bundles SQLite 3.54.1
+Connection open (median us), execute_many of 100,000 rows in a transaction (ms), memory per open connection (KB of process RSS; SQLite's own bytes)
+  in-process           open    226.7   execute_many    397.1 ms   rss  168.0 KB/conn
+  apsw                 open    272.0   execute_many    392.6 ms   rss  185.6 KB/conn (db_status 21.4 KB)
+  cworker-json         open   1892.5   execute_many    470.2 ms
+  cworker-msgpack      open   2204.9   execute_many    366.0 ms
+
+Multi-tenant C pool (load average 1.4 0.8 0.4 at start, 1.3 after; provisional)
+  new database on a warm pool: first result 0.94 ms; bare open round trip 0.195 ms
+  memory per open database inside the process: 170.4 KB footprint, 170.4 KB RSS (100 databases; process base 1.7 MB footprint); parent descriptors with all open: 11
+  the same with lookaside off (CPool(lookaside=(0, 0))): 131.3 KB footprint
+  one-row reads, each client on its own database: requests/s (parent CPU share of wall; worker CPU in cores; worker processes; parent descriptors)
+    in-process  1:    4996 (1.02; 0.00; 0p; 9fd)   4:    3753 (1.35; 0.00; 0p; 12fd)  16:    3345 (1.51; 0.00; 0p; 24fd)  64:    3310 (1.48; 0.00; 0p; 72fd)
+    cworker     1:    6075 (0.67; 0.00; 1p; 11fd)   4:    9833 (0.94; 0.00; 4p; 20fd)  16:   11934 (0.97; 0.00; 16p; 56fd)  64:   12572 (0.99; 0.00; 64p; 200fd)
+    cpool       1:    6985 (0.75; 0.00; 1p; 11fd)   4:   11867 (0.99; 0.00; 2p; 14fd)  16:   13343 (0.99; 0.00; 2p; 14fd)  64:   13046 (0.98; 0.00; 2p; 14fd)
+
+Open to first result of a new Database (ms)
+  in-process 0.65; worker dedicated 171.0 (a process per connection); shared: first 144.9, then 1.37 on the running process
+  C worker dedicated 2.0; shared: first 2.2, then 0.45 on the running process
+
+Start-up breakdown, raw pipes (median ms)
+  spawn and wait for /usr/bin/true 0.65; python -S -c pass 11.5; python -c pass 29.6; dblayer-cworker --version 1.08
+  python  spawn to hello  120.61  open  15.90  first query   0.92  (second  0.42)  total  137.82
+  c       spawn to hello    1.50  open   0.35  first query   0.31  (second  0.15)  total    2.29
+
+Resident memory of one idle worker with a database open (KB)
+  python 27880; c 3540

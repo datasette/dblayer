@@ -1,0 +1,35 @@
+  connect + close: asyncpg 5.01 ms, psycopg 3.10 ms, psycopg prepared 2.96 ms
+  read 1 row: asyncpg 169 us, psycopg 167 us, psycopg prepared 141 us
+  read 1 row, max_rows=1000: asyncpg 135 us, psycopg 148 us, psycopg prepared 155 us
+  read 1,000 rows, fetch: asyncpg 2.08 ms, psycopg 2.12 ms, psycopg prepared 1.54 ms
+  read 1,000 rows, fetch, max_rows=1000: asyncpg 1.90 ms, psycopg 2.01 ms, psycopg prepared 2.01 ms
+  read 1,000 rows, stream: asyncpg 2.06 ms, psycopg 2.02 ms, psycopg prepared 2.07 ms
+  read 100,000 rows, fetch: asyncpg 218.21 ms, psycopg 235.84 ms, psycopg prepared 212.78 ms
+  read 100,000 rows, fetch, max_rows=100000: asyncpg 247.01 ms, psycopg 198.40 ms, psycopg prepared 223.48 ms
+  read 100,000 rows, stream: asyncpg 208.86 ms, psycopg 154.46 ms, psycopg prepared 181.31 ms
+  insert_rows 100,000, default path: asyncpg 2.23 s, psycopg 3.63 s, psycopg prepared 1.67 s
+  insert_rows 100,000, COPY: asyncpg 596.18 ms, psycopg 542.54 ms, psycopg prepared 540.71 ms
+  tx statement (1-row update), with savepoints: asyncpg 222 us, psycopg 318 us, psycopg prepared 261 us
+  tx statement (1-row update), without savepoints: asyncpg 139 us, psycopg 219 us, psycopg prepared 144 us
+  schema(), 50 tables: asyncpg 14.70 ms, psycopg 17.02 ms, psycopg prepared 13.70 ms
+  schema_version(): asyncpg 3.23 ms, psycopg 5.12 ms, psycopg prepared 3.60 ms
+
+best of 2 runs (inserts: 1), local socket, load average 1.2, 1.1, 0.7; asyncpg 0.32.0, psycopg 3.3.9 (libpq 180006, binary)
+
+                                                          asyncpg           psycopg  psycopg prepared
+-----------------------------------------------------------------------------------------------------
+connect + close                                           5.01 ms           3.10 ms           2.96 ms
+read 1 row                                                 169 us            167 us            141 us
+read 1 row, max_rows=1000                                  135 us            148 us            155 us
+read 1,000 rows, fetch                                    2.08 ms           2.12 ms           1.54 ms
+read 1,000 rows, fetch, max_rows=1000                     1.90 ms           2.01 ms           2.01 ms
+read 1,000 rows, stream                                   2.06 ms           2.02 ms           2.07 ms
+read 100,000 rows, fetch                                218.21 ms         235.84 ms         212.78 ms
+read 100,000 rows, fetch, max_rows=100000               247.01 ms         198.40 ms         223.48 ms
+read 100,000 rows, stream                               208.86 ms         154.46 ms         181.31 ms
+insert_rows 100,000, default path                          2.23 s            3.63 s            1.67 s
+insert_rows 100,000, COPY                               596.18 ms         542.54 ms         540.71 ms
+tx statement (1-row update), with savepoints               222 us            318 us            261 us
+tx statement (1-row update), without savepoints            139 us            219 us            144 us
+schema(), 50 tables                                      14.70 ms          17.02 ms          13.70 ms
+schema_version()                                          3.23 ms           5.12 ms           3.60 ms

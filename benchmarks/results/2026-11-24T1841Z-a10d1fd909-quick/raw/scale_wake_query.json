@@ -1,0 +1,90 @@
+{
+  "sqlite": {
+    "databases": 99,
+    "cold_median_ms": 0.6353210000042964,
+    "cold_p90_ms": 0.8024510000268492,
+    "warm_median_ms": 0.20036099999742873,
+    "warm_p90_ms": 0.2704099999846221,
+    "sleep_median_ms": 0.2365600000757695,
+    "wake_ms": 0.43496000000686763,
+    "load1_before": 1.0517578125,
+    "load1_after": 1.0517578125
+  },
+  "sqlite-wasm": {
+    "databases": 99,
+    "cold_median_ms": 1.7709010000999115,
+    "cold_p90_ms": 2.344741999991129,
+    "warm_median_ms": 0.3048700000363169,
+    "warm_p90_ms": 0.4014900000584021,
+    "sleep_median_ms": 0.31993000004604255,
+    "wake_ms": 1.4660310000635945,
+    "load1_before": 1.0517578125,
+    "load1_after": 1.0517578125
+  },
+  "duckdb": {
+    "databases": 99,
+    "cold_median_ms": 24.26477000005889,
+    "cold_p90_ms": 28.321384000037142,
+    "warm_median_ms": 1.237340999978187,
+    "warm_p90_ms": 1.8889209999315426,
+    "sleep_median_ms": 5.271623999988151,
+    "wake_ms": 23.0274290000807,
+    "load1_before": 1.0517578125,
+    "load1_after": 1.04736328125
+  },
+  "sqlite-worker": {
+    "databases": 99,
+    "cold_median_ms": 131.09068000005664,
+    "cold_p90_ms": 147.82881299993278,
+    "warm_median_ms": 0.4883600000766819,
+    "warm_p90_ms": 0.6738309999718695,
+    "sleep_median_ms": 0.1928899999938949,
+    "wake_ms": 130.60231999997995,
+    "load1_before": 1.04736328125,
+    "load1_after": 1.03955078125
+  },
+  "sqlite-cworker": {
+    "databases": 99,
+    "cold_median_ms": 2.322921999962091,
+    "cold_p90_ms": 2.707632999999987,
+    "warm_median_ms": 0.17294999997830018,
+    "warm_p90_ms": 0.24143999996795174,
+    "sleep_median_ms": 0.15268000004198257,
+    "wake_ms": 2.1499719999837907,
+    "load1_before": 1.03955078125,
+    "load1_after": 1.0361328125
+  },
+  "sqlite-nodeworker": {
+    "databases": 99,
+    "cold_median_ms": 186.07410499998878,
+    "cold_p90_ms": 206.01491200000055,
+    "warm_median_ms": 1.1156599999821992,
+    "warm_p90_ms": 1.7266620000100374,
+    "sleep_median_ms": 1.8029420000402752,
+    "wake_ms": 184.95844500000658,
+    "load1_before": 1.0361328125,
+    "load1_after": 1.02783203125
+  },
+  "sqlite-cpool": {
+    "databases": 99,
+    "cold_median_ms": 2.2027019999768527,
+    "cold_p90_ms": 2.769112999999379,
+    "warm_median_ms": 0.1643000000512984,
+    "warm_p90_ms": 0.25882099998852937,
+    "sleep_median_ms": 0.25775100004921114,
+    "wake_ms": 2.0384019999255543,
+    "load1_before": 1.02783203125,
+    "load1_after": 1.10595703125
+  },
+  "sqlite-rspool": {
+    "databases": 99,
+    "cold_median_ms": 2.728013000023566,
+    "cold_p90_ms": 3.495542999985446,
+    "warm_median_ms": 0.177520000079312,
+    "warm_p90_ms": 0.2639299999600553,
+    "sleep_median_ms": 0.30031000005692476,
+    "wake_ms": 2.550492999944254,
+    "load1_before": 1.10595703125,
+    "load1_after": 1.10595703125
+  }
+}

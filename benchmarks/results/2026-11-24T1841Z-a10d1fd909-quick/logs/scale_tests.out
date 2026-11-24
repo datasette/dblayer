@@ -1,0 +1,106 @@
+
+[scale:sqlite] 300 databases, created in 0.0s
+  register: 11.7 us/db; best-of-3 2.73 us/db at 100, 2.67 us/db at 300
+  asleep, never used: 464 B/db (tracemalloc), 0 B/db (RSS delta)
+  asleep after a wake/sleep cycle: +13.8 B/db growth (tracemalloc, 300 dbs)
+  load: 20000 requests (10% writes) over 300 databases, Zipf s=1.1, 96 workers, in 10.9s (1828 req/s)
+  fds: baseline 9, peak 76, limit 97 (cap 64 x 1 per place + allowance 24), after sleep 9; 1867 samples
+  threads: 9 before, 9-9 during
+  registry after load: wakes=6491 sleeps=6442 cap_evictions=10606 idle_closes=0; after idle timeout: awake=0 open=0
+.
+[scale:sqlite-wasm] 300 databases, created in 0.0s
+  register: 110.6 us/db; best-of-3 21.36 us/db at 100, 19.73 us/db at 300
+  asleep, never used: 898 B/db (tracemalloc), 14 B/db (RSS delta)
+  asleep after a wake/sleep cycle: +176.4 B/db growth (tracemalloc, 300 dbs)
+  load: 20000 requests (10% writes) over 300 databases, Zipf s=1.1, 96 workers, in 41.1s (486 req/s)
+  fds: baseline 11, peak 66, limit 99 (cap 64 x 1 per place + allowance 24), after sleep 11; 3258 samples
+  threads: 10 before, 10-10 during
+  registry after load: wakes=6612 sleeps=6566 cap_evictions=10216 idle_closes=53; after idle timeout: awake=0 open=0
+.
+[scale:duckdb] 300 databases, created in 0.1s
+  register: 62.0 us/db; best-of-3 10.58 us/db at 100, 12.54 us/db at 300
+  asleep, never used: 1278 B/db (tracemalloc), 0 B/db (RSS delta)
+  asleep after a wake/sleep cycle: +82.7 B/db growth (tracemalloc, 300 dbs)
+  load: 3000 requests (10% writes) over 272 databases, Zipf s=1.1, 96 workers, in 11.4s (264 req/s)
+  fds: baseline 11, peak 72, limit 99 (cap 64 x 1 per place + allowance 24), after sleep 11; 2038 samples
+  threads: 10 before, 10-10 during
+  registry after load: wakes=1083 sleeps=1060 cap_evictions=1305 idle_closes=416; after idle timeout: awake=0 open=0
+.
+[scale:sqlite-worker] 300 databases, created in 0.0s
+  register: 130.7 us/db; best-of-3 17.39 us/db at 100, 17.78 us/db at 300
+  asleep, never used: 778 B/db (tracemalloc), 82 B/db (RSS delta)
+  asleep after a wake/sleep cycle: +129.1 B/db growth (tracemalloc, 300 dbs)
+  load: 2000 requests (10% writes) over 242 databases, Zipf s=1.1, 96 workers, in 30.3s (66 req/s)
+  fds: baseline 11, peak 203, limit 227 (cap 64 x 3 per place + allowance 24), after sleep 11; 1637 samples
+  threads: 9 before, 9-9 during
+  registry after load: wakes=723 sleeps=694 cap_evictions=1202 idle_closes=63; after idle timeout: awake=0 open=0
+.
+[scale:sqlite-cworker] 300 databases, created in 0.0s
+  register: 170.2 us/db; best-of-3 32.84 us/db at 100, 33.43 us/db at 300
+  asleep, never used: 789 B/db (tracemalloc), 0 B/db (RSS delta)
+  asleep after a wake/sleep cycle: +152.0 B/db growth (tracemalloc, 300 dbs)
+  load: 10000 requests (10% writes) over 298 databases, Zipf s=1.1, 96 workers, in 10.4s (960 req/s)
+  fds: baseline 11, peak 203, limit 227 (cap 64 x 3 per place + allowance 24), after sleep 11; 945 samples
+  threads: 9 before, 9-9 during
+  registry after load: wakes=3408 sleeps=3367 cap_evictions=5105 idle_closes=0; after idle timeout: awake=0 open=0
+.
+[scale:sqlite-nodeworker] 300 databases, created in 0.0s
+  register: 223.4 us/db; best-of-3 47.86 us/db at 100, 49.10 us/db at 300
+  asleep, never used: 1484 B/db (tracemalloc), 0 B/db (RSS delta)
+  asleep after a wake/sleep cycle: +1113.4 B/db growth (tracemalloc, 300 dbs)
+  load: 2000 requests (10% writes) over 242 databases, Zipf s=1.1, 96 workers, in 37.9s (53 req/s)
+  fds: baseline 11, peak 167, limit 227 (cap 64 x 3 per place + allowance 24), after sleep 11; 2833 samples
+  threads: 9 before, 9-9 during
+  registry after load: wakes=737 sleeps=720 cap_evictions=1378 idle_closes=179; after idle timeout: awake=0 open=0
+.
+[scale:sqlite-cpool] 300 databases, created in 0.0s
+  register: 237.4 us/db; best-of-3 47.44 us/db at 100, 43.47 us/db at 300
+  asleep, never used: 987 B/db (tracemalloc), 82 B/db (RSS delta)
+  asleep after a wake/sleep cycle: +61.7 B/db growth (tracemalloc, 300 dbs)
+  load: 50000 requests (10% writes) over 300 databases, Zipf s=1.1, 96 workers, in 8.5s (5906 req/s)
+  fds: baseline 11, peak 17, limit 227 (cap 64 x 3 per place + allowance 24), after sleep 11; 1863 samples
+  threads: 9 before, 9-9 during
+  registry after load: wakes=16233 sleeps=16189 cap_evictions=25470 idle_closes=0; after idle timeout: awake=0 open=0
+.
+[scale:sqlite-rspool] 300 databases, created in 0.0s
+  register: 213.6 us/db; best-of-3 38.81 us/db at 100, 41.00 us/db at 300
+  asleep, never used: 985 B/db (tracemalloc), 0 B/db (RSS delta)
+  asleep after a wake/sleep cycle: +92.0 B/db growth (tracemalloc, 300 dbs)
+  load: 50000 requests (10% writes) over 300 databases, Zipf s=1.1, 96 workers, in 8.6s (5808 req/s)
+  fds: baseline 11, peak 17, limit 227 (cap 64 x 3 per place + allowance 24), after sleep 11; 1897 samples
+  threads: 9 before, 9-9 during
+  registry after load: wakes=16240 sleeps=16192 cap_evictions=25597 idle_closes=0; after idle timeout: awake=0 open=0
+.
+[threads:sqlite] standalone, 1000 open: 9 before, 9-9 during, 9 after, new: []
+.
+[threads:sqlite-wasm] standalone, 1000 open: 10 before, 10-10 during, 10 after, new: []
+.
+[threads:duckdb] standalone, 1000 open: 10 before, 10-10 during, 10 after, new: []
+.
+[threads:sqlite-worker] standalone, 100 open: 10 before, 10-10 during, 10 after, new: []
+.
+[threads:sqlite-cworker] standalone, 1000 open: 10 before, 9-10 during, 9 after, new: []
+.
+[threads:sqlite-nodeworker] standalone, 100 open: 9 before, 9-9 during, 9 after, new: []
+.
+[threads:sqlite-cpool] standalone, 1000 open: 9 before, 9-9 during, 9 after, new: []
+.
+[threads:sqlite-rspool] standalone, 1000 open: 9 before, 9-9 during, 9 after, new: []
+.
+[threads:sqlite] registry: 13 before, 13-13 during, 13 after, new: []
+.
+[threads:sqlite-wasm] registry: 14 before, 14-14 during, 14 after, new: []
+.
+[threads:duckdb] registry: 14 before, 14-14 during, 14 after, new: []
+.
+[threads:sqlite-worker] registry: 10 before, 9-10 during, 9 after, new: []
+.
+[threads:sqlite-cworker] registry: 9 before, 9-9 during, 9 after, new: []
+.
+[threads:sqlite-nodeworker] registry: 9 before, 9-9 during, 9 after, new: []
+.
+[threads:sqlite-cpool] registry: 9 before, 9-9 during, 9 after, new: []
+.
+[threads:sqlite-rspool] registry: 9 before, 9-9 during, 9 after, new: []
+.
+24 passed, 1 deselected in 486.16s (0:08:06)

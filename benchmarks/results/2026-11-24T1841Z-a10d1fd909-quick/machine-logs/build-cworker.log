@@ -1,0 +1,14 @@
+make: Entering directory '/data/src/cworker'
+mkdir -p vendor
+curl -fsSL -o vendor/sqlite-amalgamation-3530100.zip.tmp https://sqlite.org/2026/sqlite-amalgamation-3530100.zip
+mv vendor/sqlite-amalgamation-3530100.zip.tmp vendor/sqlite-amalgamation-3530100.zip
+cd vendor && unzip -oq sqlite-amalgamation-3530100.zip
+touch vendor/sqlite-amalgamation-3530100/sqlite3.c vendor/sqlite-amalgamation-3530100/sqlite3.h
+mkdir -p build
+cc -O2 -g  -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes  -Ivendor/sqlite-amalgamation-3530100 -c -o build/worker.o src/worker.c
+cc -O2 -g  -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes  -Ivendor/sqlite-amalgamation-3530100 -c -o build/codec.o src/codec.c
+cc -O2 -g  -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes  -Ivendor/sqlite-amalgamation-3530100 -c -o build/sqlutil.o src/sqlutil.c
+cc -O2 -g  -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes  -Ivendor/sqlite-amalgamation-3530100 -c -o build/schema.o src/schema.c
+cc -O2 -g  -DSQLITE_THREADSAFE=1 -DSQLITE_ENABLE_FTS3 -DSQLITE_ENABLE_FTS3_PARENTHESIS -DSQLITE_ENABLE_FTS4 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_GEOPOLY -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_DBSTAT_VTAB -DSQLITE_DQS=3 -c -o build/sqlite3.o vendor/sqlite-amalgamation-3530100/sqlite3.c
+cc -O2 -g  -o build/dblayer-cworker build/worker.o build/codec.o build/sqlutil.o build/schema.o build/sqlite3.o  -lpthread -lm -ldl
+make: Leaving directory '/data/src/cworker'

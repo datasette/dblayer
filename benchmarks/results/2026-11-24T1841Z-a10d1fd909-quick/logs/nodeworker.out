@@ -1,0 +1,30 @@
+
+Node worker start-up and memory (load average 1.2 1.0 0.5 at start, 1.1 1.0 0.5 at end)
+
+Spawn and wait: /usr/bin/true 0.9 ms; node -e 0 32.0 ms
+
+Raw pipes, median ms: spawn to hello, open, first query (second), total
+  python                   hello  115.0  open   15.3  first  0.81  ( 0.36)  total  131.1
+  node                     hello   51.9  open  110.3  first  3.47  ( 0.96)  total  166.3
+  node, no compile cache   hello   53.3  open  124.2  first  3.76  ( 1.10)  total  181.2
+  node, no spare           hello   60.5  open  140.3  first  3.83  ( 1.07)  total  204.9
+  c                        hello    1.4  open    0.3  first  0.30  ( 0.12)  total    2.0
+
+Inside a Node worker, ms since its process started (median)
+  node                     main loaded  36.3  wasm compiled  51.4  thread created  42.5  thread running 105.6  SQLite JS loaded 108.9  SQLite ready 139.9
+  node, no compile cache   main loaded  35.2  wasm compiled  50.6  thread created  41.4  thread running 111.1  SQLite JS loaded 121.7  SQLite ready 152.2
+  node, no spare           main loaded  43.4  wasm compiled  56.4  thread created  56.9  thread running 134.4  SQLite JS loaded 137.6  SQLite ready 176.7
+
+Open to first result of a new database, through Database (median ms)
+  in-process 0.97; python worker 160.33; node worker 182.11; C worker 2.48
+
+Idle memory with a database open (MB, summed over the worker processes)
+  python worker                footprint   19.1  RSS   27.2  (1 process(es))
+  node worker                  footprint   84.8  RSS   87.4  (1 process(es))
+  C worker                     footprint    1.7  RSS    3.3  (1 process(es))
+  node worker, 4 connections   footprint  138.3  RSS  140.9  (1 process(es))
+
+Inside Node, no protocol, in-memory database (SQLite 3.53.4 WASM vs node:sqlite 3.54.1 native)
+  one-row read: WASM (oo1 API) 9.48 us, native 1.81 us
+  100,000 rows into JS values: WASM raw exports 140.7 ms (oo1 exec 1058.3), native .all() 241.5 ms
+  WASM module load and init 102.8 ms; native open 0.47 ms

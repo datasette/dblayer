@@ -1,0 +1,871 @@
+{
+  "machine": {
+    "load": [
+      1.05,
+      0.97,
+      0.49
+    ],
+    "yes_burners": 0,
+    "cpus": 8
+  },
+  "rows": 100000,
+  "memory": [
+    {
+      "mode": "in-process",
+      "n": 20,
+      "cap": 40,
+      "start": {
+        "parent": [
+          50348032,
+          34292736
+        ],
+        "children": [
+          0,
+          0
+        ]
+      },
+      "cycles": [
+        {
+          "wall_s": 0.41,
+          "peak": {
+            "parent": [
+              306057216,
+              277090304
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "total": [
+              306057216,
+              277090304
+            ],
+            "procs": 0
+          },
+          "awake_at_end_of_wake_phase": 20,
+          "fds_parent": 28,
+          "fds_children": 0,
+          "procs_at_end_of_wake_phase": 0,
+          "after_sleep": {
+            "parent": [
+              127647744,
+              98535424
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "procs": 0
+          },
+          "wake_ms": {
+            "median": 84.4,
+            "p95": 92.6
+          },
+          "trim": null
+        }
+      ],
+      "leftover_workers": [],
+      "machine_before": {
+        "load": [
+          1.05,
+          0.97,
+          0.49
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "machine_after": {
+        "load": [
+          1.05,
+          0.97,
+          0.49
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "provisional": false
+    },
+    {
+      "mode": "in-process+gc",
+      "n": 20,
+      "cap": 40,
+      "start": {
+        "parent": [
+          48054272,
+          32080896
+        ],
+        "children": [
+          0,
+          0
+        ]
+      },
+      "cycles": [
+        {
+          "wall_s": 0.39,
+          "peak": {
+            "parent": [
+              305864704,
+              281354240
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "total": [
+              305864704,
+              281354240
+            ],
+            "procs": 0
+          },
+          "awake_at_end_of_wake_phase": 20,
+          "fds_parent": 28,
+          "fds_children": 0,
+          "procs_at_end_of_wake_phase": 0,
+          "after_sleep": {
+            "parent": [
+              124399616,
+              95311872
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "procs": 0
+          },
+          "wake_ms": {
+            "median": 77.1,
+            "p95": 88.2
+          },
+          "trim": null
+        }
+      ],
+      "leftover_workers": [],
+      "machine_before": {
+        "load": [
+          1.05,
+          0.97,
+          0.49
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "machine_after": {
+        "load": [
+          1.05,
+          0.97,
+          0.49
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "provisional": false
+    },
+    {
+      "mode": "in-process+trim",
+      "n": 20,
+      "cap": 40,
+      "start": {
+        "parent": [
+          48136192,
+          32071680
+        ],
+        "children": [
+          0,
+          0
+        ]
+      },
+      "cycles": [
+        {
+          "wall_s": 0.4,
+          "peak": {
+            "parent": [
+              306073600,
+              277128192
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "total": [
+              306073600,
+              277128192
+            ],
+            "procs": 0
+          },
+          "awake_at_end_of_wake_phase": 20,
+          "fds_parent": 28,
+          "fds_children": 0,
+          "procs_at_end_of_wake_phase": 0,
+          "after_sleep": {
+            "parent": [
+              98160640,
+              69012480
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "procs": 0
+          },
+          "wake_ms": {
+            "median": 80.6,
+            "p95": 88.7
+          },
+          "trim": "malloc_trim -> 1"
+        }
+      ],
+      "leftover_workers": [],
+      "machine_before": {
+        "load": [
+          1.05,
+          0.97,
+          0.49
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "machine_after": {
+        "load": [
+          1.05,
+          0.97,
+          0.49
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "provisional": false
+    },
+    {
+      "mode": "in-process+settings",
+      "n": 20,
+      "cap": 40,
+      "start": {
+        "parent": [
+          48033792,
+          32056320
+        ],
+        "children": [
+          0,
+          0
+        ]
+      },
+      "cycles": [
+        {
+          "wall_s": 0.52,
+          "peak": {
+            "parent": [
+              272875520,
+              247047168
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "total": [
+              272875520,
+              247047168
+            ],
+            "procs": 0
+          },
+          "awake_at_end_of_wake_phase": 20,
+          "fds_parent": 28,
+          "fds_children": 0,
+          "procs_at_end_of_wake_phase": 0,
+          "after_sleep": {
+            "parent": [
+              96444416,
+              67323904
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "procs": 0
+          },
+          "wake_ms": {
+            "median": 82.8,
+            "p95": 97.8
+          },
+          "trim": "malloc_trim -> 1"
+        }
+      ],
+      "leftover_workers": [],
+      "machine_before": {
+        "load": [
+          1.05,
+          0.97,
+          0.49
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "machine_after": {
+        "load": [
+          1.05,
+          0.97,
+          0.49
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "provisional": false
+    },
+    {
+      "mode": "worker",
+      "n": 20,
+      "cap": 40,
+      "start": {
+        "parent": [
+          29937664,
+          21957632
+        ],
+        "children": [
+          0,
+          0
+        ]
+      },
+      "cycles": [
+        {
+          "wall_s": 1.38,
+          "peak": {
+            "parent": [
+              33087488,
+              22173696
+            ],
+            "children": [
+              1936588800,
+              949886976
+            ],
+            "total": [
+              1969676288,
+              972060672
+            ],
+            "procs": 20
+          },
+          "awake_at_end_of_wake_phase": 20,
+          "fds_parent": 68,
+          "fds_children": 180,
+          "procs_at_end_of_wake_phase": 20,
+          "after_sleep": {
+            "parent": [
+              32100352,
+              24079360
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "procs": 0
+          },
+          "wake_ms": {
+            "median": 344.6,
+            "p95": 411.6
+          },
+          "trim": null
+        }
+      ],
+      "leftover_workers": [],
+      "machine_before": {
+        "load": [
+          1.05,
+          0.97,
+          0.49
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "machine_after": {
+        "load": [
+          1.45,
+          1.06,
+          0.52
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "provisional": false
+    },
+    {
+      "mode": "worker-pool",
+      "n": 20,
+      "cap": 40,
+      "start": {
+        "parent": [
+          30052352,
+          21993472
+        ],
+        "children": [
+          0,
+          0
+        ]
+      },
+      "cycles": [
+        {
+          "wall_s": 1.04,
+          "peak": {
+            "parent": [
+              31830016,
+              22008832
+            ],
+            "children": [
+              882515968,
+              510648320
+            ],
+            "total": [
+              914345984,
+              531952640
+            ],
+            "procs": 8
+          },
+          "awake_at_end_of_wake_phase": 20,
+          "fds_parent": 32,
+          "fds_children": 84,
+          "procs_at_end_of_wake_phase": 8,
+          "after_sleep": {
+            "parent": [
+              31895552,
+              23795712
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "procs": 0
+          },
+          "wake_ms": {
+            "median": 288.7,
+            "p95": 332.5
+          },
+          "trim": null
+        }
+      ],
+      "leftover_workers": [],
+      "machine_before": {
+        "load": [
+          1.45,
+          1.06,
+          0.52
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "machine_after": {
+        "load": [
+          1.45,
+          1.06,
+          0.52
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "provisional": false
+    },
+    {
+      "mode": "rust-worker",
+      "n": 20,
+      "cap": 40,
+      "start": {
+        "parent": [
+          31313920,
+          22955008
+        ],
+        "children": [
+          0,
+          0
+        ]
+      },
+      "cycles": [
+        {
+          "wall_s": 0.58,
+          "peak": {
+            "parent": [
+              33062912,
+              24511488
+            ],
+            "children": [
+              1470193664,
+              575616000
+            ],
+            "total": [
+              1503244288,
+              600115200
+            ],
+            "procs": 20
+          },
+          "awake_at_end_of_wake_phase": 20,
+          "fds_parent": 68,
+          "fds_children": 100,
+          "procs_at_end_of_wake_phase": 20,
+          "after_sleep": {
+            "parent": [
+              32768000,
+              24379392
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "procs": 0
+          },
+          "wake_ms": {
+            "median": 92.6,
+            "p95": 109.0
+          },
+          "trim": null
+        }
+      ],
+      "leftover_workers": [],
+      "machine_before": {
+        "load": [
+          1.45,
+          1.06,
+          0.52
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "machine_after": {
+        "load": [
+          1.41,
+          1.05,
+          0.53
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "provisional": false
+    },
+    {
+      "mode": "cpp-worker",
+      "n": 20,
+      "cap": 40,
+      "start": {
+        "parent": [
+          31080448,
+          22760448
+        ],
+        "children": [
+          0,
+          0
+        ]
+      },
+      "cycles": [
+        {
+          "wall_s": 0.51,
+          "peak": {
+            "parent": [
+              32997376,
+              24486912
+            ],
+            "children": [
+              1453228032,
+              569234432
+            ],
+            "total": [
+              1486163968,
+              593659904
+            ],
+            "procs": 20
+          },
+          "awake_at_end_of_wake_phase": 20,
+          "fds_parent": 68,
+          "fds_children": 100,
+          "procs_at_end_of_wake_phase": 20,
+          "after_sleep": {
+            "parent": [
+              32587776,
+              24238080
+            ],
+            "children": [
+              0,
+              0
+            ],
+            "procs": 0
+          },
+          "wake_ms": {
+            "median": 88.7,
+            "p95": 102.4
+          },
+          "trim": null
+        }
+      ],
+      "leftover_workers": [],
+      "machine_before": {
+        "load": [
+          1.41,
+          1.05,
+          0.53
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "machine_after": {
+        "load": [
+          1.41,
+          1.05,
+          0.53
+        ],
+        "yes_burners": 0,
+        "cpus": 8
+      },
+      "provisional": false
+    }
+  ],
+  "native": {
+    "floor": {
+      "worker": {
+        "spawn_to_hello_ms": 234.6,
+        "floor_mb": [
+          44.7,
+          28.5
+        ],
+        "open_ms": 47.9,
+        "first_query_ms": 6.5,
+        "spawn_to_first_result_ms": 285.7,
+        "one_db_open_mb": [
+          79.6,
+          50.6
+        ],
+        "after_analytical_mb": [
+          96.2,
+          67.1
+        ]
+      },
+      "rust-worker": {
+        "spawn_to_hello_ms": 13.7,
+        "floor_mb": [
+          20.4,
+          17.5
+        ],
+        "open_ms": 49.6,
+        "first_query_ms": 7.3,
+        "spawn_to_first_result_ms": 70.6,
+        "one_db_open_mb": [
+          56.5,
+          53.4
+        ],
+        "after_analytical_mb": [
+          73.1,
+          70.0
+        ]
+      },
+      "cpp-worker": {
+        "spawn_to_hello_ms": 11.4,
+        "floor_mb": [
+          19.7,
+          16.8
+        ],
+        "open_ms": 58.8,
+        "first_query_ms": 7.0,
+        "spawn_to_first_result_ms": 76.1,
+        "one_db_open_mb": [
+          56.6,
+          53.5
+        ],
+        "after_analytical_mb": [
+          72.2,
+          69.1
+        ]
+      }
+    },
+    "concurrent": {
+      "in-process": {
+        "point_read_quiet_ms": 3.5,
+        "point_read_during_long_query_ms": 3.17,
+        "long_query_still_running": true
+      },
+      "worker": {
+        "point_read_quiet_ms": 3.59,
+        "point_read_during_long_query_ms": 7811.85,
+        "long_query_still_running": false
+      },
+      "rust-worker": {
+        "point_read_quiet_ms": 4.29,
+        "point_read_during_long_query_ms": 5.21,
+        "long_query_still_running": true
+      },
+      "cpp-worker": {
+        "point_read_quiet_ms": 3.24,
+        "point_read_during_long_query_ms": 4.94,
+        "long_query_still_running": true
+      }
+    },
+    "insert_rows_10k": {
+      "in-process": {
+        "default_ms": 9817.4,
+        "appender_ms": 1233.5,
+        "speedup": 8.0
+      },
+      "worker": {
+        "default_ms": 11177.1,
+        "appender_ms": 1701.4,
+        "speedup": 6.6
+      },
+      "rust-worker": {
+        "default_ms": 10930.9,
+        "appender_ms": 1146.7,
+        "speedup": 9.5
+      },
+      "cpp-worker": {
+        "default_ms": 10099.1,
+        "appender_ms": 1218.0,
+        "speedup": 8.3
+      }
+    }
+  },
+  "native_machine": {
+    "before": {
+      "load": [
+        1.41,
+        1.05,
+        0.53
+      ],
+      "yes_burners": 0,
+      "cpus": 8
+    },
+    "after": {
+      "load": [
+        1.27,
+        1.11,
+        0.59
+      ],
+      "yes_burners": 0,
+      "cpus": 8
+    }
+  },
+  "overhead": {
+    "in-process": {
+      "one_row_us": 2455.3,
+      "plain_1000_ms": 3.05,
+      "plain_100000_ms": 179.77,
+      "typed_1000_ms": 3.81,
+      "typed_100000_ms": 128.12,
+      "wake_to_first_result_ms": 29.8,
+      "wake_p90_ms": 32.6
+    },
+    "worker-json": {
+      "one_row_us": 3143.2,
+      "plain_1000_ms": 7.73,
+      "plain_100000_ms": 484.96,
+      "typed_1000_ms": 14.51,
+      "typed_100000_ms": 1023.43,
+      "wake_to_first_result_ms": 253.5,
+      "wake_p90_ms": 279.9,
+      "plain_1000_extra_us_per_row": 4.68,
+      "plain_100000_extra_us_per_row": 3.052,
+      "typed_1000_extra_us_per_row": 10.7,
+      "typed_100000_extra_us_per_row": 8.953
+    },
+    "worker-msgpack": {
+      "one_row_us": 3234.7,
+      "plain_1000_ms": 4.45,
+      "plain_100000_ms": 293.41,
+      "typed_1000_ms": 13.23,
+      "typed_100000_ms": 1014.07,
+      "wake_to_first_result_ms": 237.6,
+      "wake_p90_ms": 260.5,
+      "plain_1000_extra_us_per_row": 1.4,
+      "plain_100000_extra_us_per_row": 1.136,
+      "typed_1000_extra_us_per_row": 9.42,
+      "typed_100000_extra_us_per_row": 8.86
+    },
+    "worker+spare": {
+      "one_row_us": 2093.7,
+      "plain_1000_ms": 6.14,
+      "plain_100000_ms": 428.56,
+      "typed_1000_ms": 11.05,
+      "typed_100000_ms": 851.85,
+      "wake_to_first_result_ms": 43.4,
+      "wake_p90_ms": 50.8,
+      "plain_1000_extra_us_per_row": 3.09,
+      "plain_100000_extra_us_per_row": 2.488,
+      "typed_1000_extra_us_per_row": 7.24,
+      "typed_100000_extra_us_per_row": 7.237
+    },
+    "worker-pool (process already up)": {
+      "one_row_us": 2622.9,
+      "plain_1000_ms": 5.6,
+      "plain_100000_ms": 438.02,
+      "typed_1000_ms": 13.47,
+      "typed_100000_ms": 981.34,
+      "wake_to_first_result_ms": 30.9,
+      "wake_p90_ms": 35.2,
+      "plain_1000_extra_us_per_row": 2.55,
+      "plain_100000_extra_us_per_row": 2.583,
+      "typed_1000_extra_us_per_row": 9.66,
+      "typed_100000_extra_us_per_row": 8.532
+    },
+    "rust-worker-json": {
+      "one_row_us": 2684.9,
+      "plain_1000_ms": 4.31,
+      "plain_100000_ms": 257.41,
+      "typed_1000_ms": 7.41,
+      "typed_100000_ms": 471.5,
+      "wake_to_first_result_ms": 54.2,
+      "wake_p90_ms": 59.2,
+      "plain_1000_extra_us_per_row": 1.26,
+      "plain_100000_extra_us_per_row": 0.776,
+      "typed_1000_extra_us_per_row": 3.6,
+      "typed_100000_extra_us_per_row": 3.434
+    },
+    "rust-worker-msgpack": {
+      "one_row_us": 2105.8,
+      "plain_1000_ms": 3.78,
+      "plain_100000_ms": 214.89,
+      "typed_1000_ms": 5.94,
+      "typed_100000_ms": 415.48,
+      "wake_to_first_result_ms": 58.4,
+      "wake_p90_ms": 64.5,
+      "plain_1000_extra_us_per_row": 0.73,
+      "plain_100000_extra_us_per_row": 0.351,
+      "typed_1000_extra_us_per_row": 2.13,
+      "typed_100000_extra_us_per_row": 2.874
+    },
+    "cpp-worker-json": {
+      "one_row_us": 2957.4,
+      "plain_1000_ms": 6.69,
+      "plain_100000_ms": 408.32,
+      "typed_1000_ms": 8.94,
+      "typed_100000_ms": 602.47,
+      "wake_to_first_result_ms": 66.1,
+      "wake_p90_ms": 73.2,
+      "plain_1000_extra_us_per_row": 3.64,
+      "plain_100000_extra_us_per_row": 2.285,
+      "typed_1000_extra_us_per_row": 5.13,
+      "typed_100000_extra_us_per_row": 4.744
+    },
+    "cpp-worker-msgpack": {
+      "one_row_us": 3390.3,
+      "plain_1000_ms": 4.36,
+      "plain_100000_ms": 200.11,
+      "typed_1000_ms": 7.63,
+      "typed_100000_ms": 383.15,
+      "wake_to_first_result_ms": 68.4,
+      "wake_p90_ms": 73.9,
+      "plain_1000_extra_us_per_row": 1.31,
+      "plain_100000_extra_us_per_row": 0.203,
+      "typed_1000_extra_us_per_row": 3.82,
+      "typed_100000_extra_us_per_row": 2.55
+    }
+  },
+  "overhead_machine": {
+    "before": {
+      "load": [
+        1.27,
+        1.11,
+        0.59
+      ],
+      "yes_burners": 0,
+      "cpus": 8
+    },
+    "after": {
+      "load": [
+        1.14,
+        1.11,
+        0.65
+      ],
+      "yes_burners": 0,
+      "cpus": 8
+    }
+  }
+}

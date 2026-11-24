@@ -1,0 +1,124 @@
+{
+  "load_average": [
+    1.330078125,
+    0.85009765625,
+    0.37744140625
+  ],
+  "warm_open": {
+    "first_result_ms": 1.1725259999764148,
+    "open_round_trip_ms": 0.47906500000749475
+  },
+  "memory": {
+    "base_footprint_kb": 1803.0,
+    "footprint_kb_per_open": 170.44,
+    "rss_kb_per_open": 170.44,
+    "databases": 100,
+    "parent_fds_with_all_open": 11,
+    "threads_in_worker": 104
+  },
+  "memory_no_lookaside": {
+    "base_footprint_kb": 1730.0,
+    "footprint_kb_per_open": 131.32,
+    "rss_kb_per_open": 131.32,
+    "databases": 100,
+    "parent_fds_with_all_open": 11,
+    "threads_in_worker": 104
+  },
+  "scaling": {
+    "in-process": {
+      "1": {
+        "rps": 4830.788200603915,
+        "parent_cpu_share": 1.0108579670543936,
+        "worker_cpu_cores": 0.0,
+        "processes": 0,
+        "fds": 9
+      },
+      "4": {
+        "rps": 3398.215546043484,
+        "parent_cpu_share": 1.295611764828091,
+        "worker_cpu_cores": 0.0,
+        "processes": 0,
+        "fds": 12
+      },
+      "16": {
+        "rps": 3887.9463865789985,
+        "parent_cpu_share": 1.5213844208277927,
+        "worker_cpu_cores": 0.0,
+        "processes": 0,
+        "fds": 24
+      },
+      "64": {
+        "rps": 4052.2850769917395,
+        "parent_cpu_share": 1.5417425416994257,
+        "worker_cpu_cores": 0.0,
+        "processes": 0,
+        "fds": 72
+      }
+    },
+    "cworker": {
+      "1": {
+        "rps": 7969.719673080186,
+        "parent_cpu_share": 0.7655853962992676,
+        "worker_cpu_cores": 0.0,
+        "processes": 1,
+        "fds": 11
+      },
+      "4": {
+        "rps": 11267.088753272541,
+        "parent_cpu_share": 0.9765213925199984,
+        "worker_cpu_cores": 0.0,
+        "processes": 4,
+        "fds": 20
+      },
+      "16": {
+        "rps": 11870.136579166776,
+        "parent_cpu_share": 0.9713985390318862,
+        "worker_cpu_cores": 0.0,
+        "processes": 16,
+        "fds": 56
+      },
+      "64": {
+        "rps": 12067.110796383244,
+        "parent_cpu_share": 0.982801942909867,
+        "worker_cpu_cores": 0.0,
+        "processes": 64,
+        "fds": 200
+      }
+    },
+    "cpool": {
+      "1": {
+        "rps": 6215.816104585622,
+        "parent_cpu_share": 0.7133779384709475,
+        "worker_cpu_cores": 0.0,
+        "processes": 1,
+        "fds": 11
+      },
+      "4": {
+        "rps": 11001.998351429927,
+        "parent_cpu_share": 0.985231329937987,
+        "worker_cpu_cores": 0.0,
+        "processes": 2,
+        "fds": 14
+      },
+      "16": {
+        "rps": 10478.99163899196,
+        "parent_cpu_share": 0.9460041811566282,
+        "worker_cpu_cores": 0.0,
+        "processes": 2,
+        "fds": 14
+      },
+      "64": {
+        "rps": 10817.292244038665,
+        "parent_cpu_share": 0.9547083258365269,
+        "worker_cpu_cores": 0.0,
+        "processes": 2,
+        "fds": 14
+      }
+    }
+  },
+  "load_average_after": [
+    1.4169921875,
+    0.89111328125,
+    0.39794921875
+  ]
+}

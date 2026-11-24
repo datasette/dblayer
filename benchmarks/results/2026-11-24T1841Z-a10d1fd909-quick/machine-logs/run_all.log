@@ -1,0 +1,93 @@
+Bytecode compiled 3373 files in 126ms
+{
+  "run": {
+    "started": "2026-11-24T18:41:47+00:00",
+    "mode": "quick",
+    "label": "TRIAL 2 of the Fly.io mechanism (--quick, precompiled stdlib): not final numbers",
+    "results_dir": "2026-11-24T1841Z-a10d1fd909-quick"
+  },
+  "git": {
+    "commit": "a10d1fd909949b0037f68055c3f263791f41be44",
+    "describe": "a10d1fd 2026-11-24T10:28:19-08:00 Notes: Rust multi-tenant SQLite worker final report; C against Rust",
+    "dirty": false
+  },
+  "machine": {
+    "platform": "Linux-6.12.118-fly-x86_64-with-glibc2.41",
+    "kernel": "6.12.118-fly",
+    "arch": "x86_64",
+    "cpu_count": 8,
+    "hostname_is_fly": true,
+    "cpu_model": "AMD EPYC",
+    "memory_gb": 15.6,
+    "filesystem": "/dev/vdc ext4 rw,relatime",
+    "tmp_filesystem": "/dev/vdc ext4",
+    "fly_vm_size": "performance-8x",
+    "fly_region": "sjc"
+  },
+  "versions": {
+    "python": "3.14.8",
+    "sqlite (python sqlite3)": "3.53.1",
+    "uv": "uv 0.13.0 (x86_64-unknown-linux-gnu)",
+    "node": "v24.22.3",
+    "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+    "cargo": "cargo 1.100.0 (3acc79c0c 2026-11-05)",
+    "cc": "cc (Debian 14.2.0-19) 14.2.0",
+    "postgres (psql client)": "psql (PostgreSQL) 18.7 (Debian 18.7-1.pgdg13+5)",
+    "duckdb": "2.0.1",
+    "asyncpg": "0.32.0",
+    "psycopg": "3.3.9",
+    "psycopg-binary": "3.3.9",
+    "apsw": "3.54.1.0",
+    "wasmtime": "51.0.0",
+    "chdb": "4.5.1",
+    "msgpack": "1.2.4",
+    "pytest": "9.2.0",
+    "starlette": "1.10.0",
+    "uvicorn": "0.54.0",
+    "postgres server": "18.7 (Debian 18.7-1.pgdg13+5)",
+    "libpq": 180006,
+    "sqlite (C worker)": "dblayer-cworker protocol 1, SQLite 3.53.1",
+    "sqlite-rsworker": "dblayer-sqlite-rsworker protocol 1, SQLite 3.53.1 (-O2 -g -DSQLITE_THREADSAFE=1 -DSQLITE_ENABLE_FTS3 -DSQLITE_ENABLE_FTS3_PARENTHESIS -DSQLITE_ENABLE_FTS4 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_GEOPOLY -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_DBSTAT_VTAB -DSQLITE_DQS=3)",
+    "duckdb-rsworker": "dblayer-duckdb-rsworker protocol 1, DuckDB v2.0.1",
+    "duckdb-cppworker": "dblayer-duckdb-worker protocol 1, DuckDB v2.0.1"
+  }
+}
+
+=== worker_overhead: Worker process boundary against in-process SQLite (load 1.71)
+=== worker_overhead: ok in 64.1 s
+
+=== cpool: Multi-tenant C pool (sqlite-cpool) (load 1.33)
+=== cpool: ok in 18.6 s
+
+=== rspool: Multi-tenant C worker against its Rust port (sqlite-cpool, sqlite-rspool) (load 1.42)
+=== rspool: ok in 41.5 s
+
+=== wasm: SQLite in WebAssembly (sqlite-wasm) (load 1.56)
+=== wasm: ok in 58.7 s
+
+=== nodeworker: SQLite-WASM in a Node.js worker (sqlite-nodeworker) (load 1.16)
+=== nodeworker: ok in 15.0 s
+
+=== duckdb_memory: DuckDB memory after sleep, in-process against workers (load 1.05)
+=== duckdb_memory: ok in 193.3 s
+
+=== postgres_drivers: PostgreSQL drivers: asyncpg against psycopg 3 (load 1.14)
+=== postgres_drivers: ok in 23.8 s
+
+=== pglite: PGlite worker against psycopg and the SQLite workers (load 1.23)
+=== pglite: ok in 68.2 s
+
+=== clickhouse: ClickHouse (chDB) against DuckDB and SQLite (load 1.34)
+=== clickhouse: ok in 78.2 s
+
+=== export: db.export(): native serialisation against the Python fallback (load 0.94)
+=== export: ok in 37.2 s
+
+=== scale_wake_query: Scale backends: wake cost and query cost, separately (load 1.05)
+=== scale_wake_query: ok in 39.1 s
+
+=== scale_tests: Scale tests (tests/scale, through their harness) (load 1.11)
+=== scale_tests: ok in 487.1 s
+
+wrote /data/out/results/2026-11-24T1841Z-a10d1fd909-quick/results.md and results.jsonl
+RESULTS_DIR=/data/out/results/2026-11-24T1841Z-a10d1fd909-quick

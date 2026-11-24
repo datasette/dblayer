@@ -1,0 +1,53 @@
+{
+  "run": {
+    "started": "2026-11-24T18:41:47+00:00",
+    "mode": "quick",
+    "label": "TRIAL 2 of the Fly.io mechanism (--quick, precompiled stdlib): not final numbers",
+    "results_dir": "2026-11-24T1841Z-a10d1fd909-quick"
+  },
+  "git": {
+    "commit": "a10d1fd909949b0037f68055c3f263791f41be44",
+    "describe": "a10d1fd 2026-11-24T10:28:19-08:00 Notes: Rust multi-tenant SQLite worker final report; C against Rust",
+    "dirty": false
+  },
+  "machine": {
+    "platform": "Linux-6.12.118-fly-x86_64-with-glibc2.41",
+    "kernel": "6.12.118-fly",
+    "arch": "x86_64",
+    "cpu_count": 8,
+    "hostname_is_fly": true,
+    "cpu_model": "AMD EPYC",
+    "memory_gb": 15.6,
+    "filesystem": "/dev/vdc ext4 rw,relatime",
+    "tmp_filesystem": "/dev/vdc ext4",
+    "fly_vm_size": "performance-8x",
+    "fly_region": "sjc"
+  },
+  "versions": {
+    "python": "3.14.8",
+    "sqlite (python sqlite3)": "3.53.1",
+    "uv": "uv 0.13.0 (x86_64-unknown-linux-gnu)",
+    "node": "v24.22.3",
+    "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+    "cargo": "cargo 1.100.0 (3acc79c0c 2026-11-05)",
+    "cc": "cc (Debian 14.2.0-19) 14.2.0",
+    "postgres (psql client)": "psql (PostgreSQL) 18.7 (Debian 18.7-1.pgdg13+5)",
+    "duckdb": "2.0.1",
+    "asyncpg": "0.32.0",
+    "psycopg": "3.3.9",
+    "psycopg-binary": "3.3.9",
+    "apsw": "3.54.1.0",
+    "wasmtime": "51.0.0",
+    "chdb": "4.5.1",
+    "msgpack": "1.2.4",
+    "pytest": "9.2.0",
+    "starlette": "1.10.0",
+    "uvicorn": "0.54.0",
+    "postgres server": "18.7 (Debian 18.7-1.pgdg13+5)",
+    "libpq": 180006,
+    "sqlite (C worker)": "dblayer-cworker protocol 1, SQLite 3.53.1",
+    "sqlite-rsworker": "dblayer-sqlite-rsworker protocol 1, SQLite 3.53.1 (-O2 -g -DSQLITE_THREADSAFE=1 -DSQLITE_ENABLE_FTS3 -DSQLITE_ENABLE_FTS3_PARENTHESIS -DSQLITE_ENABLE_FTS4 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_GEOPOLY -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_DBSTAT_VTAB -DSQLITE_DQS=3)",
+    "duckdb-rsworker": "dblayer-duckdb-rsworker protocol 1, DuckDB v2.0.1",
+    "duckdb-cppworker": "dblayer-duckdb-worker protocol 1, DuckDB v2.0.1"
+  }
+}

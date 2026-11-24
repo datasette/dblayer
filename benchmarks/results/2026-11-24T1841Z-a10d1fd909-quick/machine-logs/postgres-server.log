@@ -1,0 +1,144 @@
+2026-11-24 18:37:23.334 UTC [785] LOG:  starting PostgreSQL 18.7 (Debian 18.7-1.pgdg13+5) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+2026-11-24 18:37:23.336 UTC [785] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2026-11-24 18:37:23.340 UTC [791] LOG:  database system was shut down at 2026-11-24 18:37:23 UTC
+2026-11-24 18:37:23.344 UTC [785] LOG:  database system is ready to accept connections
+2026-11-24 18:42:23.377 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 18:44:02.913 UTC [789] LOG:  checkpoint complete: wrote 993 buffers (6.1%), wrote 3 SLRU buffers; 1 WAL file(s) added, 0 removed, 0 recycled; write=99.507 s, sync=0.003 s, total=99.536 s; sync files=312, longest=0.001 s, average=0.001 s; distance=4742 kB, estimate=4742 kB; lsn=0/1C153C0, redo lsn=0/1C15330
+2026-11-24 18:52:24.196 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 18:56:54.062 UTC [789] LOG:  checkpoint complete: wrote 3455 buffers (21.1%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 8 recycled; write=269.844 s, sync=0.004 s, total=269.866 s; sync files=891, longest=0.001 s, average=0.001 s; distance=121347 kB, estimate=121347 kB; lsn=0/92961D0, redo lsn=0/9296140
+2026-11-24 19:01:04.240 UTC [26382] ERROR:  canceling statement due to user request
+2026-11-24 19:01:04.240 UTC [26382] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c
+2026-11-24 19:01:04.333 UTC [26389] ERROR:  canceling statement due to user request
+2026-11-24 19:01:04.333 UTC [26389] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c
+2026-11-24 19:01:17.027 UTC [27708] ERROR:  duplicate key value violates unique constraint "log_msg_key"
+2026-11-24 19:01:17.027 UTC [27708] DETAIL:  Key (msg)=(dup) already exists.
+2026-11-24 19:01:17.027 UTC [27708] STATEMENT:  insert into log (msg) values ($1)
+2026-11-24 19:01:17.073 UTC [27714] ERROR:  duplicate key value violates unique constraint "log_msg_key"
+2026-11-24 19:01:17.073 UTC [27714] DETAIL:  Key (msg)=(dup) already exists.
+2026-11-24 19:01:17.073 UTC [27714] STATEMENT:  insert into log (msg) values ($1)
+2026-11-24 19:02:01.799 UTC [30793] ERROR:  canceling statement due to user request
+2026-11-24 19:02:01.799 UTC [30793] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c
+2026-11-24 19:02:01.990 UTC [30800] ERROR:  canceling statement due to user request
+2026-11-24 19:02:01.990 UTC [30800] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c
+2026-11-24 19:02:23.876 UTC [32315] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:23.876 UTC [32315] STATEMENT:  selec 1
+2026-11-24 19:02:23.898 UTC [32320] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:23.898 UTC [32320] STATEMENT:  selec 1
+2026-11-24 19:02:24.109 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 19:02:25.568 UTC [32556] ERROR:  relation "no_such_table" does not exist at character 15
+2026-11-24 19:02:25.568 UTC [32556] STATEMENT:  select * from no_such_table
+2026-11-24 19:02:25.589 UTC [32561] ERROR:  relation "no_such_table" does not exist at character 15
+2026-11-24 19:02:25.589 UTC [32561] STATEMENT:  select * from no_such_table
+2026-11-24 19:02:27.253 UTC [332] ERROR:  syntax error at or near "inot" at character 8
+2026-11-24 19:02:27.253 UTC [332] STATEMENT:  insert inot t values (1)
+2026-11-24 19:02:27.276 UTC [337] ERROR:  syntax error at or near "inot" at character 8
+2026-11-24 19:02:27.276 UTC [337] STATEMENT:  insert inot t values (1)
+2026-11-24 19:02:29.123 UTC [570] ERROR:  duplicate key value violates unique constraint "t_pkey"
+2026-11-24 19:02:29.123 UTC [570] DETAIL:  Key (id)=(1) already exists.
+2026-11-24 19:02:29.123 UTC [570] STATEMENT:  insert into t (id) values (1)
+2026-11-24 19:02:29.146 UTC [575] ERROR:  duplicate key value violates unique constraint "t_pkey"
+2026-11-24 19:02:29.146 UTC [575] DETAIL:  Key (id)=(1) already exists.
+2026-11-24 19:02:29.146 UTC [575] STATEMENT:  insert into t (id) values (1)
+2026-11-24 19:02:31.440 UTC [860] ERROR:  canceling statement due to statement timeout
+2026-11-24 19:02:31.440 UTC [860] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c
+2026-11-24 19:02:31.484 UTC [865] ERROR:  canceling statement due to statement timeout
+2026-11-24 19:02:31.484 UTC [865] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c
+2026-11-24 19:02:38.052 UTC [789] LOG:  checkpoint complete: wrote 139 buffers (0.8%), wrote 2 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=13.936 s, sync=0.002 s, total=13.943 s; sync files=305, longest=0.001 s, average=0.001 s; distance=1980 kB, estimate=109410 kB; lsn=0/94C9E28, redo lsn=0/94853A0
+2026-11-24 19:02:41.152 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.152 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.152 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.152 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.152 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.152 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.152 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.152 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.153 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.153 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.153 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.153 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.153 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.153 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.153 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.153 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.153 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.153 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.154 UTC [2183] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.154 UTC [2183] STATEMENT:  selec 1
+2026-11-24 19:02:41.178 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.178 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:02:41.178 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.178 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:02:41.179 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.179 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:02:41.179 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.179 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:02:41.179 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.179 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:02:41.180 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.180 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:02:41.181 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.181 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:02:41.181 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.181 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:02:41.181 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.181 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:02:41.181 UTC [2188] ERROR:  syntax error at or near "selec" at character 1
+2026-11-24 19:02:41.181 UTC [2188] STATEMENT:  selec 1
+2026-11-24 19:04:04.476 UTC [10876] ERROR:  canceling statement due to user request
+2026-11-24 19:04:04.476 UTC [10876] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select x from c
+2026-11-24 19:04:14.398 UTC [11837] ERROR:  canceling statement due to user request
+2026-11-24 19:04:14.398 UTC [11837] STATEMENT:  COPY (SELECT c0 AS c0 FROM (with recursive c(x) as (select 1 union all select x + 1 from c where x < 100000) select x from c) AS _q(c0)) TO STDOUT (FORMAT csv, DELIMITER ',')
+2026-11-24 19:04:14.439 UTC [11843] ERROR:  canceling statement due to user request
+2026-11-24 19:04:14.439 UTC [11843] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c where x < 100000) select x from c
+2026-11-24 19:04:28.264 UTC [12329] ERROR:  canceling statement due to statement timeout
+2026-11-24 19:04:28.264 UTC [12329] STATEMENT:  COPY (SELECT c0 AS c0 FROM (with recursive c(x) as (select 1 union all select x + 1 from c) select x from c) AS _q(c0)) TO STDOUT (FORMAT csv, DELIMITER ',')
+2026-11-24 19:04:28.727 UTC [12335] ERROR:  canceling statement due to user request
+2026-11-24 19:04:28.727 UTC [12335] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select x from c
+2026-11-24 19:04:39.286 UTC [12830] ERROR:  canceling statement due to user request
+2026-11-24 19:04:39.286 UTC [12830] STATEMENT:  select count(*) from (with recursive c(x) as (select 1 union all select x + 1 from c) select x from c) t
+2026-11-24 19:04:39.468 UTC [12836] ERROR:  canceling statement due to user request
+2026-11-24 19:04:39.468 UTC [12836] STATEMENT:  select count(*) from (with recursive c(x) as (select 1 union all select x + 1 from c) select x from c) t
+2026-11-24 19:04:39.643 UTC [12842] ERROR:  canceling statement due to statement timeout
+2026-11-24 19:04:39.643 UTC [12842] STATEMENT:  COPY (SELECT c0 AS c0 FROM (select count(*) from (with recursive c(x) as (select 1 union all select x + 1 from c) select x from c) t) AS _q(c0)) TO STDOUT (FORMAT csv, DELIMITER ',')
+2026-11-24 19:04:39.822 UTC [12851] ERROR:  canceling statement due to user request
+2026-11-24 19:04:39.822 UTC [12851] STATEMENT:  select count(*) from (with recursive c(x) as (select 1 union all select x + 1 from c) select x from c) t
+2026-11-24 19:04:44.389 UTC [13325] ERROR:  canceling statement due to user request
+2026-11-24 19:04:44.389 UTC [13325] STATEMENT:  COPY (SELECT '{' || '"x":' || coalesce(c0::text, 'null') || '}' FROM (with recursive c(x) as (select 1 union all select x + 1 from c) select x from c) AS _q(c0)) TO STDOUT (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02', ESCAPE E'\x01')
+2026-11-24 19:04:44.418 UTC [13331] ERROR:  canceling statement due to user request
+2026-11-24 19:04:44.418 UTC [13331] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select x from c
+2026-11-24 19:04:48.678 UTC [13806] ERROR:  canceling statement due to user request
+2026-11-24 19:04:48.678 UTC [13806] STATEMENT:  COPY (SELECT c0 AS c0 FROM (with recursive c(x) as (select 1 union all select x + 1 from c) select x from c) AS _q(c0)) TO STDOUT (FORMAT csv, DELIMITER ',')
+2026-11-24 19:04:48.708 UTC [13812] ERROR:  canceling statement due to user request
+2026-11-24 19:04:48.708 UTC [13812] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select x from c
+2026-11-24 19:04:52.042 UTC [14277] ERROR:  relation "no_such_table" does not exist at character 15
+2026-11-24 19:04:52.042 UTC [14277] STATEMENT:  select * from no_such_table
+2026-11-24 19:04:52.065 UTC [14282] ERROR:  relation "no_such_table" does not exist at character 15
+2026-11-24 19:04:52.065 UTC [14282] STATEMENT:  select * from no_such_table
+2026-11-24 19:04:52.089 UTC [14287] ERROR:  relation "no_such_table" does not exist at character 30
+2026-11-24 19:04:52.089 UTC [14287] STATEMENT:  SELECT * FROM (select * from no_such_table) AS _q LIMIT 0
+2026-11-24 19:04:52.110 UTC [14292] ERROR:  relation "no_such_table" does not exist at character 15
+2026-11-24 19:04:52.110 UTC [14292] STATEMENT:  select * from no_such_table
+2026-11-24 19:04:57.234 UTC [14802] ERROR:  cannot execute DELETE in a read-only transaction
+2026-11-24 19:04:57.234 UTC [14802] STATEMENT:  delete from items
+2026-11-24 19:04:57.312 UTC [14808] ERROR:  cannot execute DELETE in a read-only transaction
+2026-11-24 19:04:57.312 UTC [14808] STATEMENT:  delete from items
+2026-11-24 19:04:57.379 UTC [14814] ERROR:  cannot execute DELETE in a read-only transaction
+2026-11-24 19:04:57.379 UTC [14814] STATEMENT:  delete from items
+2026-11-24 19:04:57.437 UTC [14820] ERROR:  cannot execute DELETE in a read-only transaction
+2026-11-24 19:04:57.437 UTC [14820] STATEMENT:  delete from items
+2026-11-24 19:07:03.095 UTC [23375] ERROR:  duplicate key value violates unique constraint "pg_namespace_nspname_index"
+2026-11-24 19:07:03.095 UTC [23375] DETAIL:  Key (nspname)=(dbltest_24200_254_c02ea9) already exists.
+2026-11-24 19:07:03.095 UTC [23375] STATEMENT:  BEGIN READ WRITE; CREATE SCHEMA IF NOT EXISTS "dbltest_24200_254_c02ea9"; COMMIT
+2026-11-24 19:07:24.112 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 19:07:42.577 UTC [789] LOG:  checkpoint complete: wrote 184 buffers (1.1%), wrote 2 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=18.451 s, sync=0.004 s, total=18.465 s; sync files=686, longest=0.001 s, average=0.001 s; distance=4778 kB, estimate=98947 kB; lsn=0/9946EA0, redo lsn=0/992FD48
+2026-11-24 19:08:25.471 UTC [27269] ERROR:  canceling statement due to user request
+2026-11-24 19:08:25.471 UTC [27269] STATEMENT:  with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c
+2026-11-24 19:12:24.678 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 19:12:31.216 UTC [789] LOG:  checkpoint complete: wrote 65 buffers (0.4%), wrote 2 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=6.533 s, sync=0.001 s, total=6.538 s; sync files=34, longest=0.001 s, average=0.001 s; distance=428 kB, estimate=89095 kB; lsn=0/999B058, redo lsn=0/999B000
+2026-11-24 19:15:31.662 UTC [785] LOG:  received fast shutdown request
+2026-11-24 19:15:31.664 UTC [785] LOG:  aborting any active transactions
+2026-11-24 19:15:31.667 UTC [785] LOG:  background worker "logical replication launcher" (PID 794) exited with exit code 1
+2026-11-24 19:15:31.667 UTC [789] LOG:  shutting down
+2026-11-24 19:15:31.667 UTC [789] LOG:  checkpoint starting: shutdown immediate
+2026-11-24 19:15:31.673 UTC [789] LOG:  checkpoint complete: wrote 53 buffers (0.3%), wrote 2 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.003 s, sync=0.001 s, total=0.007 s; sync files=95, longest=0.001 s, average=0.001 s; distance=680 kB, estimate=80254 kB; lsn=0/9A45070, redo lsn=0/9A45070
+2026-11-24 19:15:31.699 UTC [785] LOG:  database system is shut down

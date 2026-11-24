@@ -1,0 +1,21 @@
+load average at start 1.6/1.0/0.5, at end 1.2/1.0/0.5 (provisional if high)
+module: 1740 KB; compile 602 ms; load cached compilation 13.7 ms; import wasmtime 129 ms
+| Measure | in-process | apsw | apsw-inline | worker-msgpack | cworker-msgpack | cpool-msgpack | wasm | wasm-inline |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| New database to first result (ms) | 0.60 | 0.80 | 0.90 | 135.49 | 2.41 | 2.46 | 3.55 | 3.14 |
+| One-row read, median (us) | 161 | 184 | 38 | 403 | 145 | 139 | 400 | 208 |
+| One-row read, p90 (us) | 223 | 267 | 58 | 507 | 217 | 200 | 541 | 250 |
+| One-row update (us) | 1063 | 941 | 1125 | 1671 | 1063 | 1215 | 2514 | 1912 |
+| Per row, 1,000-row read (us) | 1.68 | 1.75 | 1.68 | 2.67 | 1.87 | 1.28 | 2.50 | 1.66 |
+| Per row, 100,000-row read (us) | 1.64 | 1.19 | 1.39 | 3.58 | 2.13 | 2.73 | 2.71 | 2.73 |
+| Per row, 100,000-row stream (us) | 1.36 | 1.12 | 1.48 | 2.35 | 1.28 | 1.16 | 1.89 | 1.85 |
+| execute_many, 100,000 rows (ms) | 372 | 425 | 409 | 452 | 365 | 382 | 518 | 477 |
+| Memory per open connection, this process (KB) | 189 | 229 | 226 | -22 | 38 | 19 | 514 | 514 |
+| Memory per open connection, worker process (KB) | 0 | 0 | 0 | 16236 | 376 | 5334 | 0 | 0 |
+host VFS: full scan of 4010 pages through the host 20.3 ms, from a warm page cache 3.4 ms (native sqlite3, cache_size 10: 3.6 ms): 4.21 us per page read; a one-row read makes 6 host calls {'lock': 1, 'access': 2, 'read': 1, 'file_size': 1, 'unlock': 1}
+
+| CPU-bound statement | native sqlite3 (ms) | wasm, no interruption | wasm, epoch | wasm, fuel |
+| --- | --- | --- | --- | --- |
+| recursive_cte_1m | 251 | 519 | 697 | 685 |
+| sort_200k | 111 | 256 | 280 | 279 |
+| instr_quadratic | 165 | 386 | 362 | 336 |
