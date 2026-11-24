@@ -205,9 +205,14 @@ class Pool:
                     reuse = False
         finally:
             try:
-                if reuse and self._reusable(entry) and not self.hub.wants_connection_closed():
-                    entry.last_used = time.monotonic()
-                    self._check_in(entry)
+                if reuse and self._reusable(entry):
+                    if self.hub.wants_connection_closed():
+                        # Someone is waiting for a place under the cap.
+                        self.hub.cap_evictions += 1
+                        await self._close_entry(entry)
+                    else:
+                        entry.last_used = time.monotonic()
+                        self._check_in(entry)
                 else:
                     await self._close_entry(entry)
             finally:

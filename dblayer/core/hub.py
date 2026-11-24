@@ -67,7 +67,8 @@ class Hub:
         """Connections open, opening or closing, across the hub."""
         self._waiters: deque[asyncio.Future[None]] = deque()
         self.cap_evictions = 0
-        """Idle connections closed to make room under the cap."""
+        """Connections closed to make room under the cap: idle ones taken
+        by ``reserve()``, and ones closed on check-in for a waiter."""
         self.on_wake: LifecycleHook | None = None
         """Async ``(db) -> None``, run before a database's first connection
         opens (under its wake lock)."""

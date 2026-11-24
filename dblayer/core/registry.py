@@ -52,7 +52,8 @@ class RegistryStats:
     evictions: int
     """Databases made cold by ``evict()``."""
     cap_evictions: int
-    """Idle connections closed to make room under the cap."""
+    """Connections closed to make room under the cap (idle ones, and ones
+    closed on check-in because a caller was waiting)."""
     idle_closes: int
     """Connections closed by the idle timeout."""
     max_open_connections: int | None
