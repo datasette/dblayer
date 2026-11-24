@@ -100,6 +100,18 @@ def _cpool_backend(path: Path) -> Backend:
     return SqliteCPool(path, pool=_cpools[0])  # type: ignore[return-value]
 
 
+def _nodeworker_backend(path: Path) -> Backend:
+    from dblayer.backends.sqlite_nodeworker import SqliteNodeWorker
+
+    return SqliteNodeWorker(path)  # type: ignore[return-value]
+
+
+def _nodeworker_available() -> str | None:
+    from dblayer.backends.sqlite_nodeworker import unavailable
+
+    return unavailable()
+
+
 def _wasm_backend(path: Path) -> Backend:
     from dblayer.backends.sqlite_wasm import SqliteWasm
 
@@ -153,6 +165,12 @@ SCALE_BACKENDS: list[ScaleBackend] = [
     ScaleBackend(
         "sqlite-cworker", sqlite_files, _cworker_backend, 1_000, requests=10_000, growth_limit=None,
         available=_cworker_available,
+    ),
+    # SQLite-WASM in Node: a wake starts a Node process (~60 ms, as the
+    # Python worker), so the Python worker's shorter load.
+    ScaleBackend(
+        "sqlite-nodeworker", sqlite_files, _nodeworker_backend, 1_000, requests=2_000, growth_limit=None,
+        available=_nodeworker_available,
     ),
     # The multi-tenant C pool: two processes for all 1,000 databases, so a
     # wake is one open round trip on a running process; fast enough that a
