@@ -722,3 +722,7 @@ Simon chose two of the ambitious ideas above, each given to its own subagent:
 
 - **PGlite in a Node.js worker** (`pglite`): a real PostgreSQL per database with no server, one data directory per `Database`. Open questions put to the subagent: PGlite is a single session, so how do dblayer's pooled connections and transactions map onto it; durability after a kill; whether anything short of a kill can stop a running query; start-up and memory per awake database.
 - **ClickHouse** (`clickhouse`), chDB in-process as the first form to try. It is the engine furthest from the others: no general transactions, no enforced uniqueness or foreign keys, mutations in place of row updates. It is the hardest test so far of the capability-flag approach, and a natural fit for the native export experiment.
+
+### Decision: try the socket handoff (2026-11-24)
+
+Simon asked for idea 1 from the ambitious list. It is added to the export experiment as a fourth transport for the C SQLite worker: Python sends the HTTP headers, then passes the client connection's file descriptor to the worker, which writes the body itself. Known preconditions to be confirmed by the experiment: plain HTTP/1.1 only (no TLS terminated in Python, no HTTP/2), no compression or other response middleware, and ASGI gives an application no supported way to reach the socket.
