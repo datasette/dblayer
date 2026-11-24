@@ -155,6 +155,15 @@ impl Connection {
 
     /// Run SQL with no parameters, discarding any result.
     pub fn query(&self, sql: &str) -> Result<(), DuckError> {
+        self.query_once(sql)
+    }
+
+    /// Split SQL into statements (a parse; nothing is bound or run).
+    pub fn extract(&self, sql: &str) -> Result<Extracted, DuckError> {
+        self.extract_once(sql)
+    }
+
+    fn query_once(&self, sql: &str) -> Result<(), DuckError> {
         let c = cstring(sql)?;
         let mut res = RawResult::zeroed();
         // SAFETY: open connection, NUL-terminated SQL, result destroyed by RawResult.
@@ -166,7 +175,7 @@ impl Connection {
     }
 
     /// Split SQL into statements (a parse; nothing is bound or run).
-    pub fn extract(&self, sql: &str) -> Result<Extracted, DuckError> {
+    fn extract_once(&self, sql: &str) -> Result<Extracted, DuckError> {
         let c = cstring(sql)?;
         let mut raw: d::duckdb_extracted_statements = ptr::null_mut();
         // SAFETY: open connection; the extracted object is destroyed by Extracted.
@@ -249,6 +258,10 @@ pub struct Extracted {
 
 impl Extracted {
     pub fn prepare(&self, conn: &Connection, index: usize) -> Result<Prepared, DuckError> {
+        self.prepare_once(conn, index)
+    }
+
+    fn prepare_once(&self, conn: &Connection, index: usize) -> Result<Prepared, DuckError> {
         let mut raw: d::duckdb_prepared_statement = ptr::null_mut();
         // SAFETY: index < count is checked by the caller; Prepared destroys the
         // statement even when the prepare failed, as the API requires.
@@ -257,6 +270,15 @@ impl Extracted {
         if state != d::DuckDBSuccess {
             // SAFETY: valid (failed) prepared statement.
             let msg = borrowed(unsafe { d::duckdb_prepare_error(p.raw) });
+            if msg.is_empty() {
+                // DuckDB 2.0 fails the prepare of an extracted statement
+                // with no message when the connection still has an open
+                // streaming result (duckdb_prepare says why).
+                return Err(DuckError::new(
+                    crate::errors::RESOURCE_IN_USE,
+                    "Resource In Use Error: connection has an open result; drain or destroy it before starting a new query",
+                ));
+            }
             return Err(DuckError::from_message(msg));
         }
         Ok(p)
@@ -318,6 +340,10 @@ impl Prepared {
     /// fetched (SELECT and the like); otherwise the result is materialised
     /// before this returns (DML, DDL), so the statement has fully run.
     pub fn execute(&mut self, streaming: bool) -> Result<QueryResult, DuckError> {
+        self.execute_once(streaming)
+    }
+
+    fn execute_once(&mut self, streaming: bool) -> Result<QueryResult, DuckError> {
         let mut res = RawResult::zeroed();
         // SAFETY: valid statement; the result is destroyed by RawResult.
         let state = unsafe {

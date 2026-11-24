@@ -61,6 +61,7 @@ pub const OUT_OF_MEMORY: u32 = ffi::duckdb_error_type_DUCKDB_ERROR_OUT_OF_MEMORY
 pub const CONNECTION: u32 = ffi::duckdb_error_type_DUCKDB_ERROR_CONNECTION;
 pub const INVALID_INPUT: u32 = ffi::duckdb_error_type_DUCKDB_ERROR_INVALID_INPUT;
 pub const BINDER: u32 = ffi::duckdb_error_type_DUCKDB_ERROR_BINDER;
+pub const RESOURCE_IN_USE: u32 = ffi::duckdb_error_type_DUCKDB_ERROR_RESOURCE_IN_USE;
 pub const INVALID: u32 = ffi::duckdb_error_type_DUCKDB_ERROR_INVALID;
 
 /// An error raised by DuckDB.

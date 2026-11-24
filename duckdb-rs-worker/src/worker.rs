@@ -287,7 +287,7 @@ struct CState {
 
 struct ConnShared {
     state: Mutex<CState>,
-    handle: InterruptHandle,
+    handle: Mutex<InterruptHandle>,
     sender: Sender<Job>,
 }
 
@@ -311,7 +311,7 @@ fn interrupt_while_active(shared: &Arc<ConnShared>, timer: &Arc<Timer>, stmt: u6
         if st.closed || st.active != stmt || stmt == 0 {
             return;
         }
-        shared.handle.interrupt();
+        lock(&shared.handle).interrupt();
     }
     let (s, t) = (Arc::clone(shared), Arc::clone(timer));
     timer.schedule(REINTERRUPT, move || interrupt_while_active(&s, &t, stmt));
@@ -562,7 +562,15 @@ impl Server {
             let entry = dbs.get_mut(&key).expect("just inserted");
             let conn = match entry.spare.pop() {
                 Some(c) => c,
-                None => entry.db.connect()?,
+                None => match entry.db.connect() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        if entry.conns == 0 {
+                            dbs.remove(&key); // releases the file lock
+                        }
+                        return Err(e.into());
+                    }
+                },
             };
             entry.conns += 1;
             conn
@@ -572,7 +580,7 @@ impl Server {
         let (tx, rx) = channel::<Job>();
         let shared = Arc::new(ConnShared {
             state: Mutex::new(CState::default()),
-            handle: conn.interrupt_handle(),
+            handle: Mutex::new(conn.interrupt_handle()),
             sender: tx,
         });
         let worker = ConnWorker {
@@ -586,6 +594,7 @@ impl Server {
             tx_failed: false,
             tx_seq: 0,
             streams: HashMap::new(),
+            dirty: std::cell::Cell::new(false),
         };
         let thread = std::thread::Builder::new()
             .name(format!("conn-{cid}"))
@@ -824,11 +833,11 @@ fn open_database(path: &str, o: &OpenOptions) -> Result<DbEntry, Fail> {
 /// A connection is done with its database: keep it for a later open (it is
 /// configured; one made after the lock could not be), and close the
 /// instance after its last connection.
-fn release_db(g: &Globals, key: &str, conn: Connection) {
+fn release_db(g: &Globals, key: &str, conn: Connection, reusable: bool) {
     let mut dbs = lock(&g.dbs);
     let Some(entry) = dbs.get_mut(key) else { return };
     entry.conns = entry.conns.saturating_sub(1);
-    if entry.spare.len() < SPARE_CONNECTIONS {
+    if reusable && entry.spare.len() < SPARE_CONNECTIONS {
         entry.spare.push(conn);
     } else {
         drop(conn);
@@ -972,6 +981,9 @@ struct ConnWorker {
     tx_failed: bool,
     tx_seq: u64,
     streams: HashMap<String, Stream>,
+    /// The session holds state a later user of the connection must not see
+    /// (a temporary object, a variable, a prepared statement): not reused.
+    dirty: std::cell::Cell<bool>,
 }
 
 type Reply = Result<Option<Value>, Fail>;
@@ -1081,6 +1093,16 @@ impl ConnWorker {
     }
 
     fn handle(&mut self, ctl: &Arc<JobCtl>, msg: &Value) -> Reply {
+        // A new request on a connection ends any stream the parent left
+        // paused on it (an abandoned stream is not always cancelled), as a
+        // new execute on a DuckDB cursor closes its previous result: an open
+        // result would refuse every new statement (RESOURCE_IN_USE).
+        if !self.streams.is_empty() {
+            let keys: Vec<String> = self.streams.keys().cloned().collect();
+            for k in keys {
+                self.drop_stream(&k);
+            }
+        }
         let kind = msg.get("type").and_then(Value::as_str).unwrap_or("");
         if kind != "begin" && kind != "rollback" {
             self.check_tx(msg.opt("tx"))?;
@@ -1226,6 +1248,9 @@ impl ConnWorker {
             Ok(p) => {
                 let kind = sql::kind_name(p.statement_type());
                 self.classify(kind)?;
+                if leaves_session_state(kind, sql_text) {
+                    self.dirty.set(true);
+                }
                 Ok(Some((p, kind)))
             }
             Err(e) => {
@@ -1294,6 +1319,10 @@ impl ConnWorker {
         let tz = self.tz_for(&columns);
         // The statement (`p`) outlives this result: the caller drops it after.
         let mut src = RowSource { res, _prepared: None, chunk: None, pos: 0, exhausted: false, tz };
+        Self::collect(&mut src, kind, columns, max_rows, max_bytes)
+    }
+
+    fn collect(src: &mut RowSource, kind: &str, columns: Vec<(String, TyNode)>, max_rows: Option<i64>, max_bytes: Option<i64>) -> Result<Results, Fail> {
         let limit = max_rows.map(|m| m.max(0) as usize + 1);
         let mut rows: Vec<Value> = Vec::new();
         let mut size = 0u64;
@@ -1676,14 +1705,14 @@ impl ConnWorker {
     /// `_DuckDBStream.aclose`: discard the result and end the read-only
     /// transaction (COMMIT after a clean end, ROLLBACK after an error).
     fn finish_stream(&mut self, key: &str, ok: bool) {
-        let wrapped = match self.streams.get_mut(key) {
+        let (wrapped, rows) = match self.streams.get_mut(key) {
             Some(s) if !s.done => {
                 s.done = true;
-                s.rows = None;
-                std::mem::take(&mut s.wrapped)
+                (std::mem::take(&mut s.wrapped), s.rows.take())
             }
-            _ => false,
+            _ => (false, None),
         };
+        drop(rows); // the result, before its transaction ends
         if wrapped {
             let _ = self.end_wrapper(ok);
         }
@@ -1713,7 +1742,7 @@ impl ConnWorker {
             st.closed = true;
         }
         if let Some(c) = self.conn.take() {
-            release_db(&self.g, &self.db_key, c);
+            release_db(&self.g, &self.db_key, c, !self.dirty.get());
         }
     }
 }
@@ -1740,6 +1769,17 @@ fn on_deadline(shared: &Arc<ConnShared>, timer: &Arc<Timer>, tx: &str) {
         interrupt_while_active(shared, timer, stmt);
     }
     let _ = shared.sender.send(Job { ctl: JobCtl::new(Value::Null), work: Work::Expire });
+}
+
+/// A statement that leaves state in the DuckDB session, which a reused
+/// connection would carry over to its next user: temporary objects,
+/// variables, prepared statements, attached databases, the current schema.
+fn leaves_session_state(kind: &str, sql_text: &str) -> bool {
+    match kind {
+        "SET" | "VARIABLE_SET" | "PREPARE" | "ATTACH" | "DETACH" | "CREATE_FUNC" => true,
+        "CREATE" | "DROP" | "ALTER" => sql_text.to_ascii_uppercase().contains("TEMP"),
+        _ => false,
+    }
 }
 
 fn param_fail(e: convert::ParamError) -> Fail {
