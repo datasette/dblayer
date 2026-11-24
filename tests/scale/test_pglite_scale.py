@@ -23,6 +23,8 @@ import pytest
 from dblayer import Database, Registry
 from dblayer.backends.pglite_worker import PGliteWorker, find_node, find_script, unavailable
 
+from dblayer.backends.sqlite_worker import live_worker_pids
+
 from ..helpers import count_open_fds
 from .harness import ScaleBackend, Zipf, register_all
 
@@ -81,9 +83,10 @@ def test_pglite_registry(tmp_path):
             touched = len({i for i, _ in plan})
             it = iter(plan)
             peak_awake = 0
+            peak_procs = 0
 
             async def worker() -> None:
-                nonlocal peak_awake
+                nonlocal peak_awake, peak_procs
                 for i, write in it:
                     db = dbs[i]
                     if write:
@@ -91,6 +94,7 @@ def test_pglite_registry(tmp_path):
                     else:
                         await db.execute("select count(*) from t")
                     peak_awake = max(peak_awake, registry.stats().awake)
+                    peak_procs = max(peak_procs, len(live_worker_pids()))
 
             t1 = time.perf_counter()
             await asyncio.gather(*(worker() for _ in range(WORKERS)))
@@ -109,7 +113,7 @@ def test_pglite_registry(tmp_path):
                 f"  register: {reg.seconds * 1e6 / N:.1f} us/db, {reg.traced_bytes_per_db:.0f} B/db asleep\n"
                 f"  load: {REQUESTS} requests ({WRITE_SHARE:.0%} writes) over {touched} databases, Zipf s=1.1, "
                 f"{WORKERS} workers, cap {CAP}: {load_s:.1f}s ({REQUESTS / load_s:.0f} req/s), "
-                f"peak awake {peak_awake}\n"
+                f"peak awake {peak_awake}, peak worker processes {peak_procs}\n"
                 f"  registry: wakes={after.wakes} sleeps={after.sleeps} cap_evictions={after.cap_evictions}; "
                 f"after idle timeout awake={final.awake} open={final.open_connections}; "
                 f"fds baseline {fd_baseline} after {count_open_fds()}"
