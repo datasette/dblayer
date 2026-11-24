@@ -913,3 +913,23 @@ Interim report from the relaunched subagent; numbers at load 13 to 61, provision
 - `unsafe` is denied outside the FFI module, which has 105 unsafe blocks.
 - Native `insert_rows` through the appender: 10,000 rows in 269 ms against 1,643 ms on the default path.
 - Clippy is not installed and was not run, since installing it would change the Rust toolchain.
+
+### Found: ClickHouse, interim; two security holes closed (2026-11-24)
+
+Interim report from the relaunched subagent; measurements still to come.
+
+- **Form: chDB 4.5.1, which embeds ClickHouse 26.11, in-process.** No server and no binary. chDB allows one embedded server per process: one data directory, with one ClickHouse database per dblayer `Database`; it stops when the last connection closes.
+- **chDB has no wheels for Python 3.15,** so the extra is `chdb>=4.5; python_version < '3.15'` and the backend is unavailable on 3.15. The demo now runs under Python 3.14 for that reason.
+- **Two real security holes on the read path, found and fixed** (`557f09f`):
+  - `select file('/etc/hosts')` read host files from a read connection. ClickHouse's `readonly=1` does not block the scalar `file()` function.
+  - A comment or a backslash-escaped quoted name could hide `INTO OUTFILE` from dblayer's statement scanner, so an "untrusted read" wrote a file on the host.
+  - Host table functions, engines, dictionaries, ATTACH, BACKUP and RESTORE are now refused unless `allow_host_access` is set.
+- The stopped subagent's "whole conformance suite passes" was not true of the code it left: its Arrow `execute_many` sent the wrong column names, every value landed as the column default, and 48 conformance tests failed. Fixed. Now 485 passed, 38 skipped.
+
+### Found: demo with fifteen featured backends (my own check)
+
+Restarted under Python 3.14 with ClickHouse added. All 15 featured databases answer a count query, serve a table page and return a 201-line CSV export. A 500-way fan-out across the fleet succeeded in 1.1 s with connections at the cap of 40.
+
+### Idea
+
+- **Denying host access by scanning SQL text is fragile.** The ClickHouse hole came from a scanner being fooled by comment and quoting syntax. Where an engine offers a real setting or sandbox, use it; where it does not (chDB's `file()`), a worker process with no filesystem access beyond its data directory is the dependable control. The same reasoning applies to DuckDB's external access setting and SQLite's authorizer.
