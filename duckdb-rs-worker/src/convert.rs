@@ -430,6 +430,14 @@ fn ext_param(code: i8, p: &Value) -> Result<Param, ParamError> {
             let (micros, offset) = parse_time(s).ok_or_else(|| bad("time", p))?;
             match offset {
                 None => Param::Time(micros),
+                // The Python client refuses a time whose zone is west of
+                // UTC (it reads utcoffset().days, which is -1 there).
+                Some(off) if off < 0 => {
+                    return Err(ParamError(
+                        "InvalidInputException",
+                        "Invalid Input Error: Failed to convert 'tzinfo' object, utcoffset returned an invalid timedelta (days)".into(),
+                    ));
+                }
                 Some(off) => Param::TimeTz(micros, off as i32),
             }
         }
@@ -544,6 +552,10 @@ fn unify(a: &PTy, b: &PTy) -> Option<PTy> {
             if rank(x) > rank(y) { x.clone() } else { y.clone() }
         }
         (List(x), List(y)) => List(Box::new(unify(x, y)?)),
+        (Struct(x), Struct(y)) if x.len() == y.len() && x.iter().zip(y).all(|(a, b)| a.0 == b.0) => {
+            Struct(x.iter().zip(y).map(|(a, b)| Some((a.0.clone(), unify(&a.1, &b.1)?))).collect::<Option<Vec<_>>>()?)
+        }
+        (Map(xk, xv), Map(yk, yv)) => Map(Box::new(unify(xk, yk)?), Box::new(unify(xv, yv)?)),
         _ => return None,
     })
 }
@@ -595,6 +607,12 @@ fn cast(p: Param, to: &PTy) -> Param {
         (Param::I64(i), PTy::U64) if i >= 0 => Param::U64(i as u64),
         (Param::List(_, items), PTy::List(child)) => {
             Param::List((**child).clone(), items.into_iter().map(|x| cast(x, child)).collect())
+        }
+        (Param::Struct(fields), PTy::Struct(types)) => {
+            Param::Struct(fields.into_iter().zip(types).map(|((k, v), (_, t))| (k, cast(v, t))).collect())
+        }
+        (Param::Map(_, _, pairs), PTy::Map(kt, vt)) => {
+            Param::Map((**kt).clone(), (**vt).clone(), pairs.into_iter().map(|(k, v)| (cast(k, kt), cast(v, vt))).collect())
         }
         (p, _) => p,
     }

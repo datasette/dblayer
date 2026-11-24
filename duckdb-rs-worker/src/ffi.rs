@@ -461,11 +461,19 @@ impl Chunk {
             // SAFETY: column index < the chunk's column count (the result's).
             .map(|(i, (_, node))| Reader::new(unsafe { d::duckdb_data_chunk_get_vector(self.raw, i as u64) }, node))
             .collect();
+        // `protocol.wire_rows` marks values only in columns whose type name
+        // can hold a map, struct or array; a TUPLE column is not one, so
+        // its tuples travel as lists.
+        let plain: Vec<bool> = columns
+            .iter()
+            .map(|(_, t)| matches!(&t.ty, Ty::Struct(_)) && !crate::types::is_nested_name(&t.name()))
+            .collect();
         let mut out = Vec::with_capacity(to.saturating_sub(from));
         for row in from..to {
             let mut cells = Vec::with_capacity(readers.len());
-            for r in &readers {
-                cells.push(r.read(row, ctx)?);
+            for (i, r) in readers.iter().enumerate() {
+                let v = r.read(row, ctx)?;
+                cells.push(if plain[i] { unmark_tuples(v) } else { v });
             }
             out.push(Value::List(cells));
         }
@@ -768,6 +776,14 @@ impl<'a> Reader<'a> {
                 }
                 Value::Ext(EXT_TUPLE, Box::new(Value::List(items)))
             }
+            Ty::Struct(fields) if !fields.is_empty() && fields.iter().all(|(n, _)| n.is_empty()) => {
+                // An unnamed struct: a tuple in the Python client.
+                let mut items = Vec::with_capacity(fields.len());
+                for k in &self.kids {
+                    items.push(k.read(row, ctx)?);
+                }
+                Value::Ext(EXT_TUPLE, Box::new(Value::List(items)))
+            }
             Ty::Struct(fields) => {
                 let mut pairs = Vec::with_capacity(fields.len());
                 for (i, (name, _)) in fields.iter().enumerate() {
@@ -784,6 +800,17 @@ impl<'a> Reader<'a> {
             }
             Ty::Other(id) => return Err(ConvError(format!("DuckDB type {id} is not supported by the Rust worker"))),
         })
+    }
+}
+
+/// Tuples as plain lists, all the way down.
+fn unmark_tuples(v: Value) -> Value {
+    match v {
+        Value::Ext(EXT_TUPLE, inner) => match *inner {
+            Value::List(items) => Value::List(items.into_iter().map(unmark_tuples).collect()),
+            other => other,
+        },
+        other => other,
     }
 }
 

@@ -102,6 +102,9 @@ impl TyNode {
             Ty::List(child) => format!("{}[]", child.name()),
             Ty::Array(child, n) => format!("{}[{n}]", child.name()),
             Ty::Struct(fields) if fields.is_empty() => "STRUCT".into(),
+            // An unnamed struct (a row value): the Python client calls it a
+            // TUPLE and returns a tuple.
+            Ty::Struct(fields) if fields.iter().all(|(n, _)| n.is_empty()) => format!("TUPLE({})", fields_list(fields)),
             Ty::Struct(fields) => format!("STRUCT({})", fields_list(fields)),
             Ty::Union(fields) => format!("UNION({})", fields_list(fields)),
             Ty::Map(k, v) => format!("MAP({}, {})", k.name(), v.name()),
@@ -166,10 +169,9 @@ const RESERVED: &[&str] = &[
     "trailing", "true", "union", "unique", "unpivot", "using", "variadic", "when", "where", "window", "with",
 ];
 
-#[cfg(test)]
 /// `protocol.nested_columns`: a declared type that can hold a map, a
-/// struct or an array, so its values may need marking.
-#[cfg(test)]
+/// struct or an array, so its values may need marking. (A `TUPLE(...)`
+/// column alone is not one: the Python worker sends its tuples as lists.)
 pub fn is_nested_name(name: &str) -> bool {
     let up = name.to_uppercase();
     up.contains("MAP(") || up.contains("STRUCT(") || up.contains("UNION(") || up.contains(']')
