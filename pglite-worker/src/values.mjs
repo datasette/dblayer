@@ -111,8 +111,13 @@ function scalar(v) {
   throw new ParamError(`cannot adapt type '${Array.isArray(v) ? 'list' : 'dict'}'`);
 }
 
-// int4 < int8 < numeric; float8 absorbs integers.
-const WIDER = new Map([[OID.int4, 0], [OID.int8, 1], [OID.numeric, 2]]);
+const WIDER = new Map([[OID.int4, 0], [OID.int8, 1], [OID.numeric, 2]]); // int4 < int8 < numeric
+
+/** One array element, quoted only when it must be (as psycopg writes them). */
+function arrayItem(text) {
+  if (text !== '' && !/[{}",\\\s]/.test(text) && text.toUpperCase() !== 'NULL') return text;
+  return '"' + text.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
 
 function arrayParam(list) {
   let elem = null;
@@ -131,16 +136,17 @@ function arrayParam(list) {
       if (elem === null) elem = oid;
       else if (elem !== oid) {
         if (WIDER.has(elem) && WIDER.has(oid)) elem = WIDER.get(oid) > WIDER.get(elem) ? oid : elem;
-        else if ((elem === OID.float8 && WIDER.has(oid)) || (oid === OID.float8 && WIDER.has(elem))) elem = OID.float8;
         else if ((elem === OID.timestamp && oid === OID.timestamptz) || (elem === OID.timestamptz && oid === OID.timestamp)) elem = OID.timestamptz;
-        else throw new ParamError('cannot adapt a list whose elements have different types');
+        else throw new ParamError('cannot dump lists of mixed types'); // as psycopg (float and int included)
       }
-      parts.push('"' + text.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
+      parts.push(arrayItem(text));
     }
     return '{' + parts.join(',') + '}';
   };
   const text = walk(list);
-  if (elem === null) return [text, OID.unknown]; // empty, or only NULLs: let the server decide
+  // Empty, only NULLs, or strings: type unknown, so the server decides (as
+  // psycopg sends a list of str), e.g. text[] in "x = any(:list)".
+  if (elem === null || elem === OID.text) return [text, OID.unknown];
   return [text, ARRAY_OF.get(elem) ?? OID.unknown];
 }
 

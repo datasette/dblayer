@@ -275,6 +275,7 @@ class PGliteProcess(WorkerProcess):
         self.holder: object | None = None
         self._released = asyncio.Event()
         self._released.set()
+        self._cancel_timers: dict[int, asyncio.TimerHandle] = {}
         self.waited_ms = 0.0
         """Total time requests spent waiting for another connection's hold."""
 
@@ -380,7 +381,7 @@ class PGliteProcess(WorkerProcess):
         expect_frames: int | None = None,
         on_sent: Callable[[int], None] | None = None,
     ) -> Any:
-        if msg.get("type") not in ("more", "cancel", "close", "rollback"):
+        if msg.get("type") not in ("open", "more", "cancel", "close", "rollback"):
             limit_ms = await self._wait_turn(owner, limit_ms)
         return await super().call(msg, owner=owner, limit_ms=limit_ms, expect_frames=expect_frames, on_sent=on_sent)
 
@@ -402,7 +403,39 @@ class PGliteProcess(WorkerProcess):
         if msg.get("fatal") and self.dead is None:
             self.kill(WorkerCrashed(f"worker {self.pid} exited after a fatal error: {msg['error'].get('message')}"))
 
+    def cancel(self, owner: object) -> None:
+        """``interrupt()``: the worker cannot read a ``cancel`` while a query
+        runs (it blocks the event loop), so a request still in flight
+        ``kill_grace_ms`` after the cancel was sent is stopped by SIGKILL;
+        the call raises ``QueryInterrupted``. Losing the process loses the
+        session, which only the cancelled connection could be using."""
+        cur = self.inflight
+        if cur is None or cur[1] is not owner or self.dead is not None:
+            return
+        mid = cur[0]
+        if mid in self._cancel_timers:
+            return
+        try:
+            self.send({"type": "cancel", "target": mid})
+        except Exception:
+            return
+
+        def stop() -> None:
+            self._cancel_timers.pop(mid, None)
+            if self.dead is None and mid in self._waiters:
+                interrupted = QueryInterrupted(
+                    "query interrupted (cancelled): a running PGlite query cannot be reached, "
+                    f"so worker {self.pid} was killed"
+                )
+                self.kill(WorkerCrashed(f"worker {self.pid} was killed to stop a cancelled query"),
+                          for_ids={mid: interrupted})
+
+        self._cancel_timers[mid] = self.loop.call_later(self.config.kill_grace_ms / 1000, stop)
+
     def _teardown(self, exc: BaseException, for_ids: Mapping[int, BaseException]) -> None:
+        for t in self._cancel_timers.values():
+            t.cancel()
+        self._cancel_timers.clear()
         super()._teardown(exc, for_ids)
         self._release()
 

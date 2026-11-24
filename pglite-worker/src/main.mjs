@@ -29,6 +29,8 @@ import { decode, encode } from './codec.mjs';
 import { writeAll, ParentGone, consoleToStderr } from './io.mjs';
 import { LimitError, ParamError, PgError, Session, leadingKeyword } from './session.mjs';
 import { setSessionZone } from './values.mjs';
+import { errorType } from './errors.mjs';
+import { copyText } from './copy.mjs';
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_MAX_FRAME = 256 * 1024 * 1024;
@@ -118,18 +120,6 @@ class WireError extends Error {
     super(message);
     this.wire = { type, message, ...(code !== undefined ? { code } : {}), ...extra };
   }
-}
-
-/** SQLSTATE -> dblayer exception class: the table of map_sqlstate() in
- * dblayer/backends/_postgres_common.py (tests/worker/test_pglite_worker.py
- * checks the two agree). */
-export function errorType(state) {
-  if (state === '57014') return 'QueryInterrupted';
-  if (state === '40001' || state === '40P01') return 'WriteConflict';
-  if (state === '25P03' || state === '25P04') return 'TransactionExpired';
-  if (state.startsWith('23')) return 'IntegrityError';
-  if (state.startsWith('53') || state.startsWith('54')) return 'ResourceLimitExceeded';
-  return 'QueryError';
 }
 
 function wireError(e) {
@@ -634,7 +624,6 @@ async function handle(msg) {
 /** `copy`: rows (lists of wire values) into a table by COPY FROM STDIN,
  * in text format, so the server converts each value as it would a literal. */
 async function doCopy(m, wc) {
-  const { copyText } = await import('./copy.mjs');
   const sp = useSavepoint(wc, null);
   await beforeStatement(wc);
   try {
