@@ -86,13 +86,13 @@ fn request(msgpack: bool, sql: &str, id: i64, conn: i64) -> Vec<u8> {
 fn cpu_s(pid: u32) -> f64 {
     // Linux: /proc (clock ticks; USER_HZ is 100 on every mainstream Linux
     // build). procps `ps -o time` there has whole seconds only.
-    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        if let Some((_, rest)) = stat.rsplit_once(')') {
-            let f: Vec<&str> = rest.split_whitespace().collect();
-            if f.len() > 12 {
-                let ticks = f[11].parse::<f64>().unwrap_or(0.0) + f[12].parse::<f64>().unwrap_or(0.0);
-                return ticks / 100.0;
-            }
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        && let Some((_, rest)) = stat.rsplit_once(')')
+    {
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        if f.len() > 12 {
+            let ticks = f[11].parse::<f64>().unwrap_or(0.0) + f[12].parse::<f64>().unwrap_or(0.0);
+            return ticks / 100.0;
         }
     }
     let out = Command::new("ps").args(["-o", "time=", "-p", &pid.to_string()]).output().unwrap();
