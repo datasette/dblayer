@@ -901,3 +901,15 @@ Interim report from the relaunched subagent; numbers at load 14 to 80, provision
 ### Idea
 
 - **PGlite suits a handful of databases, not a fleet.** At about 115 MB each awake, the registry's cap would have to count a PGlite database as dozens of places. This is the strongest case yet for weighted places in the cap.
+
+### Found: DuckDB worker in Rust, interim; the recursive-CTE cause (2026-11-24)
+
+Interim report from the relaunched subagent; numbers at load 13 to 61, provisional.
+
+- **Correction to "DuckDB worker in C++": the slow first rows are explained.** The cause is DuckDB's per-connection `streaming_buffer_size`. With the 10 MB default, a streaming execute through the C API waits until the buffer is about half full before yielding rows. Measured on one Rust build: first rows in 13 ms with `streaming_buffer_size=16KB`, 4,823 ms with the default. It can only be set per connection, before `lock_configuration`. The same setting should remove the C++ worker's three expected failures; the Rust subagent has been asked to apply it there and to measure what a small buffer costs on large reads. The bug-fix subagent has been told, since the same buffering may explain the one CI failure of the Python DuckDB worker.
+- **Conformance: 429 passed, 12 skipped, no expected failures** (C++: 426, 12, 3).
+- **Rust and C++ are level on every resource measure:** process floor 2.2 against 2.1 MB; one database open 14.0 against 14.1 MB; spawn to hello 12.6 against 12.1 ms; asleep to first result 27.8 against 28.3 ms; extra per typed row 0.74 against 0.63 µs. The cost is DuckDB, not the language.
+- **The fuzz test found a real problem:** map decoding was quadratic in the number of keys (a 100,000-key map took seconds). Fixed.
+- `unsafe` is denied outside the FFI module, which has 105 unsafe blocks.
+- Native `insert_rows` through the appender: 10,000 rows in 269 ms against 1,643 ms on the default path.
+- Clippy is not installed and was not run, since installing it would change the Rust toolchain.
