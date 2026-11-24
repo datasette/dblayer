@@ -176,6 +176,10 @@ class Pool:
         return entry.conn
 
     async def _open_entry(self, write: bool) -> _Entry:
+        # The generation when the call began: a sleep() while the connection
+        # is being opened (slow on a remote server) must still close it when
+        # it is returned.
+        generation = self._generation
         await self._db._ensure_awake()
         if self._closed:
             raise DatabaseClosed("database is closed")
@@ -188,7 +192,7 @@ class Pool:
             self.hub.release()
             raise
         self._db._opened_total += 1
-        return _Entry(conn, write, self._generation, self)
+        return _Entry(conn, write, generation, self)
 
     async def release(self, conn: BackendConnection, *, discard: bool = False) -> None:
         entry = self._in_use.pop(id(conn), None)
