@@ -391,3 +391,142 @@ async def test_cancel_flag_does_not_leak_into_the_next_call(tmp_path):
     r = await conn.execute("select 1", {}, time_limit_ms=None, max_rows=None)
     assert r.rows == [(1,)]
     await conn.close()
+
+
+# -- inline reads (no executor hop for cheap reads) -----------------------------
+
+
+def _tid_init(conn: apsw.Connection) -> None:
+    import threading
+
+    conn.create_scalar_function("tid", threading.get_ident)
+
+
+@pytest.fixture
+async def inline(tmp_path):
+    backend = SqliteApsw(tmp_path / "i.db", inline_reads=True, init=_tid_init)
+    db = Database(backend, max_read_connections=1)
+    await db.execute_write("create table t (id integer primary key, v)")
+    await db.execute_write(
+        "with recursive c(i) as (select 1 union all select i + 1 from c where i < 20000) "
+        "insert into t (v) select 'value ' || i from c"
+    )
+    yield db
+    await db.close()
+
+
+def _reader(db: Database):
+    return db._pool._idle_read[0].conn  # type: ignore[union-attr]
+
+
+class _Ticker:
+    """Counts event-loop iterations and the longest gap between them while
+    something else runs."""
+
+    def __init__(self) -> None:
+        self.ticks = 0
+        self.max_gap = 0.0
+        self._stop = False
+
+    async def run(self) -> None:
+        import time
+
+        last = time.perf_counter()
+        while not self._stop:
+            await asyncio.sleep(0)
+            now = time.perf_counter()
+            self.max_gap = max(self.max_gap, now - last)
+            last = now
+            self.ticks += 1
+
+    async def during(self, coro):
+        task = asyncio.create_task(self.run())
+        await asyncio.sleep(0)
+        try:
+            return await coro
+        finally:
+            self._stop = True
+            await task
+
+
+async def test_cheap_read_runs_on_the_loop_thread(inline):
+    import threading
+
+    r = await inline.execute("select tid(), v from t where id = 7")
+    assert r.rows == [(threading.get_ident(), "value 7")]
+    conn = _reader(inline)
+    assert (conn.inline_runs, conn.inline_continued, conn.inline_reruns) == (1, 0, 0)
+
+
+async def test_default_is_the_executor(tmp_path):
+    import threading
+
+    db = Database(SqliteApsw(tmp_path / "d.db", init=_tid_init))
+    assert (await db.execute("select tid()")).rows[0][0] != threading.get_ident()
+    await db.close()
+
+
+async def test_slow_query_goes_to_the_executor_and_the_loop_keeps_running(inline):
+    """A query that does not finish within the budget is stopped on the loop
+    thread and re-run on the executor; the loop keeps turning meanwhile."""
+    import threading
+
+    ticker = _Ticker()
+    sql = (
+        "select tid(), count(*) from t a join t b on a.id % 1000 = b.id % 1000 "
+        "where a.id < 3000"
+    )
+    r = await ticker.during(inline.execute(sql))
+    assert r.rows[0][0] != threading.get_ident() and r.rows[0][1] == 2999 * 20
+    conn = _reader(inline)
+    assert conn.inline_reruns == 1
+    assert ticker.ticks > 10  # the loop ran while the executor worked
+    # The budget is 10,000 opcodes or 2 ms; allow a lot for a loaded machine.
+    assert ticker.max_gap < 0.5, ticker.max_gap
+    print(f"\n[inline] longest loop gap during a slow query: {ticker.max_gap * 1000:.2f} ms")
+
+
+async def test_long_result_is_continued_on_the_executor(inline):
+    """Rows come out inline until the budget is half used, then the same
+    statement is stepped on to the end on an executor thread."""
+    import threading
+
+    r = await inline.execute("select tid(), id from t order by id")
+    assert len(r.rows) == 20000 and [row[1] for row in r.rows[:3]] == [1, 2, 3]
+    tids = {row[0] for row in r.rows}
+    assert threading.get_ident() in tids and len(tids) == 2  # both threads stepped it
+    conn = _reader(inline)
+    assert conn.inline_continued == 1 and conn.inline_reruns == 0
+
+
+async def test_non_read_only_statement_is_not_run_inline(inline):
+    await inline.execute("create temp table x (y)")
+    conn = _reader(inline)
+    assert conn.inline_reruns == 1 and conn.inline_runs == 0
+
+
+async def test_inline_time_limit_still_applies(inline):
+    from dblayer import QueryInterrupted
+
+    with pytest.raises(QueryInterrupted):
+        await inline.execute(UNBOUNDED, time_limit_ms=50)
+    assert (await inline.execute("select count(*) from t")).rows == [(20000,)]
+
+
+async def test_inline_read_never_waits_for_a_lock_on_the_loop(tmp_path):
+    """Busy timeout is 0 inline: a locked database sends the read to the
+    executor, where it waits (here for 0.3 s) without blocking the loop."""
+    path = tmp_path / "locked.db"
+    db = Database(SqliteApsw(path, inline_reads=True, busy_timeout=0.3))
+    await db.execute_write("create table t (x)")
+    other = apsw.Connection(str(path))
+    other.execute("begin exclusive")
+    ticker = _Ticker()
+    with pytest.raises(QueryError) as e:
+        await ticker.during(db.execute("select count(*) from t"))
+    assert e.value.code == "SQLITE_BUSY"
+    assert ticker.ticks > 10 and ticker.max_gap < 0.25
+    other.execute("rollback")
+    other.close()
+    assert (await db.execute("select count(*) from t")).rows == [(0,)]
+    await db.close()

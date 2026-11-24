@@ -463,8 +463,11 @@ class SqliteApswConnection:
         self._many: list[int] | None = None
         self._trace = backend.trace_sql
         self.last_expanded_sql: str | None = None
+        # inline_reads counters: finished on the loop thread, continued on
+        # the executor after producing rows inline, re-run from the start.
         self.inline_runs = 0
-        self.inline_fallbacks = 0
+        self.inline_continued = 0
+        self.inline_reruns = 0
         raw.exec_trace = self._exec_trace
         raw.set_progress_handler(self._progress, _HANDLER_STEPS)
 
@@ -528,7 +531,7 @@ class SqliteApswConnection:
             self._deadline = None
             return
         self._deadline = time.perf_counter() + time_limit_ms / 1000
-        if time_limit_ms <= 20:
+        if time_limit_ms <= 20 and self._inline_ticks is None:
             # ~1000 VM instructions take about 0.08ms (Datasette #1679).
             self._raw.set_progress_handler(self._progress, 1)
 
@@ -623,7 +626,7 @@ class SqliteApswConnection:
                     ):
                         # Over budget between rows: continue on a thread.
                         handed_off = True
-                        self.inline_fallbacks += 1
+                        self.inline_continued += 1
                         return functools.partial(self._continue, run)
                     result = run.step()
                 self.inline_runs += 1
@@ -635,11 +638,16 @@ class SqliteApswConnection:
                 if not self._over_budget:
                     raise  # the time limit, not the budget
             except apsw.BusyError:
+                run.abandon()  # never wait for a lock on the loop thread
+            except apsw.ReadOnlyError as e:
                 run.abandon()
+                if getattr(e, "extendedresult", None) != apsw.SQLITE_READONLY_ROLLBACK:
+                    raise
+                # a hot journal: the executor path recovers it
             except BaseException:
                 run.abandon()
                 raise
-            self.inline_fallbacks += 1
+            self.inline_reruns += 1
             return None
         finally:
             self._inline_ticks = None
@@ -649,6 +657,8 @@ class SqliteApswConnection:
             raw.set_busy_timeout(int(self._backend.busy_timeout * 1000))
 
     def _continue(self, run: "_Run") -> Results:
+        if run.time_limit_ms is not None and run.time_limit_ms <= 20:
+            self._raw.set_progress_handler(self._progress, 1)
         try:
             result = None
             while result is None:

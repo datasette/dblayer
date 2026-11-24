@@ -72,7 +72,11 @@ def _sqlite_apsw(tmp_path: Path) -> Backend:
 
     global _counter
     _counter += 1
-    return SqliteApsw(tmp_path / f"db{_counter}.db")  # type: ignore[return-value]
+    import os
+
+    # DBLAYER_APSW_INLINE=1 runs the suite with inline_reads on.
+    inline = os.environ.get("DBLAYER_APSW_INLINE") == "1"
+    return SqliteApsw(tmp_path / f"db{_counter}.db", inline_reads=inline)  # type: ignore[return-value]
 
 
 def _apsw_available() -> str | None:
