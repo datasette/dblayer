@@ -492,12 +492,12 @@ async def test_schema_change_by_another_client_seen_after_refresh_and_ttl(make_p
     import time
     import types
 
-    import dblayer.backends.postgres as postgres_module
+    import dblayer.backends._postgres_common as common_module
 
     now = [1000.0]
     fake_time = types.SimpleNamespace(**vars(time))
     fake_time.monotonic = lambda: now[0]
-    monkeypatch.setattr(postgres_module, "time", fake_time)
+    monkeypatch.setattr(common_module, "time", fake_time)
 
     db = make_pg(backend={"schema_ttl": 0.6})
     schema = db._backend.schema

@@ -59,168 +59,60 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from ..core.params import POSTGRES_FLAVOR, ParamStyle, _scan, dollar_parameters, leading_keyword
+from ..core.params import POSTGRES_FLAVOR, dollar_parameters, leading_keyword
 from ..core.results import Column, Results, WriteResult
-from ..core.schema import ColumnInfo, ForeignKey, Index, Schema, TableInfo, Trigger
-from ..errors import (
-    DblayerError,
-    IntegrityError,
-    QueryError,
-    QueryInterrupted,
-    ResourceLimitExceeded,
-    TransactionExpired,
-    WriteConflict,
-)
-from .base import Capabilities, Dialect, NativeParams
+from ..core.schema import Schema
+from ..errors import DblayerError, QueryError, ResourceLimitExceeded
+from ._postgres_common import DML as _DML
+from ._postgres_common import NO_SCHEMA_CHANGE as _NO_SCHEMA_CHANGE
+from ._postgres_common import SAVEPOINT as _SAVEPOINT
+from ._postgres_common import TX_CONTROL as _TX_CONTROL
+from ._postgres_common import VERSION_SQL as _VERSION_SQL
+from ._postgres_common import ConnTx as _ConnTx
+from ._postgres_common import PostgresBackendBase, PostgresDialectBase, map_sqlstate
+from ._postgres_common import begin_sql as _begin_sql
+from ._postgres_common import has_top_level_returning as _has_top_level_returning
+from ._postgres_common import interrupted as _interrupted
+from ._postgres_common import read_schema, upsert_rows_native
+from ._postgres_common import row_bytes as _row_bytes
+from ._postgres_common import rowcount_from_status as _rowcount
+from .base import Dialect, NativeParams
 
 if TYPE_CHECKING:
     import asyncpg
 
 __all__ = ["Postgres", "PostgresDialect", "PostgresConnection"]
 
-_FK_ACTIONS = {
-    "a": "NO ACTION",
-    "r": "RESTRICT",
-    "c": "CASCADE",
-    "n": "SET NULL",
-    "d": "SET DEFAULT",
-}
 
-_MAX_IDENTIFIER = 63
+class PostgresDialect(PostgresDialectBase):
+    """The PostgreSQL dialect with asyncpg's exceptions mapped."""
 
-
-class PostgresDialect(Dialect):
-    name = "postgres"
-    paramstyle = ParamStyle.NUMERIC_DOLLAR
-    flavor = POSTGRES_FLAVOR
-    type_map = {
-        # SQLite integers are 64-bit; INTEGER here would be 32-bit.
-        "integer": "BIGINT",
-        "float": "DOUBLE PRECISION",
-        "text": "TEXT",
-        "blob": "BYTEA",
-    }
-    native_alter = frozenset({"rename", "drop", "types", "pk"})
-    rowid_column = None
-    # Dropping a table other tables reference fails (no CASCADE is ever
-    # sent), so nothing is touched silently.
-    foreign_keys_enforced_sql = None
-
-    def literal(self, value: Any) -> str:
-        # Portable columns have no boolean type (bool maps to integer), so
-        # render booleans as numbers, as SQLite stores them.
-        if isinstance(value, bool):
-            return "1" if value else "0"
-        if isinstance(value, Decimal):
-            return str(value)
-        return super().literal(value)
-
-    def alter_column_type_sql(self, table: str, column: str, type_name: str) -> str:
-        native = self.native_type(type_name)
-        col = self.quote_identifier(column)
-        return (
-            f"ALTER TABLE {self.quote_identifier(table)} ALTER COLUMN {col} "
-            f"TYPE {native} USING {col}::{native}"
-        )
-
-    def set_primary_key_sql(
-        self, table: str, current_constraint: str | None, pk: Sequence[str]
-    ) -> list[str]:
-        """Replace the primary key in one ``ALTER TABLE``."""
-        actions = []
-        if current_constraint:
-            actions.append(f"DROP CONSTRAINT {self.quote_identifier(current_constraint)}")
-        if pk:
-            actions.append(f"ADD PRIMARY KEY ({self.quote_identifiers(pk)})")
-        if not actions:
-            return []
-        return [f"ALTER TABLE {self.quote_identifier(table)} " + ", ".join(actions)]
-
-    def swap_rename_sql(self, staging: str, target: str) -> list[str]:
-        """Rename staging into place, then rename the constraints it was
-        created with (``<staging>_pkey``, ``<staging>_<col>_key``...) to the
-        names PostgreSQL would have given them on ``target``. Constraint
-        names are per schema, so a later import would otherwise collide or
-        leave staging names behind. Views referring to the old target do
-        not survive: PostgreSQL refuses to drop a table a view depends on."""
-        reg = self.literal(self.quote_identifier(target))
-        return [
-            self.rename_table_sql(staging, target),
-            "DO $dblayer$\nDECLARE r record;\nBEGIN\n"
-            f"  FOR r IN SELECT conname FROM pg_constraint WHERE conrelid = {reg}::regclass\n"
-            f"           AND starts_with(conname, {self.literal(staging)}) LOOP\n"
-            "    EXECUTE format('ALTER TABLE %s RENAME CONSTRAINT %I TO %I',\n"
-            f"      {reg}::regclass, r.conname,\n"
-            f"      left({self.literal(target)} || substr(r.conname, {len(staging) + 1}), "
-            f"{_MAX_IDENTIFIER}));\n"
-            "  END LOOP;\nEND\n$dblayer$",
-        ]
-
-    def map_exception(self, exc: BaseException) -> DblayerError | None:
+    def map_driver_exception(self, exc: BaseException) -> DblayerError | None:
         try:
             import asyncpg
         except ImportError:  # pragma: no cover - asyncpg is required to get here
             return None
-        if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-            return QueryInterrupted("query interrupted (time limit exceeded or cancelled)")
         if type(exc) is asyncpg.DataError:
             # Raised by asyncpg before sending: a value its codec for the
             # parameter's type cannot encode.
             return QueryError(str(exc), "DATA_ERROR")
         if isinstance(exc, asyncpg.PostgresError):
-            state: str = exc.sqlstate or ""
-            message = str(exc)
-            if state == "57014":
-                return QueryInterrupted(
-                    "query interrupted (time limit exceeded or cancelled)"
-                )
-            if state in ("40001", "40P01"):
-                return WriteConflict(message)
-            if state == "25P03":
-                return TransactionExpired(
-                    "the server ended the session: the transaction was idle past "
-                    "its deadline and was rolled back"
-                )
-            if state.startswith("23"):
-                return IntegrityError(message, state)
-            if state[:2] in ("53", "54"):
-                return ResourceLimitExceeded(message)
-            return QueryError(message, state or None)
+            return map_sqlstate(exc.sqlstate or "", str(exc))
         return None
-
-
-def _rowcount(status: str | None) -> int:
-    """Rows affected from a command tag such as ``INSERT 0 3``."""
-    if not status:
-        return -1
-    last = status.rsplit(" ", 1)[-1]
-    return int(last) if last.isdigit() else -1
 
 
 # -- values and statements ----------------------------------------------------
 
-_DML = frozenset({"INSERT", "UPDATE", "DELETE", "MERGE"})
-# Statements that manage the transaction themselves: never wrapped in a
-# statement savepoint.
-_TX_CONTROL = frozenset(
-    {"BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT", "SAVEPOINT", "RELEASE", "PREPARE"}
-)
-_NO_SCHEMA_CHANGE = frozenset(
-    {"SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "VALUES", "TABLE", "SHOW", "SET",
-     "EXPLAIN", "COPY", "SAVEPOINT", "RELEASE", "ROLLBACK", "COMMIT", "BEGIN", "START"}
-)
 _STRING_TYPES = frozenset({"text", "varchar", "bpchar", "name", "unknown"})
 # Types whose asyncpg codec takes a str as it is.
 _ACCEPTS_STR = _STRING_TYPES | {"json", "jsonb", "xml", "uuid", "citext", "char"}
 _INT8_MIN, _INT8_MAX = -(2**63), 2**63 - 1
-_SAVEPOINT = "dblayer_stmt"
 
 
 def _cast_for(value: Any) -> str | None:
@@ -270,34 +162,6 @@ def _as_text(value: Any) -> Any:
     return value
 
 
-def _has_top_level_returning(sql: str) -> bool:
-    depth = 0
-    for kind, start, end in _scan(sql, POSTGRES_FLAVOR, words=True):
-        if kind == "(":
-            depth += 1
-        elif kind == ")":
-            depth = max(0, depth - 1)
-        elif kind == "word" and depth == 0 and sql[start:end].upper() == "RETURNING":
-            return True
-    return False
-
-
-def _row_bytes(row: Sequence[Any]) -> int:
-    size = 0
-    for v in row:
-        if v is None:
-            size += 1
-        elif isinstance(v, (str, bytes)):
-            size += len(v)
-        else:
-            size += 8
-    return size
-
-
-def _interrupted() -> QueryInterrupted:
-    return QueryInterrupted("query interrupted (time limit exceeded or cancelled)")
-
-
 def _close_awaitable(aw: Awaitable[Any]) -> None:
     close = getattr(aw, "close", None)
     if close is not None:
@@ -317,89 +181,19 @@ async def _prepare(raw: "asyncpg.Connection", sql: str) -> Any:
 _DIALECT = PostgresDialect()
 
 
-class Postgres:
-    """PostgreSQL backend: one ``Database`` is one schema of the database
-    named by ``dsn``.
+class Postgres(PostgresBackendBase):
+    """PostgreSQL backend on asyncpg: one ``Database`` is one schema of the
+    database named by ``dsn``. Settings: see ``PostgresBackendBase``;
+    ``statement_savepoints``: see the module docstring."""
 
-    ``schema_ttl``: seconds after which ``change_hint()`` moves on by itself,
-    so schema changes made by other clients are noticed within that time
-    (``Database.refresh_schema()`` notices them at once).
-    ``max_write_connections``: concurrent write connections per database
-    (default: the database's ``max_read_connections``).
-    ``server_deadline_grace_ms``: added to a transaction's deadline for the
-    server-side ``idle_in_transaction_session_timeout``.
-    ``time_limit_grace_ms``: added to a time limit for the driver's own
-    timeout, the backstop behind ``statement_timeout``.
-    ``statement_savepoints``: see the module docstring.
-    """
-
-    def __init__(
-        self,
-        dsn: str | None = None,
-        *,
-        schema: str = "public",
-        create_schema: bool = True,
-        schema_ttl: float = 300.0,
-        application_name: str = "dblayer",
-        statement_savepoints: bool = True,
-        max_write_connections: int | None = None,
-        server_deadline_grace_ms: int = 1000,
-        time_limit_grace_ms: int = 500,
-        connect_timeout: float = 10.0,
-        server_settings: Mapping[str, str] | None = None,
-        connect_kwargs: Mapping[str, Any] | None = None,
-    ) -> None:
-        if schema_ttl <= 0:
-            raise ValueError("schema_ttl must be positive")
-        self.dsn = dsn
-        self.schema = schema
-        self.create_schema = create_schema
-        self.schema_ttl = schema_ttl
-        self.application_name = application_name
-        self.statement_savepoints = statement_savepoints
-        self.max_write_connections = max_write_connections
-        self.server_deadline_grace_ms = server_deadline_grace_ms
-        self.time_limit_grace_ms = time_limit_grace_ms
-        self.connect_timeout = connect_timeout
-        self.server_settings = dict(server_settings or {})
-        self.connect_kwargs = dict(connect_kwargs or {})
-        self.dialect: Dialect = _DIALECT
-        self.capabilities = Capabilities(
-            concurrent_writers=True,
-            transactional_ddl=True,
-            implicit_rowid=False,
-            cheap_change_hint=False,
-            hard_kill=False,
-            memory_limit=False,
-            table_definition_sql=False,
-            full_text_search=False,
-            sleep_releases_everything=True,
-            returning=True,
-            snapshot_reads=True,
-            replace_keeps_views=False,
-            # Statement savepoints contain a failure, as SQLite does.
-            statement_errors_abort_transaction=not statement_savepoints,
-        )
-        self._schema_ready = False
-        self._hint_generation = 0
-        self._schema_memo: Schema | None = None
-
-    def __repr__(self) -> str:
-        return f"Postgres(schema={self.schema!r})"
+    dialect: Dialect = _DIALECT
 
     # -- Backend protocol --------------------------------------------------
 
     async def open(self, *, write: bool) -> "PostgresConnection":
         import asyncpg
 
-        settings = {
-            "search_path": _DIALECT.quote_identifier(self.schema),
-            "application_name": self.application_name,
-            "statement_timeout": "0",
-            "idle_in_transaction_session_timeout": "0",
-            "default_transaction_read_only": "off" if write else "on",
-            **self.server_settings,
-        }
+        settings = self.session_settings(write=write)
         kwargs: dict[str, Any] = {
             # asyncpg expires cached statements with one loop timer per
             # entry; 0 turns that off (the cache is still bounded by size),
@@ -417,22 +211,6 @@ class Postgres:
             raw.terminate()
             raise
         return PostgresConnection(self, raw, write=write)
-
-    def change_hint(self) -> object:
-        """No cheap change detector exists: a token that moves every
-        ``schema_ttl`` seconds and on ``invalidate_change_hint()``. Never
-        opens a connection."""
-        return (self._hint_generation, int(time.monotonic() // self.schema_ttl))
-
-    def invalidate_change_hint(self) -> None:
-        """Called by ``Database.refresh_schema()``."""
-        self._hint_generation += 1
-
-    async def close(self) -> None:
-        # Connections belong to the core pool, which closes them; the
-        # backend holds nothing else.
-        self._schema_ready = False
-        self._schema_memo = None
 
     # -- internals -----------------------------------------------------------
 
@@ -472,6 +250,7 @@ class PostgresConnection:
 
     def __init__(self, backend: Postgres, raw: "asyncpg.Connection", *, write: bool) -> None:
         self._backend = backend
+        self.backend = backend
         self._raw = raw
         self.write = write
         self._closed = False
@@ -793,15 +572,7 @@ class PostgresConnection:
         idle_in_transaction_session_timeout`` (deadline + grace), in one
         round trip: if the client stops running, the server ends the
         session, which rolls the transaction back."""
-        if mode == "write":
-            sql = "BEGIN READ WRITE"
-        elif mode == "read":
-            sql = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
-        else:
-            raise ValueError(f"unknown transaction mode {mode!r}")
-        if deadline_ms is not None:
-            idle = int(deadline_ms) + self._backend.server_deadline_grace_ms
-            sql += f"; SET LOCAL idle_in_transaction_session_timeout = {idle}"
+        sql = _begin_sql(mode, deadline_ms, self._backend.server_deadline_grace_ms)
         self._end_tx()
         await self._call(self._raw.execute(sql))
 
@@ -869,12 +640,15 @@ class PostgresConnection:
         if prelude:
             await raw.execute(prelude)
         try:
-            return await _read_schema(raw, self._backend.schema)
+            return await read_schema(self._fetch_many, self._backend.schema)
         finally:
             if own_tx and not raw.is_closed() and self._in_tx():
                 await raw.execute("ROLLBACK")
 
-    async def _cached_schema(self) -> Schema:
+    async def _fetch_many(self, queries: Sequence[str], schema: str) -> list[list[Any]]:
+        return [await self._raw.fetch(q, schema) for q in queries]
+
+    async def cached_schema(self) -> Schema:
         """The schema as this connection's transaction sees it: one version
         query, and the full catalog read only when the version is not the
         one last read through this backend."""
@@ -882,9 +656,17 @@ class PostgresConnection:
         memo = self._backend._schema_memo
         if memo is not None and memo.version == version:
             return memo
-        schema = await _read_schema(self._raw, self._backend.schema)
+        schema = await read_schema(self._fetch_many, self._backend.schema)
         self._backend._schema_memo = schema
         return schema
+
+    async def run_native(self, sql: str, args: list[Any]) -> Results:
+        """``ConnTx``: one statement inside the open transaction, without a
+        savepoint of its own."""
+        return await self._execute(sql, args, None, None, None)
+
+    async def run_native_many(self, sql: str, seq: list[list[Any]]) -> WriteResult:
+        return await self._execute_many(sql, seq)
 
     # -- native operations (SupportsOperations) -------------------------------------
 
@@ -940,43 +722,7 @@ class PostgresConnection:
         pk: list[str] | None = None,
         alter: bool = False,
     ) -> object:
-        from ..core.operations import OperationResult, _ensure_table, _groups
-
-        tx = _ConnTx(self)
-        pk_cols = tuple(pk or ())
-        schema = await tx.schema()
-        info = schema.tables.get(table)
-        if not pk_cols:
-            pk_cols = info.primary_keys if info else ()
-        try:
-            unusable = (
-                not pk_cols
-                or (info is None and not pk)
-                or any(row.get(p) is None for row in rows for p in pk_cols)
-                or len({tuple(row[p] for p in pk_cols) for row in rows}) != len(rows)
-            )
-        except TypeError:  # unhashable key values
-            unusable = True
-        if unusable:
-            # The default path raises the right error, or (duplicate keys)
-            # updates the same row twice, which one statement cannot.
-            return NotImplemented
-        created, added = await _ensure_table(tx, table, rows, pk_cols, alter)
-        d = self._backend.dialect
-        total = 0
-        for cols, group in _groups(rows):
-            per = max(1, _MAX_PARAMS // len(cols))
-            for start in range(0, len(group), per):
-                part = group[start : start + per]
-                one = d.upsert_sql(table, cols, pk_cols)
-                head, tail = one.split(" VALUES ", 1)
-                conflict = tail[tail.index(")") + 1 :]
-                marks = ", ".join("(" + ", ".join("?" for _ in cols) + ")" for _ in part)
-                r = await tx.execute(
-                    f"{head} VALUES {marks}{conflict}", [row[c] for row in part for c in cols]
-                )
-                total += max(r.rowcount, 0)
-        return OperationResult(rowcount=total, table_created=created, columns_added=added)
+        return await upsert_rows_native(_ConnTx(self), table, rows, pk, alter)
 
     # -- misc --------------------------------------------------------------------
 
@@ -1011,7 +757,6 @@ class PostgresConnection:
             raise
 
 
-_MAX_PARAMS = 32767  # PostgreSQL's limit on parameters in one statement
 
 # Python types the binary COPY codecs take for a column type, by the type
 # name introspection reports (without a modifier). Other column types, and
@@ -1038,52 +783,6 @@ def _copyable(column_type: str | None, values: Sequence[Any]) -> bool:
     if accepted is None:
         return False
     return all(v is None or isinstance(v, accepted) for v in values)
-
-
-class _ConnTx:
-    """The ``TxLike`` the core's default operations are written against,
-    over one connection inside its open transaction. Statements run without
-    their own savepoints: the whole native operation runs in one."""
-
-    def __init__(self, conn: PostgresConnection) -> None:
-        self._conn = conn
-        self.dialect = conn._backend.dialect
-        self.capabilities = conn._backend.capabilities
-        self._schema: Schema | None = None
-
-    @staticmethod
-    def precheck(name: str, args: Mapping[str, Any]) -> bool:
-        """Cases the native operations take, decided from the arguments
-        alone."""
-        rows = args.get("rows")
-        if not rows:
-            return False
-        if name == "insert_rows" and (args.get("ignore") or args.get("replace")):
-            return False  # COPY has no conflict handling
-        return True
-
-    async def execute(self, sql: str, params: Any = None) -> Results:
-        from ..core.params import rewrite
-
-        native, args = rewrite(sql, params, ParamStyle.NUMERIC_DOLLAR, POSTGRES_FLAVOR)
-        try:
-            return await self._conn._execute(native, list(args), None, None, None)
-        finally:
-            if leading_keyword(sql, POSTGRES_FLAVOR) not in _NO_SCHEMA_CHANGE:
-                self._schema = None
-
-    async def execute_many(self, sql: str, params_seq: Any) -> WriteResult:
-        from ..core.params import rewrite
-
-        rewritten = [rewrite(sql, p, ParamStyle.NUMERIC_DOLLAR, POSTGRES_FLAVOR) for p in params_seq]
-        if not rewritten:
-            return WriteResult(rowcount=0)
-        return await self._conn._execute_many(rewritten[0][0], [list(p) for _, p in rewritten])
-
-    async def schema(self) -> Schema:
-        if self._schema is None:
-            self._schema = await self._conn._cached_schema()
-        return self._schema
 
 
 def _close_socket(raw: "asyncpg.Connection") -> None:
@@ -1196,190 +895,3 @@ class _PostgresStream:
                 await conn._call(conn._raw.execute("ROLLBACK"))
             finally:
                 conn._end_tx()
-
-
-# -- introspection --------------------------------------------------------------
-
-_VERSION_SQL = """
-with ns as (select oid from pg_namespace where nspname = $1)
-select md5(coalesce(string_agg(x, '|' order by x), '')) from (
-  select 'c' || c.oid || ':' || c.relname || ':' || c.relkind::text
-    from pg_class c where c.relnamespace = (select oid from ns)
-  union all
-  select 'a' || a.attrelid || ':' || a.attnum || ':' || a.attname || ':' || a.atttypid
-         || ':' || a.atttypmod || ':' || a.attnotnull || ':' || a.attgenerated::text
-    from pg_attribute a join pg_class c on c.oid = a.attrelid
-   where c.relnamespace = (select oid from ns) and a.attnum > 0 and not a.attisdropped
-  union all
-  select 'd' || d.oid from pg_attrdef d join pg_class c on c.oid = d.adrelid
-   where c.relnamespace = (select oid from ns)
-  union all
-  select 'k' || k.oid || ':' || k.conname from pg_constraint k
-   where k.connamespace = (select oid from ns)
-  union all
-  select 't' || t.oid || ':' || t.tgname || ':' || t.tgenabled::text from pg_trigger t
-    join pg_class c on c.oid = t.tgrelid
-   where c.relnamespace = (select oid from ns) and not t.tgisinternal
-  union all
-  select 'r' || r.oid || ':' || md5(r.ev_action::text) from pg_rewrite r
-    join pg_class c on c.oid = r.ev_class
-   where c.relnamespace = (select oid from ns)
-) parts(x)
-"""
-
-_RELATIONS_SQL = """
-select c.oid, c.relname, c.relkind::text
-  from pg_class c join pg_namespace n on n.oid = c.relnamespace
- where n.nspname = $1 and c.relkind in ('r', 'p', 'v', 'm', 'f')
- order by c.oid
-"""
-
-_COLUMNS_SQL = """
-select a.attrelid, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
-       case when a.attgenerated = '' then pg_get_expr(d.adbin, d.adrelid) end,
-       a.attgenerated <> '' as generated
-  from pg_attribute a
-  join pg_class c on c.oid = a.attrelid
-  join pg_namespace n on n.oid = c.relnamespace
-  left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
- where n.nspname = $1 and c.relkind in ('r', 'p', 'v', 'm', 'f')
-   and a.attnum > 0 and not a.attisdropped
- order by a.attrelid, a.attnum
-"""
-
-_CONSTRAINTS_SQL = """
-select k.conrelid, k.conname, k.contype::text,
-       array(select a.attname from unnest(k.conkey) with ordinality u(n, i)
-             join pg_attribute a on a.attrelid = k.conrelid and a.attnum = u.n order by u.i),
-       f.relname,
-       array(select a.attname from unnest(k.confkey) with ordinality u(n, i)
-             join pg_attribute a on a.attrelid = k.confrelid and a.attnum = u.n order by u.i),
-       k.confupdtype::text, k.confdeltype::text, pg_get_constraintdef(k.oid)
-  from pg_constraint k
-  join pg_class c on c.oid = k.conrelid
-  join pg_namespace n on n.oid = c.relnamespace
-  left join pg_class f on f.oid = k.confrelid
- where n.nspname = $1 and k.contype in ('p', 'u', 'f', 'c')
- order by k.conrelid, k.contype, k.conname
-"""
-
-_INDEXES_SQL = """
-select i.indrelid, ic.relname, i.indisunique, i.indisprimary,
-       exists(select 1 from pg_constraint k where k.conindid = i.indexrelid and k.contype = 'u'),
-       i.indpred is not null,
-       pg_get_indexdef(i.indexrelid),
-       array(select a.attname from unnest(i.indkey::int2[]) with ordinality u(n, o)
-             left join pg_attribute a on a.attrelid = i.indrelid and a.attnum = u.n
-             where u.o <= i.indnkeyatts order by u.o)
-  from pg_index i
-  join pg_class ic on ic.oid = i.indexrelid
-  join pg_class t on t.oid = i.indrelid
-  join pg_namespace n on n.oid = t.relnamespace
- where n.nspname = $1
- order by ic.relname
-"""
-
-_TRIGGERS_SQL = """
-select t.tgname, c.relname, pg_get_triggerdef(t.oid)
-  from pg_trigger t
-  join pg_class c on c.oid = t.tgrelid
-  join pg_namespace n on n.oid = c.relnamespace
- where n.nspname = $1 and not t.tgisinternal
- order by t.oid
-"""
-
-
-_LONG_TYPES = (
-    (re.compile(r"^character varying\b"), "varchar"),
-    (re.compile(r"^character\b"), "char"),
-    (re.compile(r"^bit varying\b"), "varbit"),
-    (re.compile(r"^timestamp(\(\d+\))? with time zone"), r"timestamptz\1"),
-    (re.compile(r"^timestamp(\(\d+\))? without time zone"), r"timestamp\1"),
-    (re.compile(r"^time(\(\d+\))? with time zone"), r"timetz\1"),
-    (re.compile(r"^time(\(\d+\))? without time zone"), r"time\1"),
-)
-
-
-def _short_type(formatted: str) -> str:
-    """``format_type`` output in the short spelling people write
-    (``varchar(20)``, ``timestamptz``), upper-cased like the dialect's type
-    names (``BIGINT``, ``DOUBLE PRECISION``)."""
-    for pattern, repl in _LONG_TYPES:
-        formatted = pattern.sub(repl, formatted, count=1)
-    return formatted.upper()
-
-
-async def _read_schema(raw: "asyncpg.Connection", schema: str) -> Schema:
-    version = await raw.fetchval(_VERSION_SQL, schema)
-    relations = await raw.fetch(_RELATIONS_SQL, schema)
-    columns: dict[int, list[Any]] = {}
-    for oid, name, type_, not_null, default, generated in await raw.fetch(_COLUMNS_SQL, schema):
-        columns.setdefault(oid, []).append((name, type_, not_null, default, generated))
-    pks: dict[int, tuple[str, ...]] = {}
-    fks: dict[int, list[ForeignKey]] = {}
-    checks: dict[int, list[str]] = {}
-    for oid, _name, kind, cols, other, other_cols, on_upd, on_del, cdef in await raw.fetch(
-        _CONSTRAINTS_SQL, schema
-    ):
-        if kind == "c":
-            checks.setdefault(oid, []).append(cdef)
-        elif kind == "p":
-            pks[oid] = tuple(cols)
-        elif kind == "f":
-            fks.setdefault(oid, []).append(
-                ForeignKey(
-                    columns=tuple(cols),
-                    other_table=other,
-                    other_columns=tuple(other_cols),
-                    on_update=_FK_ACTIONS.get(on_upd, on_upd),
-                    on_delete=_FK_ACTIONS.get(on_del, on_del),
-                )
-            )
-    indexes: dict[int, list[Index]] = {}
-    for oid, iname, unique, primary, constraint_u, partial, idef, icols in await raw.fetch(
-        _INDEXES_SQL, schema
-    ):
-        origin = "pk" if primary else ("u" if constraint_u else "c")
-        indexes.setdefault(oid, []).append(
-            Index(
-                name=iname,
-                columns=tuple(icols),
-                unique=unique,
-                origin=origin,
-                partial=partial,
-                definition=idef,
-            )
-        )
-    triggers = {
-        name: Trigger(name=name, table=table, definition=defn)
-        for name, table, defn in await raw.fetch(_TRIGGERS_SQL, schema)
-    }
-    tables: dict[str, TableInfo] = {}
-    views: dict[str, TableInfo] = {}
-    for oid, name, kind in relations:
-        pk = pks.get(oid, ())
-        cols = tuple(
-            ColumnInfo(
-                name=c,
-                type=_short_type(t),
-                not_null=nn,
-                default=dflt,
-                primary_key=pk.index(c) + 1 if c in pk else 0,
-                generated=gen,
-            )
-            for c, t, nn, dflt, gen in columns.get(oid, ())
-        )
-        if kind in ("v", "m"):
-            views[name] = TableInfo(name=name, kind="view", columns=cols)
-        else:
-            tables[name] = TableInfo(
-                name=name,
-                kind="table",
-                columns=cols,
-                foreign_keys=tuple(fks.get(oid, ())),
-                indexes=tuple(indexes.get(oid, ())),
-                virtual=kind == "f",
-                checks=tuple(checks.get(oid, ())),
-            )
-    return Schema(version=version, tables=tables, views=views, triggers=triggers)
-
