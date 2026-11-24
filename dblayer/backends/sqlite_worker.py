@@ -690,10 +690,16 @@ class WorkerProcess:
 
     async def _wait(self, fut: asyncio.Future[Any], mid: int) -> Any:
         try:
-            return await asyncio.shield(fut)
+            # asyncio.wait, not shield: once its waiter is cancelled, a
+            # shielded future that later fails (the kill's WorkerCrashed)
+            # is logged by asyncio as "exception in shielded future".
+            await asyncio.wait({fut})
+            return fut.result()
         except asyncio.CancelledError:
             if fut.done() or self.dead is not None:
                 raise
+            # Nobody may await it now: retrieve whatever it ends with.
+            fut.add_done_callback(lambda f: f.cancelled() or f.exception())
             try:
                 self.send({"type": "cancel", "target": mid})
             except Exception:
@@ -705,11 +711,9 @@ class WorkerProcess:
                     self.kill(WorkerCrashed(f"worker {self.pid} did not stop a cancelled request; killed"))
                     break
                 try:
-                    await asyncio.wait_for(asyncio.shield(fut), remaining)
+                    await asyncio.wait({fut}, timeout=remaining)
                 except asyncio.CancelledError:
                     continue
-                except BaseException:
-                    break
             if fut.done() and not fut.cancelled():
                 fut.exception()
             raise
