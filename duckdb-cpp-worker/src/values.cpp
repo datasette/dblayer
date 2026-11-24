@@ -385,7 +385,7 @@ struct ColumnCodec {
                 wbuf *p = wr.ext_begin(EXT_DATETIME);
                 w_array(p, 2);
                 w_str(p, b, n);
-                w_cstr(p, zone ? zone->c_str() : "UTC");
+                w_cstr(p, zone && !zone->empty() ? zone->c_str() : "UTC");
                 w_end(p);
                 wr.ext_end(EXT_DATETIME);
             }

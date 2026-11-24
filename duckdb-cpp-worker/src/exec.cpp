@@ -173,7 +173,9 @@ void note_settings(const std::string &kind) {
 bool needs_zone(duckdb_prepared_statement p) {
     for (idx_t i = 0, n = duckdb_prepared_statement_column_count(p); i < n; i++) {
         duckdb_logical_type t = duckdb_prepared_statement_column_logical_type(p, i);
-        bool z = type_has_timestamptz(t);
+        duckdb_type id = duckdb_get_type_id(t);
+        // A parameter's type is only known once the statement runs.
+        bool z = id == DUCKDB_TYPE_INVALID || id == DUCKDB_TYPE_ANY || type_has_timestamptz(t);
         duckdb_destroy_logical_type(&t);
         if (z) return true;
     }
@@ -407,6 +409,7 @@ int64_t exec_many(Conn &c, const std::string &sql, const val *params_seq) {
     if (n == 0) return 0;
     ReadOnlyWrapper wrap(c);
     int64_t total = 0;
+    bool counted = true;
     {
         Statement st(c, -1);
         for (size_t i = 0; i < n; i++) {
@@ -418,13 +421,16 @@ int64_t exec_many(Conn &c, const std::string &sql, const val *params_seq) {
                 duckdb_destroy_result(&res);
                 throw duckdb_error(msg);
             }
-            total += (int64_t)duckdb_rows_changed(&res);
+            // The Python package's rowcount: the rows changed, or -1 once
+            // a statement returned rows (or nothing).
+            if (duckdb_result_return_type(res) == DUCKDB_RESULT_TYPE_CHANGED_ROWS) total += (int64_t)duckdb_rows_changed(&res);
+            else counted = false;
             duckdb_destroy_result(&res);
         }
         note_settings(p.kind);
     }
     wrap.commit();
-    return total;
+    return counted ? total : -1;
 }
 
 // -- streams ----------------------------------------------------------------------------
