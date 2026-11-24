@@ -35,6 +35,7 @@ SRC=/data/src
 export OUT SRC
 rm -rf "$OUT" /data/tmp
 mkdir -p "$OUT/logs" /data/tmp /data/cache
+export MAKEFLAGS="-j$(nproc)"
 export TMPDIR=/data/tmp
 export UV_CACHE_DIR=/data/cache/uv
 export npm_config_cache=/data/cache/npm

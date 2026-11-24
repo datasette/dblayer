@@ -411,7 +411,13 @@ def main() -> None:
     ap.add_argument("--skip", help="comma-separated topic names to leave out (recorded as skipped)")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--label", default="", help="free text recorded in every line, e.g. 'trial'")
+    ap.add_argument("--settle", type=float, default=None,
+                    help="before each topic, wait up to this many seconds for the 1-minute load average to fall "
+                         "below --settle-load (default: 0 with --quick, 90 otherwise)")
+    ap.add_argument("--settle-load", type=float, default=0.5)
     a = ap.parse_args()
+    if a.settle is None:
+        a.settle = 0 if a.quick else 90
     if a.list:
         for t in TOPICS:
             print(f"{t.name:18} {t.title}")
@@ -441,6 +447,9 @@ def main() -> None:
         if t.name in skip:
             rec = {"topic": t.name, "status": "skipped", "reason": "left out with --skip"}
         else:
+            settle_until = time.monotonic() + a.settle
+            while load1() > a.settle_load and time.monotonic() < settle_until:
+                time.sleep(5)
             print(f"\n=== {t.name}: {t.title} (load {load1()})", flush=True)
             rec = run_topic(t, a.quick, out)
         print(f"=== {t.name}: {rec['status']} in {rec.get('seconds', 0)} s"
