@@ -645,14 +645,15 @@ class WorkerProcess:
         return reply
 
     def _kill_for_time(self, mid: int, limit_ms: float) -> None:
+        interrupted = QueryInterrupted(
+            f"query did not stop within its time limit ({limit_ms:.0f} ms) plus "
+            f"{self.config.kill_grace_ms} ms; worker {self.pid} was killed"
+        )
+        # The "driver exception", as for every other backend's errors.
+        interrupted.__cause__ = WorkerError(f"SIGKILL sent to worker {self.pid}")
         self.kill(
             WorkerCrashed(f"worker {self.pid} was killed: a query on it overran its time limit"),
-            for_ids={
-                mid: QueryInterrupted(
-                    f"query did not stop within its time limit ({limit_ms:.0f} ms) plus "
-                    f"{self.config.kill_grace_ms} ms; worker {self.pid} was killed"
-                )
-            },
+            for_ids={mid: interrupted},
         )
 
     async def _wait(self, fut: asyncio.Future[Any], mid: int) -> Any:
@@ -1052,15 +1053,38 @@ class WorkerConnection:
 
     # -- plumbing ----------------------------------------------------------------
 
+    async def _ensure_alive(self) -> None:
+        """A connection whose worker died while it sat idle in the pool
+        (killed from outside, or by a fault on a shared process) gets a new
+        worker on its next request, unless it had a transaction open: that
+        is lost, and the call raises ``WorkerCrashed``."""
+        if self._proc.alive:
+            return
+        if self._tx is not None or self._in_tx:
+            raise WorkerCrashed(str(self._proc.dead))
+        old = self._proc
+        b = self._backend
+        if self._shared:
+            assert b.workers is not None
+            b.workers.release(old)
+            self._proc = await b.workers.acquire()
+        else:
+            self._proc = WorkerProcess(b.config)
+            await self._proc.start()
+            b.processes_started += 1
+        try:
+            await self._open()
+        except BaseException:
+            self._closed = True
+            raise
+
     async def _call(self, msg: dict[str, Any], *, limit_ms: float | None = None) -> dict[str, Any]:
         if self._closed:
             raise WorkerCrashed("connection is closed")
+        await self._ensure_alive()
         if self._shared:
             msg["conn"] = self._conn_id
-        try:
-            reply = await self._proc.call(msg, owner=self, limit_ms=limit_ms)
-        except DblayerError:
-            raise
+        reply = await self._proc.call(msg, owner=self, limit_ms=limit_ms)
         if "in_tx" in reply or "result" in reply:
             self._in_tx = bool(reply.get("in_tx"))
         return reply
@@ -1335,6 +1359,11 @@ class WorkerStream:
         t0 = time.perf_counter()
         if conn._closed:
             raise WorkerCrashed("connection is closed")
+        if self._sid is None:
+            await conn._ensure_alive()
+            proc = conn._proc
+            if conn._shared:
+                msg["conn"] = conn._conn_id
         self._paused = False
         frames = await proc.call(msg, owner=conn, limit_ms=limit, expect_frames=credit, on_sent=self._set_sid if self._sid is None else None)
         self._spent_ms += (time.perf_counter() - t0) * 1000
