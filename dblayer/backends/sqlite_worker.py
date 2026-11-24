@@ -949,7 +949,7 @@ class WorkerBackend:
             proc = await self.workers.acquire()
             shared = True
         else:
-            proc = WorkerProcess(self.config)
+            proc = self._new_process()
             await proc.start()
             self.processes_started += 1
             shared = False
@@ -960,6 +960,11 @@ class WorkerBackend:
             await conn.close()
             raise
         return conn
+
+    def _new_process(self) -> WorkerProcess:
+        """A new, unstarted worker for dedicated placement. Overridden by
+        ``SqliteWasm``, whose "process" is a WebAssembly instance."""
+        return WorkerProcess(self.config)
 
     def change_hint(self) -> object:
         return self._local.change_hint()
@@ -1087,7 +1092,7 @@ class WorkerConnection:
             b.workers.release(old)
             self._proc = await b.workers.acquire()
         else:
-            self._proc = WorkerProcess(b.config)
+            self._proc = b._new_process()
             await self._proc.start()
             b.processes_started += 1
         try:

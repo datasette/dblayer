@@ -147,6 +147,20 @@ async def _reap_workers(backend: Backend) -> None:
     reap_workers(timeout=5.0)
 
 
+def _sqlite_wasm(tmp_path: Path) -> Backend:
+    from dblayer.backends.sqlite_wasm import SqliteWasm
+
+    global _counter
+    _counter += 1
+    return SqliteWasm(tmp_path / f"db{_counter}.db")  # type: ignore[return-value]
+
+
+def _wasm_available() -> str | None:
+    from dblayer.backends.sqlite_wasm import module_unavailable
+
+    return module_unavailable()
+
+
 def _duckdb_available() -> str | None:
     try:
         import duckdb  # noqa: F401
@@ -238,6 +252,9 @@ BACKENDS: list[BackendSpec] = [
     # Multi-tenant C worker processes shared by every database (sqlite_cpool).
     BackendSpec("sqlite-cpool", _sqlite_cpool, available=_cworker_available, native_operations=True,
                 cleanup=_cpool_cleanup),
+    # SQLite compiled to WebAssembly, in-process under wasmtime
+    # (experimental; `make -C cworker wasm`). Operations run in the parent.
+    BackendSpec("sqlite-wasm", _sqlite_wasm, available=_wasm_available, native_operations=True),
     BackendSpec("duckdb", _duckdb_file, available=_duckdb_available, native_operations=True),
     # DuckDB in a worker process the database owns; JSON codec. The
     # MessagePack variant runs with DBLAYER_DUCKDB_WORKER_MSGPACK=1.
