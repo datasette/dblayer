@@ -28,25 +28,25 @@ import os
 import sqlite3
 import threading
 import time
-import urllib.parse
-import uuid
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Executor
-from pathlib import Path
 from typing import Any
 
 from ..core.executor import run_blocking
-from ..core.params import SQLITE_FLAVOR, ParamStyle, leading_keyword
+from ..core.params import leading_keyword
 from ..core.results import Column, Results, WriteResult
-from ..core.schema import ColumnInfo, ForeignKey, Index, Schema, TableInfo, Trigger
-from ..errors import (
-    DblayerError,
-    IntegrityError,
-    NotSupported,
-    QueryError,
-    QueryInterrupted,
-    ResourceLimitExceeded,
-    WriteConflict,
+from ..core.schema import Schema
+from ..errors import NotSupported, ResourceLimitExceeded
+from ._sqlite_common import (
+    FETCH_BATCH as _FETCH_BATCH,
+    WRITE_VERBS as _WRITE_VERBS,
+    SqliteDialectBase,
+    SqliteTarget,
+    has_fts,
+    make_capabilities,
+    read_schema,
+    row_bytes as _row_bytes,
+    stat as _stat,  # noqa: F401 (re-exported for sqlite_worker)
 )
 from .base import Capabilities, Dialect, NativeParams
 
@@ -54,65 +54,17 @@ __all__ = ["SqliteInProcess", "SqliteDialect", "SqliteConnection"]
 
 type InitHook = Callable[[sqlite3.Connection], None]
 
-_FETCH_BATCH = 256
-_WRITE_VERBS = frozenset({"INSERT", "UPDATE", "DELETE", "REPLACE"})
 
+class SqliteDialect(SqliteDialectBase):
+    """The SQLite dialect, with errors read from ``sqlite3`` exceptions."""
 
-class SqliteDialect(Dialect):
-    name = "sqlite"
-    paramstyle = ParamStyle.NAMED_COLON
-    flavor = SQLITE_FLAVOR
-    type_map = {
-        "integer": "INTEGER",
-        "float": "REAL",
-        "text": "TEXT",
-        "blob": "BLOB",
-    }
+    native_alter = SqliteDialectBase.native_alter_for_version(sqlite3.sqlite_version_info)
 
-    # Conflict handling uses the generic ON CONFLICT syntax (SQLite 3.24+),
-    # not INSERT OR IGNORE / OR REPLACE: OR IGNORE also skips NOT NULL and
-    # CHECK violations, and OR REPLACE deletes the old row (new rowid,
-    # delete side effects), neither of which PostgreSQL or DuckDB can match.
-
-    # Native RENAME COLUMN (3.25+) also rewrites indexes, triggers, views and
-    # other tables' foreign keys. DROP COLUMN (3.35+) refuses indexed, key and
-    # referenced columns, and there is no ALTER COLUMN TYPE, so those (and pk
-    # changes) rebuild the table.
-    native_alter = (
-        frozenset({"rename"}) if sqlite3.sqlite_version_info >= (3, 25, 0) else frozenset()
-    )
-    rowid_column = "rowid"
-    foreign_keys_enforced_sql = "PRAGMA foreign_keys"
-
-    def blob_literal(self, value: bytes) -> str:
-        return "X'" + value.hex() + "'"
-
-    def swap_rename_sql(self, staging: str, target: str) -> list[str]:
-        # Since 3.26 RENAME re-parses the whole schema and fails ("error in
-        # view v: no such table: main.target") while views still name the
-        # just-dropped target. Legacy mode renames without that check (and
-        # without rewriting references, which already say "target").
-        # Assumes legacy_alter_table is normally off on dblayer connections.
-        return [
-            "PRAGMA legacy_alter_table = ON",
-            self.rename_table_sql(staging, target),
-            "PRAGMA legacy_alter_table = OFF",
-        ]
-
-    def map_exception(self, exc: BaseException) -> DblayerError | None:
+    def error_info(self, exc: BaseException) -> tuple[str | None, str, bool] | None:
         if not isinstance(exc, sqlite3.Error):
             return None
         code = getattr(exc, "sqlite_errorname", None)
-        message = str(exc)
-        if code == "SQLITE_INTERRUPT" or (code is None and message == "interrupted"):
-            return QueryInterrupted("query interrupted (time limit exceeded or cancelled)")
-        if isinstance(exc, sqlite3.IntegrityError):
-            return IntegrityError(message, code)
-        if code in ("SQLITE_NOMEM", "SQLITE_TOOBIG", "SQLITE_FULL"):
-            return ResourceLimitExceeded(message)
-        if code == "SQLITE_BUSY_SNAPSHOT":
-            return WriteConflict(message)
-        return QueryError(message, code)
+        return code, str(exc), isinstance(exc, sqlite3.IntegrityError)
 
 
 @functools.cache
@@ -120,22 +72,9 @@ def _has_fts5() -> bool:
     # One throwaway in-memory connection per process; no file is touched.
     conn = sqlite3.connect(":memory:")
     try:
-        opts = {row[0] for row in conn.execute("pragma compile_options")}
-        return "ENABLE_FTS5" in opts or "ENABLE_FTS4" in opts or "ENABLE_FTS3" in opts
+        return has_fts([row[0] for row in conn.execute("pragma compile_options")])
     finally:
         conn.close()
-
-
-def _row_bytes(row: Sequence[Any]) -> int:
-    size = 0
-    for v in row:
-        if v is None:
-            size += 1
-        elif isinstance(v, (str, bytes)):
-            size += len(v)
-        else:
-            size += 8
-    return size
 
 
 _REINTERRUPT_S = 0.005
@@ -172,18 +111,8 @@ class _TimeLimit:
 @functools.cache
 def _capabilities(is_memory: bool) -> Capabilities:
     """Shared (frozen) instances: one per kind, not one per database."""
-    return Capabilities(
-        concurrent_writers=False,
-        transactional_ddl=True,
-        implicit_rowid=True,
-        cheap_change_hint=not is_memory,
-        hard_kill=False,
-        memory_limit=False,
-        table_definition_sql=True,
-        full_text_search=_has_fts5(),
-        sleep_releases_everything=not is_memory,
-        returning=sqlite3.sqlite_version_info >= (3, 35, 0),
-        snapshot_reads=not is_memory,
+    return make_capabilities(
+        is_memory=is_memory, fts=_has_fts5(), version=sqlite3.sqlite_version_info
     )
 
 
@@ -191,7 +120,7 @@ _DIALECT = SqliteDialect()  # stateless, shared by every backend instance
 _ANCHOR_LOCK = threading.Lock()  # anchor creation is rare; one lock for all
 
 
-class SqliteInProcess:
+class SqliteInProcess(SqliteTarget):
     """In-process SQLite backend.
 
     Capability rounding: none needed; every flag is a plain yes/no here.
@@ -202,17 +131,7 @@ class SqliteInProcess:
     a string; ``path`` builds a ``Path`` on demand.
     """
 
-    __slots__ = (
-        "_path",
-        "memory_name",
-        "immutable",
-        "init",
-        "executor",
-        "busy_timeout",
-        "create",
-        "capabilities",
-        "_anchor",
-    )
+    __slots__ = ("init", "executor", "busy_timeout", "capabilities", "_anchor")
     dialect: Dialect = _DIALECT
 
     def __init__(
@@ -226,19 +145,10 @@ class SqliteInProcess:
         busy_timeout: float = 5.0,
         create: bool = True,
     ) -> None:
-        if (path is None) == (memory_name is None):
-            raise ValueError("pass exactly one of path or memory_name")
-        if memory_name is not None and immutable:
-            raise ValueError("an in-memory database cannot be immutable")
-        self._path: str | None = (
-            os.path.abspath(os.fspath(path)) if path is not None else None
-        )
-        self.memory_name = memory_name
-        self.immutable = immutable
+        self._init_target(path, memory_name, immutable, create)
         self.init = init
         self.executor = executor
         self.busy_timeout = busy_timeout
-        self.create = create and not immutable
         self.capabilities = _capabilities(memory_name is not None)
         self._anchor: sqlite3.Connection | None = None
 
@@ -246,19 +156,10 @@ class SqliteInProcess:
     def memory(cls, name: str | None = None, **kwargs: Any) -> "SqliteInProcess":
         """A named shared-cache in-memory database. Without a name, a unique
         one is generated, so the database is private to this backend."""
-        return cls(memory_name=name or f"dblayer-{uuid.uuid4().hex}", **kwargs)
-
-    @property
-    def path(self) -> Path | None:
-        return None if self._path is None else Path(self._path)
-
-    @property
-    def is_memory(self) -> bool:
-        return self.memory_name is not None
+        return cls(memory_name=name or cls.unique_memory_name(), **kwargs)
 
     def __repr__(self) -> str:
-        target = f"memory:{self.memory_name}" if self.is_memory else self._path
-        return f"SqliteInProcess({target!r})"
+        return f"SqliteInProcess({self._target_repr()})"
 
     # -- Backend protocol ----------------------------------------------------
 
@@ -268,14 +169,6 @@ class SqliteInProcess:
         raw = await run_blocking(self.executor, self._connect, write)
         return SqliteConnection(self, raw, write=write)
 
-    def change_hint(self) -> object:
-        """Size and mtime of the database file and its ``-wal`` file. Uses
-        ``os.stat`` only; never opens a connection. ``None`` for memory
-        databases (no cheap hint exists)."""
-        if self._path is None:
-            return None
-        return (_stat(self._path), _stat(self._path + "-wal"))
-
     async def close(self) -> None:
         with _ANCHOR_LOCK:
             anchor, self._anchor = self._anchor, None
@@ -284,17 +177,6 @@ class SqliteInProcess:
 
     # -- internals -----------------------------------------------------------
 
-    def _uri(self, write: bool) -> str:
-        if self.memory_name is not None:
-            return f"file:{urllib.parse.quote(self.memory_name)}?mode=memory&cache=shared"
-        assert self._path is not None
-        base = Path(self._path).as_uri()
-        if write:
-            return base + ("?mode=rwc" if self.create else "?mode=rw")
-        if self.immutable:
-            return base + "?immutable=1"
-        return base + "?mode=ro"
-
     def _connect(self, write: bool) -> sqlite3.Connection:
         if self.memory_name is not None:
             with _ANCHOR_LOCK:
@@ -302,16 +184,7 @@ class SqliteInProcess:
                     self._anchor = sqlite3.connect(
                         self._uri(True), uri=True, check_same_thread=False, autocommit=True
                     )
-        elif self.create and not write and self._path is not None:
-            # A read before the first write: an empty file is a valid empty
-            # database, so create one rather than fail with CANTOPEN.
-            try:
-                fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            except FileExistsError:
-                pass
-            else:
-                os.close(fd)
-        if not write and not self.immutable and self._path is not None:
+        elif self._prepare_file(write):
             self._recover_hot_journal()
         raw = sqlite3.connect(
             self._uri(write),
@@ -339,13 +212,10 @@ class SqliteInProcess:
         read-write connection once, which lets SQLite roll it back (it does
         so only if no live writer holds the lock, so this never touches a
         transaction in progress). Costs one ``stat`` otherwise."""
-        assert self._path is not None
-        if not os.path.exists(self._path + "-journal"):
+        if not self.has_journal():
             return
         try:
-            rw = sqlite3.connect(
-                Path(self._path).as_uri() + "?mode=rw", uri=True, timeout=self.busy_timeout
-            )
+            rw = sqlite3.connect(self._rw_uri(), uri=True, timeout=self.busy_timeout)
         except sqlite3.Error:
             return  # read-only file or directory: nothing we can do
         try:
@@ -354,14 +224,6 @@ class SqliteInProcess:
             pass
         finally:
             rw.close()
-
-
-def _stat(path: str) -> tuple[int, int] | None:
-    try:
-        st = os.stat(path)
-    except FileNotFoundError:
-        return None
-    return (st.st_size, st.st_mtime_ns)
 
 
 class SqliteConnection:
@@ -698,116 +560,4 @@ class _SqliteStream:
 
 
 def _read_schema(raw: sqlite3.Connection) -> Schema:
-    version = raw.execute("pragma schema_version").fetchone()[0]
-    master = raw.execute(
-        "select type, name, tbl_name, sql from sqlite_master order by rowid"
-    ).fetchall()
-    kinds: dict[str, str] = {}
-    try:
-        for _schema, name, ttype, *_rest in raw.execute(
-            "select * from pragma_table_list where schema = 'main'"
-        ):
-            kinds[name] = ttype
-    except sqlite3.OperationalError:
-        pass  # SQLite < 3.37
-    index_sql = {name: sql for type_, name, _t, sql in master if type_ == "index"}
-    tables: dict[str, TableInfo] = {}
-    views: dict[str, TableInfo] = {}
-    triggers: dict[str, Trigger] = {}
-
-    pk_cache: dict[str, tuple[str, ...]] = {}
-
-    def columns_of(name: str) -> tuple[ColumnInfo, ...]:
-        cols = []
-        for cid, cname, ctype, notnull, dflt, pk, hidden in raw.execute(
-            "select cid, name, type, \"notnull\", dflt_value, pk, hidden "
-            "from pragma_table_xinfo(?)",
-            (name,),
-        ):
-            cols.append(
-                ColumnInfo(
-                    name=cname,
-                    type=ctype or "",
-                    not_null=bool(notnull),
-                    default=dflt,
-                    primary_key=pk,
-                    hidden=hidden == 1,
-                    generated=hidden in (2, 3),
-                )
-            )
-        return tuple(cols)
-
-    def pks_of(name: str) -> tuple[str, ...]:
-        if name not in pk_cache:
-            rows = raw.execute(
-                "select name, pk from pragma_table_info(?) where pk > 0 order by pk", (name,)
-            ).fetchall()
-            pk_cache[name] = tuple(r[0] for r in rows)
-        return pk_cache[name]
-
-    for type_, name, tbl_name, sql in master:
-        if type_ == "trigger":
-            triggers[name] = Trigger(name=name, table=tbl_name, definition=sql)
-            continue
-        if type_ not in ("table", "view") or name.startswith("sqlite_"):
-            continue
-        columns = columns_of(name)
-        if type_ == "view":
-            views[name] = TableInfo(name=name, kind="view", columns=columns, definition=sql)
-            continue
-        fks: dict[int, list[tuple[Any, ...]]] = {}
-        for fid, seq, other, frm, to, on_update, on_delete, _match in raw.execute(
-            "select id, seq, \"table\", \"from\", \"to\", on_update, on_delete, match "
-            "from pragma_foreign_key_list(?) order by id, seq",
-            (name,),
-        ):
-            fks.setdefault(fid, []).append((other, frm, to, on_update, on_delete))
-        foreign_keys = []
-        for parts in fks.values():
-            other = parts[0][0]
-            to_cols = tuple(p[2] for p in parts)
-            if any(c is None for c in to_cols):
-                to_cols = pks_of(other) or to_cols
-            foreign_keys.append(
-                ForeignKey(
-                    columns=tuple(p[1] for p in parts),
-                    other_table=other,
-                    other_columns=tuple(to_cols),
-                    on_update=parts[0][3],
-                    on_delete=parts[0][4],
-                )
-            )
-        indexes = []
-        for _seq, iname, unique, origin, partial in raw.execute(
-            "select seq, name, \"unique\", origin, partial from pragma_index_list(?) "
-            "order by seq",
-            (name,),
-        ).fetchall():
-            icols = tuple(
-                r[0]
-                for r in raw.execute(
-                    "select name from pragma_index_info(?) order by seqno", (iname,)
-                )
-            )
-            indexes.append(
-                Index(
-                    name=iname,
-                    columns=icols,
-                    unique=bool(unique),
-                    origin=origin,
-                    partial=bool(partial),
-                    definition=index_sql.get(iname),
-                )
-            )
-        kind = kinds.get(name, "table")
-        tables[name] = TableInfo(
-            name=name,
-            kind="table",
-            columns=columns,
-            foreign_keys=tuple(foreign_keys),
-            indexes=tuple(sorted(indexes, key=lambda i: i.name)),
-            definition=sql,
-            virtual=kind == "virtual" or (sql or "").lstrip().upper().startswith("CREATE VIRTUAL"),
-            hidden=kind == "shadow",
-        )
-    return Schema(version=version, tables=tables, views=views, triggers=triggers)
+    return read_schema(raw, sqlite3.OperationalError)
