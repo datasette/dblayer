@@ -529,6 +529,8 @@ function runExecute(wc, sql, params, lim, recover) {
   }
 }
 
+const LASTROWID_SENTINEL = -(2n ** 63n);
+
 function executeOnce(wc, sql, params, lim) {
   const sqlText = typeof sql === 'string' ? sql : '';
   const kw = leadingKeyword(sqlText);
@@ -537,6 +539,11 @@ function executeOnce(wc, sql, params, lim) {
   const dml = isDml(sqlText);
   const db = wc.db;
   const rowidBefore = X.sqlite3_last_insert_rowid(db);
+  // A sentinel, not a before/after comparison (as the C worker): an insert
+  // that reuses the previous insert's rowid (insert 5, delete, insert 5)
+  // must report it, and an upsert that updates that row must not. Put
+  // back if unused.
+  if (isInsert) X.sqlite3_set_last_insert_rowid(db, LASTROWID_SENTINEL);
   let st = 0;
   let rc = C.SQLITE_DONE;
   limitInstall(wc, lim.tl);
@@ -600,11 +607,12 @@ function executeOnce(wc, sql, params, lim) {
     }
     if (truncated) out.truncated = true;
     if (rowcount !== -1) out.rowcount = rowcount;
-    if (isInsert && rowcount > 0 && lastrowid !== rowidBefore) out.last_pk = intValue(lastrowid);
+    if (isInsert && rowcount > 0 && lastrowid !== LASTROWID_SENTINEL) out.last_pk = intValue(lastrowid);
     return out;
   } finally {
     if (st) X.sqlite3_finalize(st);
     limitRemove(wc);
+    if (isInsert && X.sqlite3_last_insert_rowid(db) === LASTROWID_SENTINEL) X.sqlite3_set_last_insert_rowid(db, rowidBefore);
   }
 }
 
