@@ -274,7 +274,10 @@ def create_app(
         if config.fleet_size > 0:
             fleet = Fleet(config)
             pg = app.state.demos.get("postgres")
-            await fleet.start(postgres_error=pg.error if pg is not None else None)
+            await fleet.start(
+                postgres_error=pg.error if pg is not None else None,
+                postgres_db=pg.db if pg is not None else None,
+            )
         app.state.fleet = fleet
         try:
             yield
