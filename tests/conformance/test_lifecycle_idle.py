@@ -91,11 +91,17 @@ async def test_many_databases_share_one_timer(make_backend):
     for d in dbs:
         d._hub = hub
     try:
-        before = len(scheduled)
         await asyncio.gather(*(d.execute("select 1") for d in dbs))
-        # Heap entries include cancelled handles; live ones are what count.
-        live = [h for h in scheduled if not h.cancelled()]
-        assert len(live) <= before + 1
+        # Heap entries include cancelled handles, and drivers keep timers of
+        # their own (asyncpg's statement cache); count live hub timers.
+        def hub_timers():
+            return [
+                h
+                for h in scheduled
+                if not h.cancelled() and getattr(h._callback, "__self__", None) is hub
+            ]
+
+        assert len(hub_timers()) == 1
         await asyncio.sleep(0.4)
         assert all(d.state == "asleep" for d in dbs)
         assert all(d._pool is None for d in dbs)
