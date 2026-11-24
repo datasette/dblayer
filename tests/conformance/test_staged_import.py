@@ -186,8 +186,21 @@ async def test_bad_mode(ops_db):
         ops_db.staged_import("t", mode="merge")
 
 
+@pytest.mark.requires("replace_keeps_views")
 async def test_replace_keeps_views_working(posts):
     await posts.execute_write("create view titles as select title from posts")
     async with posts.staged_import("posts", mode="replace") as imp:
         await imp.write([{"id": 1, "title": "new"}])
     assert (await posts.execute("select * from titles")).rows == [("new",)]
+
+
+@pytest.mark.requires_not("replace_keeps_views")
+async def test_replace_with_a_dependent_view_fails_and_rolls_back(posts):
+    before = await dump(posts, "posts")
+    await posts.execute_write("create view titles as select title from posts")
+    with pytest.raises(QueryError):
+        async with posts.staged_import("posts", mode="replace") as imp:
+            await imp.write([{"id": 1, "title": "new"}])
+    assert await dump(posts, "posts") == before
+    assert len((await posts.execute("select * from titles")).rows) == len(before)
+    assert not [t for t in (await posts.schema()).tables if t.startswith("_dblayer_")]

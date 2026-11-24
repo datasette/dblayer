@@ -104,6 +104,13 @@ class Capabilities:
     savepoints to contain the failure. Not in the spec's table; the only
     flag with a default, so backends written before it need no change."""
 
+    replace_keeps_views: bool = True
+    """Staged-import ``replace`` (drop the target, rename staging into
+    place) keeps views on the target working. False on PostgreSQL, which
+    refuses to drop a table a view depends on: the swap fails with
+    ``QueryError`` and the import is rolled back. Not in the spec's table;
+    the spec says the suite records which backends fail."""
+
     def has(self, flag: str) -> bool:
         if flag not in self.names():
             raise AttributeError(f"unknown capability flag {flag!r}")
