@@ -6,10 +6,16 @@ Measures (the spec's "Benchmarks" rows that concern the worker):
 
 * round trip of a one-row read: in-process, worker + JSON, worker + MessagePack;
 * reads of 1,000 and 100,000 rows, with ``execute`` and with ``stream``;
-* worker start to first result, dedicated and shared placement;
+* worker start to first result, dedicated and shared placement, with a
+  breakdown of where a new worker's start-up goes (spawn, hello, open, first
+  query) and the resident memory of one idle worker;
 * "insert with alter": an interactive transaction (begin, schema, alter,
   execute_many, commit: 5 round trips) against one named operation (begin,
   op, commit: the op itself is one message).
+
+The C worker (``SqliteCWorker``, ``cworker/``) is measured alongside when
+its binary is built (``make -C cworker``): variants ``cworker-json`` and
+``cworker-msgpack``.
 
 Prints one table. Every figure is a median over repeats; machine load moves
 them a lot, so compare figures from one run. Later benchmark work can import
@@ -34,15 +40,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dblayer import Database  # noqa: E402
 from dblayer.backends.sqlite import SqliteInProcess  # noqa: E402
 from dblayer.backends.sqlite_worker import SharedWorkers, SqliteWorker, reap_workers  # noqa: E402
-from dblayer.worker.protocol import available_codecs  # noqa: E402
+from dblayer.worker.protocol import FrameDecoder, available_codecs, frame, get_codec  # noqa: E402
 
-VARIANTS = ["in-process", "worker-json", "worker-msgpack"]
+VARIANTS = ["in-process", "worker-json", "worker-msgpack", "cworker-json", "cworker-msgpack"]
+
+
+def cworker_available() -> bool:
+    from dblayer.backends.sqlite_cworker import binary_unavailable
+
+    return binary_unavailable() is None
 
 
 def make_backend(variant: str, path: Path, **kw: Any) -> Any:
     if variant == "in-process":
         return SqliteInProcess(path)
-    codec = variant.split("-", 1)[1]
+    kind, codec = variant.split("-", 1)
+    if kind == "cworker":
+        from dblayer.backends.sqlite_cworker import SqliteCWorker
+
+        return SqliteCWorker(path, codec=codec, **kw)
     return SqliteWorker(path, codec=codec, **kw)
 
 
@@ -126,12 +142,123 @@ async def bench_start(d: Path, repeat: int) -> dict[str, float]:
     finally:
         group.close()
     inproc = [await first_result(SqliteInProcess(path)) for _ in range(repeat)]
-    return {
+    out = {
         "in-process_ms": statistics.median(inproc) * 1e3,
         "dedicated_ms": statistics.median(dedicated) * 1e3,
         "shared_first_ms": shared_cold * 1e3,
         "shared_warm_ms": statistics.median(shared_warm) * 1e3,
     }
+    if cworker_available():
+        from dblayer.backends.sqlite_cworker import SqliteCWorker, c_shared_workers
+
+        c_dedicated = [await first_result(SqliteCWorker(path)) for _ in range(repeat)]
+        cgroup = c_shared_workers(1, linger=60)
+        try:
+            c_cold = await first_result(SqliteCWorker(path, workers=cgroup))
+            c_warm = [await first_result(SqliteCWorker(path, workers=cgroup)) for _ in range(repeat)]
+        finally:
+            cgroup.close()
+        out.update(
+            c_dedicated_ms=statistics.median(c_dedicated) * 1e3,
+            c_shared_first_ms=c_cold * 1e3,
+            c_shared_warm_ms=statistics.median(c_warm) * 1e3,
+        )
+    return out
+
+
+def _spawn_wait(argv: list[str]) -> float:
+    import subprocess
+
+    t0 = time.perf_counter()
+    subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    return time.perf_counter() - t0
+
+
+def _protocol_phases(argv: list[str], path: Path) -> dict[str, float]:
+    """Spawn a worker on raw pipes and time each step to the first result:
+    spawn -> hello reply, open, first query (on a database with a table)."""
+    import os
+    import subprocess
+
+    codec = get_codec("json")
+    dec = FrameDecoder()
+    t0 = time.perf_counter()
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    assert p.stdin is not None and p.stdout is not None
+    pending: list[bytes] = []
+
+    def call(msg: dict[str, Any]) -> dict[str, Any]:
+        p.stdin.write(frame(codec.encode(msg)))  # type: ignore[union-attr]
+        p.stdin.flush()  # type: ignore[union-attr]
+        while not pending:
+            data = os.read(p.stdout.fileno(), 65536)  # type: ignore[union-attr]
+            if not data:
+                raise RuntimeError("worker exited")
+            pending.extend(dec.feed(data))
+        return codec.decode(pending.pop(0))
+
+    call({"type": "hello", "protocol": 1, "codecs": ["json"], "id": 1})
+    t1 = time.perf_counter()
+    call({"type": "open", "path": str(path), "mode": "read", "id": 2})
+    t2 = time.perf_counter()
+    call({"type": "execute", "sql": "select count(*) from t", "id": 3})
+    t3 = time.perf_counter()
+    call({"type": "execute", "sql": "select count(*) from t", "id": 4})
+    t4 = time.perf_counter()
+    p.stdin.close()
+    p.wait()
+    p.stdout.close()
+    return {"hello": t1 - t0, "open": t2 - t1, "first_query": t3 - t2, "second_query": t4 - t3, "total": t3 - t0}
+
+
+def _rss_kb(pid: int) -> int:
+    import subprocess
+
+    out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return int(out.strip() or 0)
+
+
+async def bench_startup_breakdown(d: Path, repeat: int) -> dict[str, Any]:
+    """Where a new worker's start-up goes, C against Python, plus the
+    resident memory of one idle worker that has opened a database."""
+    path = d / "phases.db"
+    seed = Database(SqliteInProcess(path))
+    await seed.execute_write("create table if not exists t (x)")
+    await seed.close()
+    workers: dict[str, list[str]] = {"python": [sys.executable, "-m", "dblayer.worker"]}
+    if cworker_available():
+        from dblayer.backends.sqlite_cworker import find_binary
+
+        workers["c"] = [find_binary()]
+    out: dict[str, Any] = {
+        "spawn_true_ms": statistics.median(_spawn_wait(["/usr/bin/true"]) for _ in range(repeat * 3)) * 1e3,
+        "python_bare_ms": statistics.median(_spawn_wait([sys.executable, "-S", "-c", "pass"]) for _ in range(repeat)) * 1e3,
+        "python_site_ms": statistics.median(_spawn_wait([sys.executable, "-c", "pass"]) for _ in range(repeat)) * 1e3,
+    }
+    if "c" in workers:
+        out["c_version_ms"] = statistics.median(_spawn_wait([workers["c"][0], "--version"]) for _ in range(repeat * 3)) * 1e3
+    for name, argv in workers.items():
+        runs = [_protocol_phases(argv, path) for _ in range(repeat)]
+        out[f"{name}_phases_ms"] = {k: statistics.median(r[k] for r in runs) * 1e3 for k in runs[0]}
+    for name in workers:
+        backend: Any
+        if name == "c":
+            from dblayer.backends.sqlite_cworker import SqliteCWorker
+
+            backend = SqliteCWorker(path)
+        else:
+            backend = SqliteWorker(path)
+        db = Database(backend)
+        try:
+            await db.execute("select count(*) from t")
+            pool = db._pool
+            assert pool is not None
+            pid = pool._idle_read[0].conn.pid  # type: ignore[attr-defined]
+            await asyncio.sleep(0.2)
+            out[f"{name}_idle_rss_kb"] = _rss_kb(pid)
+        finally:
+            await db.close()
+    return out
 
 
 async def bench_insert_with_alter(variant: str, d: Path, repeat: int) -> dict[str, float]:
@@ -166,7 +293,11 @@ async def bench_insert_with_alter(variant: str, d: Path, repeat: int) -> dict[st
 async def run_all(quick: bool = False) -> dict[str, Any]:
     n = 500 if quick else 3000
     rep = 3 if quick else 7
-    variants = [v for v in VARIANTS if v != "worker-msgpack" or "msgpack" in available_codecs()]
+    variants = [
+        v for v in VARIANTS
+        if (not v.endswith("-msgpack") or "msgpack" in available_codecs())
+        and (not v.startswith("cworker") or cworker_available())
+    ]
     out: dict[str, Any] = {"round_trip": {}, "rows_1000": {}, "rows_100000": {}, "insert_with_alter": {}}
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -176,6 +307,7 @@ async def run_all(quick: bool = False) -> dict[str, Any]:
             out["rows_100000"][v] = await bench_rows(v, d, 100_000, rep)
             out["insert_with_alter"][v] = await bench_insert_with_alter(v, d, rep * 5)
         out["start"] = await bench_start(d, rep)
+        out["startup_breakdown"] = await bench_startup_breakdown(d, rep * 3)
     reap_workers(5)
     return out
 
@@ -204,6 +336,21 @@ def print_table(r: dict[str, Any]) -> None:
     print("\nOpen to first result of a new Database (ms)")
     print(f"  in-process {s['in-process_ms']:.2f}; worker dedicated {s['dedicated_ms']:.1f} (a process per connection); "
           f"shared: first {s['shared_first_ms']:.1f}, then {s['shared_warm_ms']:.2f} on the running process")
+    if "c_dedicated_ms" in s:
+        print(f"  C worker dedicated {s['c_dedicated_ms']:.1f}; shared: first {s['c_shared_first_ms']:.1f}, "
+              f"then {s['c_shared_warm_ms']:.2f} on the running process")
+    b = r["startup_breakdown"]
+    print("\nStart-up breakdown, raw pipes (median ms)")
+    print(f"  spawn and wait for /usr/bin/true {b['spawn_true_ms']:.2f}; python -S -c pass {b['python_bare_ms']:.1f}; "
+          f"python -c pass {b['python_site_ms']:.1f}"
+          + (f"; dblayer-cworker --version {b['c_version_ms']:.2f}" if "c_version_ms" in b else ""))
+    for name in ("python", "c"):
+        ph = b.get(f"{name}_phases_ms")
+        if ph:
+            print(f"  {name:<7} spawn to hello {ph['hello']:7.2f}  open {ph['open']:6.2f}  first query {ph['first_query']:6.2f}"
+                  f"  (second {ph['second_query']:5.2f})  total {ph['total']:7.2f}")
+    print("\nResident memory of one idle worker with a database open (KB)")
+    print("  " + "; ".join(f"{name} {b[f'{name}_idle_rss_kb']}" for name in ("python", "c") if f"{name}_idle_rss_kb" in b))
 
 
 def main() -> None:
