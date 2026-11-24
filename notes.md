@@ -1039,3 +1039,60 @@ Subagent-reported. Timings at load 17 to 47; provisional. CI not verified for th
 ### Upstream suggestions
 
 - **Datasette issue 1270:** a WebAssembly sandbox with epoch interruption stops the single-C-call queries that neither the progress handler nor `interrupt()` can. Verified here on SQLite 3.53.1, outside Datasette. Worth mentioning on that issue as a third option beside a worker process.
+
+## 2026-11-24: native export experiment, final report
+
+Subagent-reported. Every benchmark ran at load 18 to 36; provisional. No CI result for these commits. Results are committed in `benchmarks/export-results.md`.
+
+### Built
+
+- `db.export(sql, params, format="csv"|"tsv"|"json"|"ndjson", json_shape=..., max_rows, max_bytes, time_limit_ms, native=True)` returning an `ExportStream`: an async iterator of bytes that also carries the columns, row count, truncation flag and whether the backend serialised natively.
+- Optional backend capability `SupportsExport`. A backend yields row bytes only; the core writes the header row, the JSON envelope and the truncation tail. A Python fallback covers every backend.
+- Native implementations: the C SQLite worker (`cworker/src/export.c`), in-process DuckDB (each line built in SQL) and PostgreSQL on psycopg (`COPY (projection) TO STDOUT`).
+- Socket handoff for the C worker (`dblayer/backends/cworker_handoff.py`) with its own small HTTP/1.1 server in `benchmarks/handoff_server.py`.
+- `docs/export-formats.md` defines the formats and the parity contract.
+- Full suite: 6,270 passed, 3,272 skipped (backends not built in that worktree), 4 expected failures.
+
+### Found
+
+Python server CPU for exporting 1,000,000 wide rows:
+
+| Mode | CSV | JSON |
+| --- | --- | --- |
+| C worker, serialised in Python | 2.03 s | 1.61 s |
+| C worker, native, raw frames | 0.15 s | 0.17 s |
+| C worker, native, socket handoff | 0.06 s | 0.05 s |
+| DuckDB in-process, serialised in Python | 2.77 s | 2.67 s |
+| DuckDB in-process, native | 0.69 s | 0.66 s |
+| PostgreSQL, serialised in Python | 3.30 s | 2.64 s |
+| PostgreSQL, native | 1.18 s | 1.36 s |
+
+- **Backend-side serialisation cuts Python CPU about 13 times on the C worker,** 4 times on DuckDB (whose figure includes the engine's own threads) and 2 to 3 times on PostgreSQL for wide rows. Over HTTP through the demo app the C worker's server CPU fell from 2.19 s to 0.24 s for a 174 MB CSV.
+- **PostgreSQL native export does not help on narrow rows** (0.80 s against 0.84 s) because psycopg delivers one COPY row per await. A prototype that drains libpq directly through the public `psycopg.pq` module cut that to 0.17 s (`scripts/psycopg_copy_batch.py`); not yet used by the backend.
+- **Socket handoff works end to end with curl** and takes the Python server's CPU for the body to about zero, flat at roughly 50 ms per export. Keep-alive survives it, and a worker killed mid-body gives the client a broken transfer (curl exit 18), not a short one that looks complete.
+- **Socket handoff's preconditions are heavy:** plain HTTP/1.1 on a socket the server owns; no TLS in Python; no HTTP/2 or 3; no compression or body-rewriting middleware. ASGI offers no way to reach the socket, so it needs a non-ASGI server or a new ASGI extension. Two weak points: after a kill the body may end on a whole CSV row, with only the missing final chunk marking it broken; and while exporting, the worker holds the socket and could read the client's next pipelined request, including its auth headers, which undermines the worker as a containment boundary.
+- **Whole-response JSON is the costly pattern.** One `json.dumps` of 1,000,000 rows blocked the event loop for 0.7 to 1.3 s and grew the process by 1.2 to 1.4 GB. Every chunked mode, native or not, kept loop lag under 10 ms and memory growth under 7 MB.
+- **Parity:** byte-identical to the Python fallback on all three native backends for integers (including 64-bit extremes), floats (including NaN and infinities), text with every awkward character, blobs, NULL against the empty string and booleans. Dates and timestamps on DuckDB and PostgreSQL are equal only after parsing. Intervals and nested types are unspecified.
+- **The side-channel pipe transport was worse than raw frames** (3 to 4 times the Python CPU) and should be dropped.
+- **Truncation cannot be signalled in-band for CSV, TSV or NDJSON.** Only two JSON shapes carry a `"truncated": true` marker. An HTTP trailer is the natural place.
+- In-process DuckDB cannot use the handoff as tried: `COPY ... TO '/dev/fd/N'` fails.
+
+### Decision
+
+- **Recommendation from the subagent: add backend-side serialisation to the real interface** as an optional capability that yields row bytes only. Contract on parity: byte-identical to the format definition for integers, floats, text, blobs, NULL and booleans, proven by running the parity suite against the backend; parse-equal for dates, timestamps, decimals and UUIDs; nested types unspecified.
+- **Do not pursue socket handoff for Datasette now.** Raw frames already give most of the gain; handoff saves roughly another 0.1 s per million rows at the cost of the preconditions above.
+- Engines with their own output formats (ClickHouse) should be asked for row-only output and must pass the parity suite before claiming a format; as shipped their writers differ in line endings, empty-string quoting, blobs, `nan`/`inf` and TSV escaping.
+
+### Idea: to discuss
+
+- Batch the psycopg COPY read inside the backend.
+- HTTP trailers to signal truncation for CSV, TSV and NDJSON.
+- An ASGI extension, `http.response.handoff`, where the server flushes and lends the app the socket; worth raising with the ASGI maintainers only if handoff is revisited.
+- Drop the pipe transport.
+
+### Upstream suggestions
+
+- **Datasette CSV: NULL and the empty string are written identically.** `csv.writer` output cannot tell them apart. Quoting empty strings, as PostgreSQL's CSV does, leaves an unquoted empty field to mean NULL. Verified by the subagent reading Datasette's CSV rendering code; behaviour not run.
+- **Datasette JSON: NaN would be emitted as bare `NaN`, which is invalid JSON.** `remove_infinites` handles infinities only. SQLite stores NaN as NULL, so this bites only with other backends or plugins. Verified by reading the code.
+- **Datasette JSON: stream rows instead of one `json.dumps`** if the row limit is ever raised. Measured in this project's harness, not in Datasette.
+- **psycopg (not Datasette or sqlite-utils):** a batched `Copy.read`. The prototype measured a 4 times gain.
