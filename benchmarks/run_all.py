@@ -136,7 +136,8 @@ TOPICS: list[Topic] = [
           ["benchmarks/nodeworker_bench.py", "--json", "{json}"], quick=["--quick"], requires=nodeworker),
     Topic("duckdb_memory", "DuckDB memory after sleep, in-process against workers",
           ["benchmarks/duckdb_memory.py", "all", "--json", "{json}", "--max-load", "2"],
-          quick=["--n", "20", "--cycles", "1", "--rows", "20000"], timeout=(900, 5400),
+          # Not fewer --rows: the overhead section reads 100,000 rows from the template.
+          quick=["--n", "20", "--cycles", "1"], timeout=(900, 5400),
           requires=lambda: _import("duckdb")),
     Topic("postgres_drivers", "PostgreSQL drivers: asyncpg against psycopg 3",
           ["benchmarks/bench_postgres_drivers.py"], quick=["--runs", "2"],
