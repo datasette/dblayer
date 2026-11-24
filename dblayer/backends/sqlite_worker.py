@@ -322,9 +322,14 @@ class WorkerProcess:
         """Connections open in this process (shared placement)."""
         self.idle_timer: asyncio.TimerHandle | None = None
         self.started_at = 0.0
-        self.recorder: list[tuple[str, dict[str, Any]]] | None = None
+        self.recorder: list[tuple[str, dict[str, Any]]] | None = WorkerProcess.record_new
         """Test hook: when a list, every frame sent and received is
         appended as ``("->" | "<-", message)``."""
+
+    record_new: list[tuple[str, dict[str, Any]]] | None = None
+    """Test hook: processes started while this is a list record into it
+    from their first frame (``hello``). Used to capture the example
+    session in ``docs/worker-protocol.md``."""
 
     def __repr__(self) -> str:
         state = "dead" if self.dead else "alive"
@@ -1397,7 +1402,7 @@ class WorkerStream:
             await proc.call(
                 {"type": "cancel", "target": self._sid, "id": self._sid},
                 owner=self._conn,
-                limit_ms=0,
+                limit_ms=5000,  # nothing runs: the worker answers at once unless it is wedged
                 expect_frames=1,
             )
         except DblayerError:
