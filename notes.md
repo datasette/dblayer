@@ -398,3 +398,63 @@ Simon asked for this on 2026-11-23 (his words: "a psycopg3 worker so we can comp
 Once the worker backend landed, opening any fleet worker database returned a 500, "file is not a database": the fleet code picked the DuckDB template for every kind except in-process SQLite. Fixed in `1b9c71e`, with a test that opens one fleet member of every backend kind (it failed before the fix). The demo tests had passed because none opened a worker member of the fleet. After the fix, on a fresh server: all 1,000 databases registered and none unavailable; a 500-way fan-out gave 500 of 500 reads in 1.44 s over 192 databases with open connections at the cap of 40.
 
 A second gap this shows: an unexpected `QueryError` from `db.schema()` reaches the app as a 500. The demo should render it as an error page, and the library's error for "this file is not a database" could be more specific than `QueryError`.
+
+## 2026-11-23: psycopg 3 backend and driver comparison
+
+Subagent-reported. All timings were taken with this machine at a load average above 200 (several subagents running test suites at once), so absolute numbers are noisy; the subagent says the ratios held across three runs. The benchmark must be re-run on a quiet machine before anyone quotes it.
+
+### Built
+
+- `dblayer/backends/postgres_psycopg.py` (`PostgresPsycopg`), registered in the conformance suite as `postgres-psycopg`: 361 passed, 17 skipped, every skip from a capability flag. Eleven commits, `202ce89` to `a33dad1`.
+- Shared PostgreSQL code factored into `backends/_postgres_common.py`.
+- `tests/test_postgres_drivers.py`: 18 tests that pin down each difference below. `tests/latency_proxy.py`: a 20 ms latency proxy for counting round trips.
+- `benchmarks/bench_postgres_drivers.py`.
+- A fifth featured database in the demo, "PostgreSQL (psycopg 3)".
+
+### Found: asyncpg problems, checked against psycopg 3
+
+| asyncpg problem | psycopg 3 |
+| --- | --- |
+| Needs private driver APIs | No. Public API only. |
+| Stale cached statements after DDL | Same failure with prepared statements on; the backend leaves them off by default and nothing goes stale. |
+| `executemany` gives no row counts | Gives the total. |
+| Untyped parameters need casts | Work without casts. Default int2 typing overflows in `$1*$2`, so the backend sends int4 or larger. |
+| A timer per cached statement | None. |
+| Connection stranded on a closed loop cannot be closed | `close()` closes the descriptor; the xfail test passes on psycopg. |
+| `max_result_bytes` checked only after the fetch | Bounded while streaming: peak 1.1 MB against asyncpg's 56 MB for a 1 MB limit on a 50 MB result. |
+| A savepoint per statement costs an extra round trip | SAVEPOINT, statement and RELEASE go in one pipeline: 1.30 round trips against asyncpg's 2.54. |
+| Binary COPY refuses an int for a text column | Text COPY accepts it. |
+| Catalog "char" columns arrive as bytes | Arrive as str. |
+
+psycopg is worse in one place: a Python bool for a native boolean column needs `:b::boolean`.
+
+Benchmark under load, asyncpg against psycopg: one-row read 515 µs against 126 µs; 100,000-row fetch 189 ms against 163 ms; 100,000-row insert by COPY 544 ms against 430 ms; 100,000-row insert by the default path 1.37 s against 3.07 s (psycopg re-parses each row when unprepared); statement in a transaction with savepoints 965 µs against 183 µs.
+
+Two psycopg problems turned up, both worked around:
+
+- **A Flush message after Sync disarms PostgreSQL's `idle_in_transaction_session_timeout`,** and psycopg sends exactly that at the end of every pipeline, so the server-side deadline would never fire. The backend sets `transaction_timeout` on PostgreSQL 17+ and re-arms the timer with an empty query on older servers. Script: `scripts/psycopg_flush_disarms_idle_timeout.py`.
+- **With prepared statements on, a pipeline holding BEGIN, a statement and ROLLBACK leaves psycopg's statement cache out of step with the server.** Script: `scripts/psycopg_prepared_rollback_pipeline.py`.
+
+### Decision
+
+- **Recommendation for open question 1: psycopg 3.** It removes the private-API dependency, the stale-cache trouble, the timers, the stranded-socket leak and the missing counts; it makes `max_result_bytes` protect memory; and pipelines make statement savepoints nearly free, which matters most against a remote server. Both backends stay in the tree until Simon decides.
+- Placeholders reach psycopg as `$n` on its raw cursors, reusing the shared rewriter, since `%s` style would need every `%` in the SQL doubled.
+- The psycopg backend refuses more than one statement per call, as the DuckDB backend does.
+
+### Idea: to discuss
+
+- **PostgreSQL in the worker process is not worthwhile in general.** The query runs in the server, cancel already works server-side, and psycopg bounds result memory. Killing a worker would not stop the server statement. It would only serve as a test that the worker is engine-neutral.
+- **`transaction_timeout` for the asyncpg backend too:** it bounds a running statement, not only an idle transaction.
+- **Prepare only the `executemany` statement** on psycopg to fix the slow default-path insert.
+- **A "remote server" column in the benchmark** using the latency proxy. Local-socket numbers flatter drivers that make extra round trips.
+- **Booleans:** portable booleans are sent as 1/0, which is why native boolean columns are awkward. Worth revisiting once there is a decision on portable types.
+
+### Upstream suggestions
+
+- None for sqlite-utils or Datasette.
+- **PostgreSQL:** a Flush message received while idle in a transaction disables the idle timer without re-arming it. Verified by the subagent with a raw-libpq script.
+- **psycopg:** sends Flush after Sync on pipeline exit (verified, same script); prepared-statement cache out of step after ROLLBACK in a pipeline (minimal script, cause not traced); tries to prepare multi-statement strings with `prepare_threshold=0` (seen, no script).
+
+### Found: process
+
+- Running five subagents' test suites at once pushed this machine's load average above 200. A full-suite run that takes about two minutes took 22. Benchmarks and timing tests are meaningless in that state; the final benchmark milestone must run alone.
