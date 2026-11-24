@@ -28,4 +28,5 @@ testpaths = ["tests"]
 markers = [
     "requires(*flags): skip unless the backend has every named capability flag set",
     "requires_not(*flags): skip if the backend has any named capability flag set",
+    "scale: many-database scale tests (tests/scale); deselect with -m 'not scale'",
 ]

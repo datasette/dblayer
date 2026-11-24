@@ -363,6 +363,11 @@ class Database(IntrospectionMixin, OperationsMixin):
     async def _release_everything(self, hub: Hub) -> None:
         hub.sleeps += 1
         hub.awake -= 1
+        # An asleep database is one small object: drop the cached schema
+        # too (the first introspection after waking reads it again).
+        self._schema_cache = None
+        if not self._staging:
+            self._staging = None
         if self._closed or self.capabilities.sleep_releases_everything:
             try:
                 await self._backend.close()
