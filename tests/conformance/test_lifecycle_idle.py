@@ -112,10 +112,13 @@ async def test_many_databases_share_one_timer(make_backend, monkeypatch):
         await asyncio.gather(*(d.execute("select 1") for d in dbs))
         # Heap entries include cancelled handles, and drivers keep timers of
         # their own (asyncpg's statement cache); count live hub timers.
+        # Read loop._scheduled afresh: asyncio replaces the list when it
+        # purges cancelled handles (drivers such as psycopg cancel many
+        # timers), so a reference taken earlier can be stale and empty.
         def hub_timers():
             return [
                 h
-                for h in scheduled
+                for h in loop._scheduled  # type: ignore[attr-defined]
                 if not h.cancelled() and getattr(h._callback, "__self__", None) is hub
             ]
 
