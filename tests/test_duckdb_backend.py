@@ -157,7 +157,7 @@ async def test_sleep_with_a_reader_in_flight_releases_after_it_returns(ddb):
     task = asyncio.create_task(
         ddb.execute("select count(*) from range(200000000) where range % 3 = 1")
     )
-    await asyncio.sleep(0.02)
+    await wait_until(lambda: ddb.stats().in_use_read == 1, interval=0)  # in flight
     await ddb.sleep()
     assert (await task).rows[0][0] > 0
     await wait_until(lambda: not ddb._backend.is_open)

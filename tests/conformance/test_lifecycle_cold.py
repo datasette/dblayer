@@ -12,6 +12,7 @@ import pytest
 from dblayer import Database, Registry
 from dblayer.backends.sqlite import SqliteInProcess
 
+from ..helpers import wait_until
 from ..objectstore import LocalCache, ObjectStore, StoreUnavailable
 
 # Backends whose database is one local file, built from its path. Another
@@ -125,7 +126,11 @@ async def test_request_during_eviction_waits_then_fetches(setup):
     await db.execute_write("insert into t (x) values (2)")
     await db.sleep()
     evicting = asyncio.create_task(registry.evict("a"))
-    await asyncio.sleep(0.01)
+    # The eviction is under way (or already over) before the request comes.
+    await wait_until(
+        lambda: evicting.done() or (db._transition is not None and db._transition[0] == "evict"),
+        interval=0,
+    )
     reading = asyncio.create_task(db.execute("select count(*) from t"))
     assert await evicting
     assert (await reading).rows == [(2,)]
