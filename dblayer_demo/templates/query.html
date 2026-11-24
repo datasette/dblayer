@@ -8,6 +8,7 @@
 {% if results is not none %}
 <p class="meta">{{ results.rows | length }} row{{ "" if results.rows | length == 1 else "s" }}{% if results.truncated %}
 <span class="notice">truncated: the query returned more than {{ max_rows }} rows; only the first {{ max_rows }} are shown</span>{% endif %}</p>
+<p class="meta">Export: {% for f in ["csv", "tsv", "json", "ndjson"] %}<a href="/{{ demo.spec.slug }}/-/query.{{ f }}?sql={{ sql | urlencode }}{% for k, v in params.items() %}&amp;{{ k | urlencode }}={{ v | urlencode }}{% endfor %}">{{ f }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>
 {% if results.columns %}{% include "_results.html" %}{% endif %}
 {% endif %}
 {% endblock %}

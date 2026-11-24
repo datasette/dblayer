@@ -18,7 +18,7 @@ import jinja2
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
@@ -262,6 +262,84 @@ async def query_page(request: Request) -> Response:
     )
 
 
+EXPORT_FORMATS = ("csv", "tsv", "json", "ndjson")
+
+
+async def export_response(request: Request, db: Database, sql: str, params: dict[str, str] | None,
+                          fmt: str, filename: str) -> Response:
+    """A ``db.export()`` body, streamed: the backend serialises where it
+    can (``?_native=0`` forces the Python fallback). ``?_size=`` caps rows
+    (default 1000, ``max`` for all); ``?_shape=`` picks the JSON shape;
+    ``?_dl=1`` asks for a download. Errors before the first byte are a
+    400; after it the connection is aborted, so a client never mistakes
+    a broken export for a complete one."""
+    qp = request.query_params
+    size = qp.get("_size", str(QUERY_MAX_ROWS))
+    try:
+        max_rows = None if size == "max" else max(0, int(size))
+    except ValueError:
+        raise HTTPException(400, "_size must be an integer or 'max'") from None
+    shape = qp.get("_shape", "objects")
+    if shape not in ("objects", "arrays", "array"):
+        raise HTTPException(400, "_shape must be objects, arrays or array")
+    stream = db.export(sql, params or None, format=fmt, json_shape=shape, max_rows=max_rows,
+                       time_limit_ms=None if max_rows is None else QUERY_TIME_LIMIT_MS * 10,
+                       native=qp.get("_native", "1") != "0")
+    try:
+        first = await stream.__anext__()
+    except StopAsyncIteration:
+        first = b""
+    except DblayerError as e:
+        await stream.aclose()
+        return Response(describe_error(e) + "\n", status_code=400, media_type="text/plain")
+
+    async def body() -> AsyncIterator[bytes]:
+        async with stream:
+            if first:
+                yield first
+            async for chunk in stream:
+                yield chunk
+        if stream.truncated:
+            logger.info("export of %s truncated at %d rows", filename, stream.row_count)
+
+    headers = {"x-dblayer-export": "native" if stream.native else "fallback"}
+    if qp.get("_dl"):
+        headers["content-disposition"] = f'attachment; filename="{filename}.{fmt}"'
+    return StreamingResponse(body(), media_type=stream.content_type, headers=headers)
+
+
+async def query_export(request: Request) -> Response:
+    demo, db = _database(request)
+    fmt = request.path_params["fmt"]
+    if fmt not in EXPORT_FORMATS:
+        raise HTTPException(404, f"Unknown format {fmt!r}")
+    sql = request.query_params.get("sql", "").strip()
+    if not sql:
+        raise HTTPException(400, "sql= is required")
+    try:
+        names = named_parameters(db, sql)
+    except DblayerError as e:
+        raise HTTPException(400, describe_error(e)) from None
+    params = {n: request.query_params.get(n, "") for n in names}
+    return await export_response(request, db, sql, params, fmt, "query")
+
+
+async def table_export(request: Request) -> Response:
+    fmt = request.path_params["fmt"]
+    if fmt not in EXPORT_FORMATS:
+        # A table whose name has a dot in it: not an export.
+        request.path_params["table"] = f"{request.path_params['table']}.{fmt}"
+        return await table_page(request)
+    demo, db = _database(request)
+    name = request.path_params["table"]
+    info = (await db.schema()).get(name)
+    if info is None:
+        raise HTTPException(404, f"No table or view named {name!r}")
+    q = db.dialect.quote_identifier
+    sql = f"select * from {q(name)} order by {_order_by(db, info)}"
+    return await export_response(request, db, sql, None, fmt, name)
+
+
 FLEET_STATES = ("awake", "asleep", "cold", "unavailable")
 
 
@@ -389,6 +467,8 @@ def create_app(
         Route("/-/fanout.json", fanout_json, name="fanout_json"),
         Route("/{database}", database_page, name="database"),
         Route("/{database}/-/query", query_page, name="query"),
+        Route("/{database}/-/query.{fmt}", query_export, name="query_export"),
+        Route("/{database}/{table:path}.{fmt}", table_export, name="table_export"),
         Route("/{database}/{table:path}", table_page, name="table"),
     ]
     return Starlette(

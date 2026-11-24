@@ -6,6 +6,7 @@
 <p class="meta">{% if count is none %}Row count timed out.{% else %}{{ "{:,}".format(count) }} row{{ "" if count == 1 else "s" }}.{% endif %}
 {% if results is not none and results.rows %}Showing rows {{ offset + 1 }} to {{ offset + results.rows | length }}.{% endif %}
 <a href="/{{ demo.spec.slug }}/-/query?sql={{ sql | urlencode }}">View and edit SQL</a></p>
+<p class="meta">Export: {% for f in ["csv", "tsv", "json", "ndjson"] %}<a href="/{{ demo.spec.slug }}/{{ info.name | urlencode }}.{{ f }}?_size=max">{{ f }}</a>{% if not loop.last %}, {% endif %}{% endfor %} (every row; <a href="/{{ demo.spec.slug }}/{{ info.name | urlencode }}.csv?_size=max&amp;_dl=1">download CSV</a>)</p>
 
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
