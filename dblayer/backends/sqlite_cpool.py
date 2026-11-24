@@ -84,6 +84,7 @@ class MultiWorkerConfig(WorkerConfig):
     heap_limit_mb: int | None = None
     soft_heap_limit_mb: int | None = None
     cache_kb: int | None = None
+    lookaside: tuple[int, int] | None = None
 
     def argv(self) -> list[str]:
         args = WorkerConfig.argv(self) + ["--multi", "--max-connections", str(self.max_connections)]
@@ -93,6 +94,8 @@ class MultiWorkerConfig(WorkerConfig):
             args += ["--soft-heap-limit-mb", str(int(self.soft_heap_limit_mb))]
         if self.cache_kb:
             args += ["--cache-kb", str(int(self.cache_kb))]
+        if self.lookaside is not None:
+            args += ["--lookaside", f"{int(self.lookaside[0])},{int(self.lookaside[1])}"]
         return args
 
 
@@ -272,6 +275,9 @@ class CPool:
     * ``heap_limit_mb``, ``soft_heap_limit_mb``: process-wide SQLite heap
       limits; ``cache_kb``: per-connection page cache; ``memory_limit_mb``:
       ``RLIMIT_AS`` per process (Linux).
+    * ``lookaside``: ``(slot_bytes, slots)`` for each connection's lookaside
+      slab (SQLite's default is 1,200 x 100, about 120 KB per connection,
+      most of an idle connection's cost); ``(0, 0)`` turns it off.
     * ``linger``: seconds a process with no connections stays up.
 
     Belongs to one event loop at a time (a new loop closes the old
@@ -289,6 +295,7 @@ class CPool:
         heap_limit_mb: int | None = None,
         soft_heap_limit_mb: int | None = None,
         cache_kb: int | None = None,
+        lookaside: tuple[int, int] | None = None,
         memory_limit_mb: int | None = None,
         kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
         max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
@@ -312,6 +319,7 @@ class CPool:
                 heap_limit_mb=heap_limit_mb,
                 soft_heap_limit_mb=soft_heap_limit_mb,
                 cache_kb=cache_kb,
+                lookaside=lookaside,
             )
         )
         self.procs: list[MuxWorkerProcess] = []

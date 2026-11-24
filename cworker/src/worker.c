@@ -3,7 +3,8 @@
  *
  *   dblayer-cworker [--memory-limit-mb N] [--debug]
  *   dblayer-cworker --multi [--max-connections N] [--heap-limit-mb N]
- *                   [--soft-heap-limit-mb N] [--cache-kb N] [...]
+ *                   [--soft-heap-limit-mb N] [--cache-kb N]
+ *                   [--lookaside SIZE,COUNT] [...]
  *
  * Threads
  *   main      runs requests one at a time, in arrival order, and writes replies.
@@ -83,6 +84,7 @@ static atomic_int g_exit_requested;
 static int g_multi;
 static int g_max_conns = 256;
 static long g_heap_limit_mb, g_soft_heap_limit_mb, g_cache_kb;
+static long g_lookaside_size = -1, g_lookaside_count = -1; /* -1: SQLite's default */
 #define LANE_STACK_BYTES ((size_t)4 * 1024 * 1024)
 
 static int64_t mono_ns(void) {
@@ -1161,6 +1163,11 @@ static int h_open(job *j, wbuf *w, err_t *e) {
         return -1;
     }
     sqlite3_busy_timeout(db, tmp.busy_ms);
+    if (g_lookaside_size >= 0) {
+        /* Lookaside is a per-connection slab (default 1,200 B x 100 slots,
+         * allocated at open): most of what an idle connection costs. */
+        sqlite3_db_config(db, SQLITE_DBCONFIG_LOOKASIDE, NULL, (int)g_lookaside_size, (int)g_lookaside_count);
+    }
     if (g_cache_kb > 0) {
         /* The page cache is per connection: this bounds what one tenant's
          * reads keep resident (SQLite's default is 2,000 KiB). */
@@ -2587,12 +2594,19 @@ int main(int argc, char **argv) {
             g_soft_heap_limit_mb = arg_long(argc, argv, &i);
         } else if (strcmp(argv[i], "--cache-kb") == 0) {
             g_cache_kb = arg_long(argc, argv, &i);
+        } else if (strcmp(argv[i], "--lookaside") == 0) {
+            /* SIZE,COUNT for each connection's lookaside slab; 0,0 turns it off */
+            if (i + 1 >= argc || sscanf(argv[i + 1], "%ld,%ld", &g_lookaside_size, &g_lookaside_count) != 2) {
+                fprintf(stderr, "dblayer-cworker: --lookaside needs SIZE,COUNT\n");
+                return 2;
+            }
+            i++;
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("dblayer-cworker protocol %d, SQLite %s\n", PROTOCOL_VERSION, sqlite3_libversion());
             return 0;
         } else {
             fprintf(stderr, "usage: dblayer-cworker [--memory-limit-mb N] [--debug] [--multi "
-                            "[--max-connections N] [--heap-limit-mb N] [--soft-heap-limit-mb N] [--cache-kb N]]\n");
+                            "[--max-connections N] [--heap-limit-mb N] [--soft-heap-limit-mb N] [--cache-kb N] [--lookaside SIZE,COUNT]]\n");
             return 2;
         }
     }

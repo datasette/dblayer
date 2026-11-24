@@ -295,3 +295,12 @@ def test_end_of_input_with_busy_connections_exits(raw, tmp_path):
     import sqlite3
 
     assert sqlite3.connect(tmp_path / "e0.db").execute("select count(*) from t").fetchone() == (0,)
+
+
+def test_lookaside_option(raw, tmp_path):
+    w = raw("--lookaside", "0,0")
+    a = w.open(tmp_path / "a.db")
+    assert w.call({"type": "execute", "sql": "select 1", "conn": a})["result"]["rows"] == [[1]]
+    assert w.close() == 0
+    bad = subprocess.run([find_binary(), "--multi", "--lookaside", "x"], capture_output=True, text=True)
+    assert bad.returncode == 2 and "SIZE,COUNT" in bad.stderr

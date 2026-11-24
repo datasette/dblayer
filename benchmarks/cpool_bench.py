@@ -182,7 +182,7 @@ async def warm_open(root: Path, repeat: int) -> dict[str, float]:
     return {"first_result_ms": statistics.median(times) * 1e3, "open_round_trip_ms": statistics.median(opens) * 1e3}
 
 
-async def memory_per_open(root: Path, n: int) -> dict[str, float]:
+async def memory_per_open(root: Path, n: int, lookaside: tuple[int, int] | None = None) -> dict[str, float]:
     """Footprint of one pool process with 1 database open, then with
     ``n``: the delta per open database (each has run one small query, so
     its schema and a few pages are cached)."""
@@ -190,7 +190,7 @@ async def memory_per_open(root: Path, n: int) -> dict[str, float]:
 
     from dblayer.backends.sqlite_cpool import CPool, SqliteCPool
 
-    pool = CPool(1, codec="msgpack", linger=60)
+    pool = CPool(1, codec="msgpack", linger=60, lookaside=lookaside, max_connections=n + 8)
     paths = [root / f"mem-{i}.db" for i in range(n + 1)]
     for p in paths:
         await _seed(p)
@@ -228,6 +228,7 @@ async def run(quick: bool = False) -> dict[str, Any]:
         root = Path(tmp)
         out["warm_open"] = await warm_open(root, 10 if quick else 30)
         out["memory"] = await memory_per_open(root, 100 if quick else 400)
+        out["memory_no_lookaside"] = await memory_per_open(root, 100 if quick else 400, lookaside=(0, 0))
         scaling: dict[str, dict[int, Any]] = {}
         for kind in ("in-process", "cworker", "cpool"):
             scaling[kind] = {}
@@ -253,6 +254,9 @@ def print_section(r: dict[str, Any]) -> None:
           f"{m['rss_kb_per_open']:.1f} KB RSS ({m['databases']} databases; process base "
           f"{m['base_footprint_kb'] / 1024:.1f} MB footprint); parent descriptors with all open: "
           f"{m['parent_fds_with_all_open']}")
+    m2 = r.get("memory_no_lookaside")
+    if m2:
+        print(f"  the same with lookaside off (CPool(lookaside=(0, 0))): {m2['footprint_kb_per_open']:.1f} KB footprint")
     print("  one-row reads, each client on its own database: requests/s (parent CPU share of wall; "
           "worker CPU in cores; worker processes; parent descriptors)")
     for kind, rows in r["scaling"].items():
