@@ -25,7 +25,7 @@ skips if any named flag is true. Unknown flag names fail loudly.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +35,7 @@ from dblayer import Database
 from dblayer.backends.base import Backend, Capabilities
 from dblayer.backends.sqlite import SqliteInProcess
 
+from . import pg
 from .override_backend import OverrideBackend
 
 
@@ -47,6 +48,9 @@ class BackendSpec:
     """True if the backend's connections implement ``run_operation``
     overrides. If false, the "override" path of ``ops_db`` wraps the backend
     in the test-only ``OverrideBackend``."""
+    cleanup: Callable[[Backend], Awaitable[None]] | None = None
+    """Called at teardown for every backend ``make`` returned, after its
+    databases were closed (drops a server-side schema, ...)."""
 
 
 _counter = 0
@@ -78,10 +82,25 @@ def _duckdb_file(tmp_path: Path) -> Backend:
     return DuckDB(tmp_path / f"db{_counter}.duckdb")
 
 
+def _postgres(tmp_path: Path) -> Backend:
+    return pg.make()
+
+
+async def _postgres_cleanup(backend: Backend) -> None:
+    await pg.drop_schema(backend.schema)  # type: ignore[attr-defined]
+
+
 BACKENDS: list[BackendSpec] = [
     BackendSpec("sqlite", _sqlite_file),
     BackendSpec("sqlite-memory", _sqlite_memory),
     BackendSpec("duckdb", _duckdb_file, available=_duckdb_available),
+    BackendSpec(
+        "postgres",
+        _postgres,
+        available=pg.unavailable,
+        native_operations=True,
+        cleanup=_postgres_cleanup,
+    ),
 ]
 
 
@@ -106,22 +125,28 @@ def backend_spec(request: pytest.FixtureRequest) -> BackendSpec:
 
 
 @pytest.fixture
-def make_backend(
+async def make_backend(
     backend_spec: BackendSpec, tmp_path: Path, request: pytest.FixtureRequest
-) -> Callable[[], Backend]:
+) -> AsyncIterator[Callable[[], Backend]]:
     """Factory for fresh backends of the current kind. Applies the
-    capability marks using the first backend it builds."""
+    capability marks using the first backend it builds, and runs the spec's
+    ``cleanup`` for each at teardown."""
     checked = False
+    made: list[Backend] = []
 
     def make() -> Backend:
         nonlocal checked
         b = backend_spec.make(tmp_path)
+        made.append(b)
         if not checked:
             checked = True
             _check_marks(request, b.capabilities)
         return b
 
-    return make
+    yield make
+    if backend_spec.cleanup is not None:
+        for b in made:
+            await backend_spec.cleanup(b)
 
 
 @pytest.fixture
