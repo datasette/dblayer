@@ -2146,6 +2146,11 @@ int main(int argc, char **argv) {
     for (;;) {
         job *j = dequeue();
         if (j->kind == J_SHUTDOWN) {
+            /* dequeue() made it current: clear that before freeing it, or
+             * the watchdog reads a freed job (found by ASan on Linux). */
+            pthread_mutex_lock(&g_mu);
+            g_current = NULL;
+            pthread_mutex_unlock(&g_mu);
             job_free(j);
             break;
         }
