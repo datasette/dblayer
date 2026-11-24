@@ -775,3 +775,52 @@ Subagent-reported. Timings taken at load 9 to 17 with nine other subagents runni
 
 - Two apsw backends with different `memory_limit_mb` values in one process fight over the single heap limit.
 - The inline budget does not bound a slow user-defined function or a cold disk read inside one opcode.
+
+## 2026-11-24: DuckDB worker in C++
+
+Subagent-reported. All timings taken at load 14 to 44; provisional. No Linux memory figures.
+
+### Built
+
+- `duckdb-cpp-worker/`: about 4,460 lines of C++17 against libduckdb 2.0.1 (a pinned, checksummed prebuilt download), reusing the C worker's `codec.c`. Builds in 7 seconds with `make -C duckdb-cpp-worker`; the binary is 375 KB plus a 67 MB shared library.
+- `DuckDBCppWorker`, registered as `duckdb-cppworker`: 426 passed, 12 skipped, 3 expected failures. The skips match the Python DuckDB worker's. A Linux CI job for it passed, including the `RLIMIT_AS` test and an AddressSanitizer run.
+- Eighteen commits, `082fdc2` to `8b3cc34`.
+
+### Found
+
+| Measure | In-process | Python worker | C++ worker |
+| --- | --- | --- | --- |
+| Process floor before opening anything | n/a | 44.7 MB | 2.1 MB |
+| One database open | about 10 MB | 54.4 MB | 14.4 MB |
+| Asleep to first result | 8 ms | about 190 ms | 28 ms |
+| One-row read | 456 µs | about 1,000 µs | about 730 µs |
+| Extra per row, plain, 100,000 rows (MessagePack) | n/a | 0.61 µs | 0.11 µs |
+| Extra per row, typed, 100,000 rows (MessagePack) | n/a | 2.90 µs | 0.69 µs |
+| Peak footprint, 150 databases, cap 40 | 454 MB | 2,690 MB | 1,145 MB |
+| Point read while a long query runs on the same database | 0.81 ms | 6,205 ms | 1.04 ms |
+
+- **The Python worker's cost was Python.** The floor falls from 45 MB to 2 MB and wake from 190 ms to 28 ms. What remains per process is DuckDB itself: 12 to 27 MB.
+- **Concurrent reads work,** with a thread per connection. On the Python worker a long analytical query blocks every other query on that database; here a point read takes 1 ms alongside it.
+- **`RLIMIT_AS` works with DuckDB** on Linux.
+- **A native appender `insert_rows` is 7.3 times faster** than the default path (269 ms against 1,956 ms for 10,000 rows).
+- **One real limitation, cause not found:** through DuckDB's C API (both the classic one and the new 2.0 one), an unbounded recursive CTE yields its first rows only after about 3.6 seconds, where the Python package gets them in under a second. `max_rows` is worked around by wrapping the query in a LIMIT; streams have no fix, hence the three expected failures.
+- **The C API cannot print a type name the way the Python package does,** reports statement types only after prepare, and gives errors as message text only. Every value conversion the Python package makes had to be redone by hand.
+
+### Decision
+
+- Classic C API, not the 2.0 one, which is marked unstable and has no exception types.
+- `hello` now lists which named operations a worker implements (`ops` is a list), and a worker may decline one.
+- The subagent marked three export tests as expected failures in `tests/conformance/test_export.py`, a file owned by the export experiment. Recorded so it is not mistaken for that experiment's own judgement.
+- **Recommendation from the subagent:** keep as experimental and prefer it to the Python worker wherever one process per database is wanted. For large fleets the next step is a multi-database C++ process.
+
+### Idea: to discuss
+
+- **A multi-database C++ pool process,** combining this with the pool design.
+- **An Arrow wire format.** The remaining typed-row cost (0.69 µs) is now the parent's Python decoding.
+- **Cache prepared statements** to cut the one-row read.
+- **ThreadSanitizer in CI** for this worker, since it is multi-threaded.
+
+### Upstream suggestions
+
+- None for sqlite-utils or Datasette.
+- **DuckDB itself:** the C API does not stream a recursive CTE's first rows the way the Python package's internal path does. Moderately verified by the subagent with minimal C programs on both APIs.
