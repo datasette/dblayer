@@ -28,14 +28,21 @@ Contract notes for implementers (beyond the signatures):
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from ..core.params import SQLITE_FLAVOR, ParamStyle, SqlFlavor
 from ..core.results import Column, Results, WriteResult
-from ..core.schema import Schema
+from ..core.schema import ColumnDef, ForeignKey, Schema
 from ..errors import DblayerError
+
+_SIMPLE_DEFAULT = re.compile(
+    r"""[+-]?\d+(\.\d*)?([eE][+-]?\d+)?|'([^']|'')*'|[xX]'[0-9a-fA-F]*'"""
+    r"""|NULL|TRUE|FALSE|CURRENT_TIME|CURRENT_DATE|CURRENT_TIMESTAMP""",
+    re.IGNORECASE,
+)
 
 __all__ = [
     "Capabilities",
@@ -44,6 +51,7 @@ __all__ = [
     "BackendConnection",
     "RowStream",
     "SupportsOperations",
+    "SupportsBatch",
     "NativeParams",
 ]
 
@@ -70,6 +78,11 @@ class Capabilities:
     sleep_releases_everything: bool
     returning: bool
     """``INSERT/UPDATE/DELETE ... RETURNING``. Not in the spec's table."""
+    snapshot_reads: bool
+    """``transaction(mode="read")`` sees one consistent snapshot, unaffected
+    by writes committed while it is open. Not in the spec's table: false for
+    SQLite shared-cache memory databases, whose readers use
+    ``read_uncommitted`` and share one page cache with the writer."""
 
     def has(self, flag: str) -> bool:
         if flag not in self.names():
@@ -122,6 +135,140 @@ class Dialect:
         the native name; any other string is passed through unchanged."""
         return self.type_map.get(type_name.lower(), type_name)
 
+    native_alter: frozenset[str] = frozenset({"rename", "drop", "types"})
+    """Which ``alter_table`` changes this backend does with native ``ALTER``
+    statements (``rename_column_sql``, ``drop_column_sql``,
+    ``alter_column_type_sql``). Any other requested change (always including
+    ``pk``) is done by rebuilding the table, the way sqlite-utils
+    ``transform`` does. Native changes are applied first, then the rebuild."""
+
+    rowid_column: str | None = None
+    """Name of the implicit row id (``"rowid"`` on SQLite), used to address
+    rows of tables without a primary key and preserved by rebuilds. ``None``
+    when the backend has no implicit row id."""
+
+    foreign_keys_enforced_sql: str | None = None
+    """A query returning one row with a true value when foreign keys are
+    enforced on this connection *and* dropping a referenced table would run
+    ``ON DELETE`` actions (SQLite's ``PRAGMA foreign_keys``). Rebuilds and
+    staged-import swaps refuse to drop a table other tables reference when it
+    returns true. ``None``: dropping a referenced table never silently
+    touches other tables on this backend (it fails instead)."""
+
+    # -- DDL -------------------------------------------------------------
+
+    def literal(self, value: Any) -> str:
+        """Render a Python value as an SQL literal, for ``DEFAULT`` clauses."""
+        if value is None:
+            return "NULL"
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        if isinstance(value, (int, float)):
+            return repr(value)
+        if isinstance(value, str):
+            return "'" + value.replace("'", "''") + "'"
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return self.blob_literal(bytes(value))
+        raise TypeError(f"cannot render {type(value).__name__} as an SQL literal")
+
+    def blob_literal(self, value: bytes) -> str:
+        return "'\\x" + value.hex() + "'::bytea"
+
+    def default_clause(self, expression: str) -> str:
+        """``DEFAULT`` clause for an SQL expression. Simple literals are
+        emitted as they are; anything else is parenthesised."""
+        e = expression.strip()
+        if _SIMPLE_DEFAULT.fullmatch(e):
+            return f"DEFAULT {e}"
+        return f"DEFAULT ({e})"
+
+    def column_sql(self, col: ColumnDef) -> str:
+        parts = [self.quote_identifier(col.name), self.native_type(col.type)]
+        if col.not_null:
+            parts.append("NOT NULL")
+        if col.default is not None:
+            parts.append(self.default_clause(col.default))
+        return " ".join(p for p in parts if p)
+
+    def create_table_sql(
+        self,
+        name: str,
+        columns: Sequence[ColumnDef],
+        *,
+        pk: Sequence[str] = (),
+        uniques: Sequence[Sequence[str]] = (),
+        foreign_keys: Sequence[ForeignKey] = (),
+        if_not_exists: bool = False,
+    ) -> str:
+        """``CREATE TABLE``. The primary key is always a table constraint
+        (on SQLite, ``INTEGER`` + ``PRIMARY KEY ("id")`` still makes the
+        column the rowid alias)."""
+        items = [self.column_sql(c) for c in columns]
+        if pk:
+            items.append(f"PRIMARY KEY ({self.quote_identifiers(pk)})")
+        for cols in uniques:
+            items.append(f"UNIQUE ({self.quote_identifiers(cols)})")
+        for fk in foreign_keys:
+            clause = (
+                f"FOREIGN KEY ({self.quote_identifiers(fk.columns)}) "
+                f"REFERENCES {self.quote_identifier(fk.other_table)}"
+            )
+            if fk.other_columns:
+                clause += f" ({self.quote_identifiers(fk.other_columns)})"
+            for verb, action in (("UPDATE", fk.on_update), ("DELETE", fk.on_delete)):
+                if action and action.upper() != "NO ACTION":
+                    clause += f" ON {verb} {action}"
+            items.append(clause)
+        ine = "IF NOT EXISTS " if if_not_exists else ""
+        body = ",\n    ".join(items)
+        return f"CREATE TABLE {ine}{self.quote_identifier(name)} (\n    {body}\n)"
+
+    def drop_table_sql(self, name: str, *, if_exists: bool = False) -> str:
+        return f"DROP TABLE {'IF EXISTS ' if if_exists else ''}{self.quote_identifier(name)}"
+
+    def rename_table_sql(self, old: str, new: str) -> str:
+        return f"ALTER TABLE {self.quote_identifier(old)} RENAME TO {self.quote_identifier(new)}"
+
+    def swap_rename_sql(self, staging: str, target: str) -> list[str]:
+        """Statements that rename ``staging`` to ``target`` right after the
+        old ``target`` was dropped in the same transaction (alter rebuilds and
+        staged-import ``replace``). Views and triggers elsewhere still refer
+        to ``target`` by name and must keep working."""
+        return [self.rename_table_sql(staging, target)]
+
+    def add_column_sql(self, table: str, col: ColumnDef) -> str:
+        return f"ALTER TABLE {self.quote_identifier(table)} ADD COLUMN {self.column_sql(col)}"
+
+    def rename_column_sql(self, table: str, old: str, new: str) -> str:
+        return (
+            f"ALTER TABLE {self.quote_identifier(table)} RENAME COLUMN "
+            f"{self.quote_identifier(old)} TO {self.quote_identifier(new)}"
+        )
+
+    def drop_column_sql(self, table: str, column: str) -> str:
+        return f"ALTER TABLE {self.quote_identifier(table)} DROP COLUMN {self.quote_identifier(column)}"
+
+    def alter_column_type_sql(self, table: str, column: str, type_name: str) -> str:
+        return (
+            f"ALTER TABLE {self.quote_identifier(table)} ALTER COLUMN "
+            f"{self.quote_identifier(column)} TYPE {self.native_type(type_name)}"
+        )
+
+    def create_index_sql(
+        self,
+        name: str,
+        table: str,
+        columns: Sequence[str],
+        *,
+        unique: bool = False,
+        if_not_exists: bool = False,
+    ) -> str:
+        return (
+            f"CREATE {'UNIQUE ' if unique else ''}INDEX "
+            f"{'IF NOT EXISTS ' if if_not_exists else ''}{self.quote_identifier(name)} "
+            f"ON {self.quote_identifier(table)} ({self.quote_identifiers(columns)})"
+        )
+
     # -- statements used by named operations --------------------------------
 
     def insert_sql(
@@ -152,11 +299,26 @@ class Dialect:
             return self.upsert_sql(table, columns, conflict_columns)
         raise ValueError(f"unknown conflict action {conflict!r}")
 
-    def upsert_sql(self, table: str, columns: Sequence[str], pk: Sequence[str]) -> str:
-        """Insert, or update the non-key columns of the row with the same key."""
+    def upsert_sql(
+        self,
+        table: str,
+        columns: Sequence[str],
+        pk: Sequence[str],
+        *,
+        update_columns: Sequence[str] | None = None,
+    ) -> str:
+        """Insert, or update the row with the same key.
+
+        By default the supplied non-key ``columns`` are updated. Passing
+        ``update_columns`` (every non-key column of the table) makes this a
+        whole-row replace: ``excluded`` holds the row as it would have been
+        inserted, defaults included, so unsupplied columns get their defaults.
+        """
         head = self._insert_head(table, columns)
         target = self.quote_identifiers(pk)
-        updates = [c for c in columns if c not in pk]
+        if update_columns is None:
+            update_columns = columns
+        updates = [c for c in update_columns if c not in pk]
         if not updates:
             return f"{head} ON CONFLICT ({target}) DO NOTHING"
         sets = ", ".join(
@@ -230,9 +392,44 @@ class BackendConnection(Protocol):
 
 @runtime_checkable
 class SupportsOperations(Protocol):
-    """Optional: native overrides for named operations (milestone 2+)."""
+    """Optional, on a ``BackendConnection``: native overrides for named
+    operations.
+
+    The core calls ``run_operation(name, args)`` on the connection that holds
+    the caller's open transaction, before trying the default implementation
+    in ``dblayer.core.operations``. ``name`` is the operation name
+    (``"insert_rows"``...), ``args`` its keyword arguments, made of plain
+    values (lists, dicts, str, numbers...) so they can cross a process
+    boundary. The override must:
+
+    * run inside the transaction that is already open on this connection
+      (never commit or roll back);
+    * return an ``OperationResult`` (or a dict ``OperationResult.from_dict``
+      accepts) that is identical to what the default implementation returns;
+    * or return ``NotImplemented`` to decline, in which case the core runs the
+      default implementation. Declining must happen before anything ran.
+
+    ``Database(..., native_operations=False)`` makes the core skip this hook,
+    which is how the conformance suite tests both paths.
+    """
 
     async def run_operation(self, name: str, args: dict[str, Any]) -> object: ...
+
+
+@runtime_checkable
+class SupportsBatch(Protocol):
+    """Optional, on a ``BackendConnection``: run several statements inside
+    the open transaction in one call (one thread hop / one message). Used by
+    ``Database.batch``; without it the core calls ``execute`` per statement.
+    Stops at the first failing statement and raises its error."""
+
+    async def execute_batch(
+        self,
+        statements: Sequence[tuple[str, NativeParams]],
+        *,
+        time_limit_ms: int | None,
+        max_rows: int | None,
+    ) -> list[Results]: ...
 
 
 @runtime_checkable

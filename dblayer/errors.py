@@ -14,6 +14,7 @@ __all__ = [
     "TableNotFound",
     "QueryInterrupted",
     "ResourceLimitExceeded",
+    "TransactionClosed",
     "TransactionExpired",
     "WriteConflict",
     "NestedWriteError",
@@ -65,7 +66,13 @@ class ResourceLimitExceeded(DblayerError):
     """A memory or result-size limit was hit."""
 
 
-class TransactionExpired(DblayerError):
+class TransactionClosed(DblayerError):
+    """A ``Transaction`` was used after its ``async with`` block ended (or
+    after it was rolled back). Not in the spec's table, which only says
+    "raises an error"."""
+
+
+class TransactionExpired(TransactionClosed):
     """The transaction passed its deadline and was rolled back."""
 
 

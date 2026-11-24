@@ -13,7 +13,26 @@ __all__ = [
     "TableInfo",
     "Schema",
     "SchemaCache",
+    "ColumnDef",
+    "HIDDEN_PREFIX",
 ]
+
+HIDDEN_PREFIX = "_dblayer_"
+"""Tables whose names start with this are dblayer's own (staging tables,
+alter rebuild scratch tables) and are left out of ``table_names()``."""
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnDef:
+    """A column to create: input to ``Dialect.create_table_sql``."""
+
+    name: str
+    type: str
+    """A portable type (``integer``, ``float``, ``text``, ``blob``) or a native
+    type string, passed through ``Dialect.native_type``."""
+    not_null: bool = False
+    default: str | None = None
+    """Default as an SQL expression (already rendered), or ``None``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +114,10 @@ class Schema:
     triggers: dict[str, Trigger] = field(default_factory=dict)
 
     def table_names(self) -> list[str]:
-        return list(self.tables)
+        """Table names, without dblayer's own hidden tables (names starting
+        with ``HIDDEN_PREFIX``, such as staging tables). Those are still in
+        ``tables`` and readable by name."""
+        return [n for n in self.tables if not n.startswith(HIDDEN_PREFIX)]
 
     def view_names(self) -> list[str]:
         return list(self.views)

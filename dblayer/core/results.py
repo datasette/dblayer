@@ -182,11 +182,17 @@ class Results:
 class WriteResult:
     """The result of one write.
 
-    ``last_pk`` is the backend's notion of the last inserted key; on SQLite it
-    is ``cursor.lastrowid`` after an ``INSERT``/``REPLACE`` that changed rows
-    (the rowid, which is the primary key for ``INTEGER PRIMARY KEY`` tables),
-    otherwise ``None``. ``rows`` holds ``RETURNING`` rows, at most
-    ``returning_limit`` of them; ``truncated`` says more were produced.
+    ``last_pk`` is the implicit row id of the last row *this statement
+    inserted*, on backends with ``capabilities.implicit_rowid``; it is the
+    primary key only for rowid tables (``INTEGER PRIMARY KEY`` or no declared
+    key). It is ``None`` whenever the statement inserted no row with a new
+    rowid: updates, deletes, an upsert that took the update path, rows
+    skipped by ``ON CONFLICT DO NOTHING``, ``WITHOUT ROWID`` tables, and every
+    statement on backends without implicit row ids. The portable way to learn
+    a new row's key is ``RETURNING`` (``capabilities.returning``).
+
+    ``rows`` holds ``RETURNING`` rows, at most ``returning_limit`` of them;
+    ``truncated`` says more were produced.
     """
 
     rowcount: int

@@ -67,17 +67,35 @@ class SqliteDialect(Dialect):
         "blob": "BLOB",
     }
 
-    def insert_sql(self, table, columns, *, conflict=None, conflict_columns=()):  # type: ignore[override]
-        if conflict == "ignore":
-            return self._insert_head(table, columns, verb="INSERT OR IGNORE")
-        if conflict == "replace":
-            # SQLite's REPLACE deletes the conflicting row and inserts a new
-            # one; milestone 2 must decide whether that matches the portable
-            # meaning or whether upsert_sql() should be used instead.
-            return self._insert_head(table, columns, verb="INSERT OR REPLACE")
-        return super().insert_sql(
-            table, columns, conflict=conflict, conflict_columns=conflict_columns
-        )
+    # Conflict handling uses the generic ON CONFLICT syntax (SQLite 3.24+),
+    # not INSERT OR IGNORE / OR REPLACE: OR IGNORE also skips NOT NULL and
+    # CHECK violations, and OR REPLACE deletes the old row (new rowid,
+    # delete side effects), neither of which PostgreSQL or DuckDB can match.
+
+    # Native RENAME COLUMN (3.25+) also rewrites indexes, triggers, views and
+    # other tables' foreign keys. DROP COLUMN (3.35+) refuses indexed, key and
+    # referenced columns, and there is no ALTER COLUMN TYPE, so those (and pk
+    # changes) rebuild the table.
+    native_alter = (
+        frozenset({"rename"}) if sqlite3.sqlite_version_info >= (3, 25, 0) else frozenset()
+    )
+    rowid_column = "rowid"
+    foreign_keys_enforced_sql = "PRAGMA foreign_keys"
+
+    def blob_literal(self, value: bytes) -> str:
+        return "X'" + value.hex() + "'"
+
+    def swap_rename_sql(self, staging: str, target: str) -> list[str]:
+        # Since 3.26 RENAME re-parses the whole schema and fails ("error in
+        # view v: no such table: main.target") while views still name the
+        # just-dropped target. Legacy mode renames without that check (and
+        # without rewriting references, which already say "target").
+        # Assumes legacy_alter_table is normally off on dblayer connections.
+        return [
+            "PRAGMA legacy_alter_table = ON",
+            self.rename_table_sql(staging, target),
+            "PRAGMA legacy_alter_table = OFF",
+        ]
 
     def map_exception(self, exc: BaseException) -> DblayerError | None:
         if not isinstance(exc, sqlite3.Error):
@@ -190,6 +208,7 @@ class SqliteInProcess:
             full_text_search=_has_fts5(),
             sleep_releases_everything=not is_memory,
             returning=sqlite3.sqlite_version_info >= (3, 35, 0),
+            snapshot_reads=not is_memory,
         )
         self._anchor: sqlite3.Connection | None = None
         self._anchor_lock = threading.Lock()
@@ -322,14 +341,21 @@ class SqliteConnection:
         max_result_bytes: int | None,
     ) -> Results:
         raw = self._raw
+        verb = leading_keyword(sql)
+        is_write = verb in _WRITE_VERBS
+        is_insert = verb in ("INSERT", "REPLACE")
+        if is_insert:
+            # last_insert_rowid() is per connection and is not touched by an
+            # upsert that took the UPDATE path, by OR IGNORE / DO NOTHING
+            # skips or by WITHOUT ROWID tables. Comparing before and after
+            # tells us whether *this* statement inserted a rowid row.
+            rowid_before = raw.execute("select last_insert_rowid()").fetchone()[0]
         with _TimeLimit(raw, time_limit_ms):
             cur = raw.execute(sql, params)
             try:
                 description = cur.description
                 rows: list[tuple[Any, ...]] = []
                 truncated = False
-                verb = leading_keyword(sql)
-                is_write = verb in _WRITE_VERBS
                 if description is not None:
                     limit = None if max_rows is None else max_rows + 1
                     size = 0
@@ -366,11 +392,32 @@ class SqliteConnection:
                 rowcount, lastrowid = raw.execute(
                     "select changes(), last_insert_rowid()"
                 ).fetchone()
-        last_pk = lastrowid if verb in ("INSERT", "REPLACE") and rowcount > 0 else None
+        last_pk = (
+            lastrowid
+            if is_insert and rowcount > 0 and lastrowid != rowid_before
+            else None
+        )
         columns = tuple(Column(d[0]) for d in description) if description else ()
         return Results.from_tuples(
             columns, rows, truncated=truncated, rowcount=rowcount, last_pk=last_pk
         )
+
+    async def execute_batch(
+        self,
+        statements: Sequence[tuple[str, NativeParams]],
+        *,
+        time_limit_ms: int | None,
+        max_rows: int | None,
+    ) -> list[Results]:
+        """Every statement in one executor hop (``SupportsBatch``)."""
+
+        def run() -> list[Results]:
+            return [
+                self._execute(sql, params, time_limit_ms, max_rows, None)
+                for sql, params in statements
+            ]
+
+        return await self._run(run)
 
     async def execute_many(self, sql: str, params_seq: Sequence[NativeParams]) -> WriteResult:
         def run() -> WriteResult:
