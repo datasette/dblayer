@@ -25,6 +25,7 @@ skips if any named flag is true. Unknown flag names fail loudly.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +67,33 @@ def _sqlite_memory(tmp_path: Path) -> Backend:
     return SqliteInProcess.memory()
 
 
+def _sqlite_worker(codec: str) -> Callable[[Path], Backend]:
+    def make(tmp_path: Path) -> Backend:
+        from dblayer.backends.sqlite_worker import SqliteWorker
+
+        global _counter
+        _counter += 1
+        return SqliteWorker(tmp_path / f"db{_counter}.db", codec=codec)  # type: ignore[return-value]
+
+    return make
+
+
+def _msgpack_available() -> str | None:
+    try:
+        import msgpack  # noqa: F401
+    except ImportError:
+        return "msgpack is not installed (uv run --extra msgpack pytest)"
+    return None
+
+
+async def _reap_workers(backend: Backend) -> None:
+    from dblayer.backends.sqlite_worker import live_worker_pids, reap_workers
+
+    if live_worker_pids():
+        await asyncio.sleep(0)  # let closed workers see EOF
+    reap_workers(timeout=5.0)
+
+
 def _duckdb_available() -> str | None:
     try:
         import duckdb  # noqa: F401
@@ -101,6 +129,16 @@ async def _postgres_cleanup(backend: Backend) -> None:
 BACKENDS: list[BackendSpec] = [
     BackendSpec("sqlite", _sqlite_file),
     BackendSpec("sqlite-memory", _sqlite_memory),
+    # The worker backend runs the default named operations inside the
+    # worker ("op" message): native_operations=True.
+    BackendSpec("sqlite-worker", _sqlite_worker("json"), native_operations=True, cleanup=_reap_workers),
+    BackendSpec(
+        "sqlite-worker-msgpack",
+        _sqlite_worker("msgpack"),
+        available=_msgpack_available,
+        native_operations=True,
+        cleanup=_reap_workers,
+    ),
     BackendSpec("duckdb", _duckdb_file, available=_duckdb_available, native_operations=True),
     BackendSpec(
         "postgres",

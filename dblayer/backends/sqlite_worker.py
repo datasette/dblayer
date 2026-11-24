@@ -861,7 +861,7 @@ class SqliteWorker:
 
     __slots__ = ("_path", "placement", "workers", "config", "init", "sql_limits",
                  "immutable", "create", "busy_timeout", "capabilities", "processes_started",
-                 "__weakref__")
+                 "executor", "__weakref__")
     dialect: Dialect = SqliteInProcess.dialect
 
     def __init__(
@@ -913,6 +913,9 @@ class SqliteWorker:
         self.busy_timeout = busy_timeout
         self.capabilities = worker_capabilities()
         self.processes_started = 0
+        self.executor: Any = None
+        """Accepted for ``UsesExecutor`` compatibility and unused: the
+        parent side runs no blocking code."""
 
     @property
     def path(self) -> Path:
