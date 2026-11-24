@@ -158,7 +158,9 @@ class Fleet:
         self.started_at = time.time()
         self.dir.mkdir(parents=True, exist_ok=True)
         self.mix = fleet_mix(self.config.fleet_size)
-        await self._ensure_templates()
+        template_errors = await self._ensure_templates()
+        if self.mix["postgres"] and postgres_db is None and not postgres_error:
+            postgres_error = await self._probe_postgres()
         seeded_schemas: set[str] = set()
         if postgres_db is not None and not postgres_error and self.mix["postgres"]:
             r = await postgres_db.execute(
@@ -190,6 +192,9 @@ class Fleet:
                 self.members[name] = member
                 if kind == "postgres" and postgres_error:
                     member.demo.error = postgres_error
+                    continue
+                if kind in template_errors:
+                    member.demo.error = template_errors[kind]
                     continue
                 try:
                     backend = self._backend(member)
@@ -231,10 +236,12 @@ class Fleet:
     def template_path(self, kind: str) -> Path:
         return self.dir / ("_template.db" if kind == "sqlite" else "_template.duckdb")
 
-    async def _ensure_templates(self) -> None:
+    async def _ensure_templates(self) -> dict[str, str]:
         """The seeded dataset, once per kind: what "fetching from object
         storage" copies. Seeded through the named operations on first run;
-        later runs find them already there."""
+        later runs find them already there. Returns ``{kind: reason}`` for
+        kinds that cannot run here (DuckDB not installed)."""
+        errors: dict[str, str] = {}
         kinds = [k for k in ("sqlite", "duckdb") if self.mix.get(k)]
         for kind in kinds:
             path = self.template_path(kind)
@@ -242,12 +249,35 @@ class Fleet:
                 continue
             tmp = path.with_name(path.name + ".tmp")
             _remove(tmp)
-            db = Database(self._file_backend(kind, tmp))
+            try:
+                db = Database(self._file_backend(kind, tmp))
+            except ImportError as e:
+                errors[kind] = _reason(e)
+                continue
             try:
                 await seed(db)
             finally:
                 await db.close()
             os.replace(tmp, path)
+        return errors
+
+    async def _probe_postgres(self) -> str | None:
+        """Without the featured PostgreSQL database to ask: one connection
+        to the first fleet schema, so an unreachable server marks the
+        PostgreSQL members unavailable at startup rather than failing on
+        every wake. Returns the reason, or ``None``."""
+        schema = f"{POSTGRES_FLEET_PREFIX}001"
+        try:
+            db = Database(postgres_backend(self.config.postgres_dsn, schema, "dblayer-demo-fleet"))
+        except Exception as e:  # noqa: BLE001
+            return _reason(e)
+        try:
+            await asyncio.wait_for(check_postgres_connection(db, schema), 10)
+        except Exception as e:  # noqa: BLE001
+            return _reason(e)
+        finally:
+            await db.close()
+        return None
 
     def _file_backend(self, kind: str, path: Path) -> Backend:
         if kind == "sqlite":

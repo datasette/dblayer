@@ -1,0 +1,187 @@
+"""The demo app's fleet: a small one (30 databases, cap 4, half-second idle
+timeout) behind one Registry, driven through httpx's ``ASGITransport``.
+
+Needs the ``demo`` group. PostgreSQL members are marked unavailable when no
+server is reachable, and DuckDB ones when duckdb is not installed; the
+tests only count on the in-process SQLite members.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+pytest.importorskip("starlette")
+pytest.importorskip("httpx")
+pytest.importorskip("jinja2")
+
+import httpx  # noqa: E402
+
+from dblayer_demo import create_app  # noqa: E402
+from dblayer_demo.config import DemoConfig  # noqa: E402
+from dblayer_demo.fleet import FANOUT_MAX, FanoutBusy, Fleet, fleet_mix  # noqa: E402
+
+SIZE = 30
+CAP = 4
+
+
+@pytest.fixture
+async def fleet_client(tmp_path: Path) -> AsyncIterator[tuple[Fleet, httpx.AsyncClient]]:
+    config = DemoConfig(
+        data_dir=tmp_path,
+        fleet_size=SIZE,
+        fleet_max_open_connections=CAP,
+        fleet_max_threads=4,
+        fleet_idle_timeout=0.5,
+    )
+    app = create_app(config, specs=[])
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://demo", timeout=60
+        ) as client:
+            yield app.state.fleet, client
+
+
+async def _stats(client: httpx.AsyncClient) -> dict[str, Any]:
+    r = await client.get("/-/stats.json")
+    assert r.status_code == 200
+    return r.json()
+
+
+async def _wait_asleep(client: httpx.AsyncClient, timeout: float = 10.0) -> dict[str, Any]:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        s = (await _stats(client))["fleet"]
+        if s["awake"] == 0 and s["open_connections"] == 0:
+            return s
+        assert asyncio.get_running_loop().time() < deadline, s
+        await asyncio.sleep(0.1)
+
+
+def test_fleet_mix_adds_up() -> None:
+    for size in [0, 1, 9, 10, 30, 1000, 1234]:
+        assert sum(fleet_mix(size).values()) == max(size, 0)
+    assert fleet_mix(1000) == {"sqlite": 800, "duckdb": 150, "postgres": 30, "sqlite-worker": 20}
+
+
+async def test_fleet_starts_cold_and_page_lists_every_member(
+    fleet_client: tuple[Fleet, httpx.AsyncClient],
+) -> None:
+    fleet, client = fleet_client
+    assert len(fleet.members) == SIZE
+    s = (await _stats(client))["fleet"]
+    assert s["fleet_size"] == SIZE
+    assert s["registered"] + s["unavailable"] == SIZE
+    assert s["cold"] == s["registered"]  # nothing materialised yet
+    assert not list((fleet.dir).glob("sqlite-*.db"))
+
+    r = await client.get("/-/fleet")
+    assert r.status_code == 200
+    for name in fleet.members:
+        assert f'href="/{name}"' in r.text
+    assert "Fleet: 30 databases" in r.text
+
+    r = await client.get("/-/fleet?backend=sqlite&state=cold")
+    shown = re.findall(r'<a class="s-cold" href="/(sqlite-\d+)"', r.text)
+    assert len(shown) == fleet.mix["sqlite"]
+    assert "sqlite-worker" not in "".join(re.findall(r'<div class="grid">.*?</div>', r.text, re.S))
+    assert (await client.get("/-/fleet?state=bogus")).status_code == 400
+
+    home = await client.get("/")
+    assert 'href="/-/fleet"' in home.text and 'id="stats"' in home.text
+
+
+async def test_fleet_database_browses_like_a_featured_one(
+    fleet_client: tuple[Fleet, httpx.AsyncClient],
+) -> None:
+    fleet, client = fleet_client
+    m = fleet.members["sqlite-0002"]
+    assert m.state == "cold"
+    r = await client.get("/sqlite-0002")
+    assert r.status_code == 200
+    assert m.branch in r.text  # the page title: this branch's own name
+    assert "450 rows" in r.text  # its own slice of reviews
+    assert m.state == "awake" and m.materialised == 1
+    assert m.path is not None and m.path.exists()
+
+    r = await client.get("/sqlite-0002/branch")
+    assert m.branch in r.text
+    r = await client.get("/sqlite-0002/books?_offset=100")
+    assert r.status_code == 200 and 'rel="prev"' in r.text
+    r = await client.get(
+        "/sqlite-0002/-/query", params={"sql": "select name from branch"}
+    )
+    assert r.status_code == 200 and m.branch in r.text
+    r = await client.get("/sqlite-0002/-/query", params={"sql": "delete from books"})
+    assert r.status_code == 400
+
+    # Different databases hold different data.
+    r3 = await client.get("/sqlite-0003/-/query", params={"sql": "select name from branch"})
+    assert fleet.members["sqlite-0003"].branch in r3.text and m.branch not in r3.text
+
+
+async def test_fanout_respects_the_cap_and_moves_the_stats(
+    fleet_client: tuple[Fleet, httpx.AsyncClient],
+) -> None:
+    fleet, client = fleet_client
+    before = (await _stats(client))["fleet"]
+    r = await client.get("/-/fanout.json", params={"n": 120})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ran"] == 120 and d["ok"] == 120 and d["errors"] == 0, d["error_samples"]
+    assert 1 < d["distinct"] <= before["registered"]
+    assert d["peak"]["open_connections"] <= CAP
+    assert d["cap_held"] is True
+    assert d["peak"]["waiting"] > 0  # the cap really queued callers
+    after = (await _stats(client))["fleet"]
+    assert after["wakes"] >= before["wakes"] + d["distinct"]
+    assert after["cold"] <= before["cold"] - d["distinct"]
+    assert after["open_connections"] <= CAP
+
+    page = await client.get("/-/fanout", params={"n": 20})
+    assert page.status_code == 200 and "Peak during the run" in page.text and "(held)" in page.text
+
+
+async def test_fanout_is_bounded_and_one_at_a_time(
+    fleet_client: tuple[Fleet, httpx.AsyncClient],
+) -> None:
+    fleet, client = fleet_client
+    d = (await client.get("/-/fanout.json", params={"n": 10**9})).json()
+    assert d["requested"] == FANOUT_MAX and d["ran"] == FANOUT_MAX
+    assert (await client.get("/-/fanout.json", params={"n": "x"})).status_code == 400
+    assert (await client.get("/-/fanout.json", params={"action": "drop"})).status_code == 400
+    async with fleet._fanout_lock:
+        with pytest.raises(FanoutBusy):
+            await fleet.fanout(5)
+        assert (await client.get("/-/fanout.json", params={"n": 5})).status_code == 429
+
+
+async def test_databases_sleep_after_the_idle_timeout_then_evict_and_rebuild(
+    fleet_client: tuple[Fleet, httpx.AsyncClient],
+) -> None:
+    fleet, client = fleet_client
+    d = (await client.get("/-/fanout.json", params={"n": 40})).json()
+    assert d["ok"] == 40
+    assert (await _stats(client))["fleet"]["awake"] > 0
+    s = await _wait_asleep(client)
+    assert s["sleeps"] >= d["distinct"] and s["idle_closes"] > 0
+    asleep_before = s["asleep"]
+    assert asleep_before >= d["distinct"]
+
+    e = (await client.get("/-/fanout.json", params={"n": 5, "action": "evict"})).json()
+    assert e["ok"] == 5
+    s2 = (await _stats(client))["fleet"]
+    assert s2["evictions"] == 5 and s2["asleep"] == asleep_before - 5
+    evicted = [m for m in fleet.members.values() if m.materialised and m.state == "cold"]
+    assert len(evicted) == 5
+    m = evicted[0]
+    assert m.path is not None and not m.path.exists()
+    r = await client.get(f"/{m.name}/-/query", params={"sql": "select name from branch"})
+    assert r.status_code == 200 and m.branch in r.text  # rebuilt from the template
+    assert m.materialised == 2
