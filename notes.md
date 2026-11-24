@@ -1384,3 +1384,7 @@ Interim report from the subagent; load 7 to 10, still provisional.
 - **C and Rust are level.** Through Python, C then Rust: one-row read 61 / 59 µs; update 215 / 213 µs; per row at 100,000 rows 0.46 / 0.39 µs; 190 / 188 KB per open database; throughput at 64 clients 80,000 / 88,000 requests/s with the Python parent at about 0.98 of a CPU, so the parent hides any difference.
 - **With a Rust load generator and no Python:** about 84,000 to 85,000 requests/s on one connection at 9.5 µs of worker CPU per request for both. At 16 connections both reach about 95,000 requests/s but burn about 8 times more CPU per request (78 to 86 µs). That points to lock contention or spinning in a design the two share, and is being investigated. If real, it is a finding about the multi-tenant design, not about either language.
 - These throughput figures are higher than the earlier C pool figures (54,000 at 64 clients), which were taken at load 17 to 30. Another reminder not to compare across runs.
+
+### Found: restarting corespotlightd (2026-11-24, 09:40)
+
+At Simon's instruction I ran `killall corespotlightd`. The old process (up 10 days, 15.7 GB of memory by then, 173% CPU) was replaced by a new one holding 0.3 to 0.5 GB. Thirty-five seconds later the new one was at 150 to 190% CPU, and a sample showed index recovery, so it is rebuilding after the restart. Memory is fixed; whether its CPU settles was not confirmed at the time of writing and needs a later check before the benchmark run.
