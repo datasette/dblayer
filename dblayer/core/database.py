@@ -222,6 +222,8 @@ class Database(IntrospectionMixin, OperationsMixin):
         old loop is closed, connections it left checked out are closed too.
         Moving while a connection is checked out on a loop that is still
         alive raises ``RuntimeError``."""
+        if not self.capabilities.concurrent_sessions:
+            self._check_session_free()
         loop = asyncio.get_running_loop()
         pool = self._pool
         if pool is not None and pool.loop is loop:
@@ -623,6 +625,19 @@ class Database(IntrospectionMixin, OperationsMixin):
         )
 
     # -- transactions -------------------------------------------------------------
+
+    def _check_session_free(self) -> None:
+        """One session per database (``concurrent_sessions`` false): every
+        other connection waits while a transaction is open, so the task
+        holding one would wait for itself forever. (Other tasks may wait:
+        the holder can still end the transaction.)"""
+        tx = active_transaction(self)
+        if tx is not None and tx._task is not None and tx._task is asyncio.current_task():
+            raise NestedWriteError(
+                f"statement on database {self.name!r} outside the open transaction, from the task "
+                "that holds it: this backend has one session per database (concurrent_sessions is "
+                "false), so it would wait for the transaction forever; use the transaction object"
+            )
 
     def _check_no_write_transaction(self) -> None:
         tx = active_transaction(self)

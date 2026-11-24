@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from dblayer import Database, NotSupported, QueryError, QueryInterrupted, ResourceLimitExceeded
+from dblayer import Database, NestedWriteError, NotSupported, QueryError, QueryInterrupted, ResourceLimitExceeded
 from dblayer.backends._postgres_common import map_sqlstate
 from dblayer.backends.pglite_worker import (
     SCRIPT_ENV_VAR,
@@ -253,14 +253,33 @@ async def test_reads_wait_for_an_open_write_transaction(tmp_path):
         await db.execute_write("create table t (id bigint)")
         async with db.transaction() as tx:
             await tx.execute("insert into t values (1)")
-            # Another connection: waits for the transaction, and gives up
+            # Another task's read: waits for the transaction, and gives up
             # at its time limit; it never sees the uncommitted row.
             with pytest.raises(QueryInterrupted, match="one session"):
-                await db.execute("select count(*) n from t", time_limit_ms=200)
+                await asyncio.create_task(db.execute("select count(*) n from t", time_limit_ms=200))
             reader = asyncio.ensure_future(db.execute("select count(*) n from t"))
             await asyncio.sleep(0.2)
             assert not reader.done()
         assert (await reader).rows[0]["n"] == 1
+    finally:
+        await db.close()
+
+
+@pytest.mark.parametrize("mode", ["write", "read"])
+async def test_the_holding_task_cannot_wait_for_itself(tmp_path, mode):
+    """The task holding the transaction reading through ``db`` would wait
+    for its own transaction forever: refused at once, the transaction
+    still usable."""
+    db = Database(make(tmp_path))
+    try:
+        await db.execute_write("create table t (id bigint)")
+        async with db.transaction(mode) as tx:
+            with pytest.raises(NestedWriteError, match="concurrent_sessions"):
+                await db.execute("select count(*) n from t")
+            with pytest.raises(NestedWriteError, match="concurrent_sessions"):
+                await db.schema()
+            assert (await tx.execute("select count(*) n from t")).rows[0]["n"] == 0
+        assert (await db.execute("select count(*) n from t")).rows[0]["n"] == 0
     finally:
         await db.close()
 

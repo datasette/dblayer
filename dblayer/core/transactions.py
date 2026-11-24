@@ -110,6 +110,9 @@ class Transaction(IntrospectionMixin, OperationsMixin):
         self._pool: Pool | None = None
         self._lock = asyncio.Lock()
         self._busy = False
+        self._task: asyncio.Task[Any] | None = None
+        """The task that opened the transaction (``Database._use_pool``
+        refuses it a second connection on a single-session backend)."""
         self._timer: asyncio.TimerHandle | None = None
         self._token: contextvars.Token[tuple[Transaction, ...]] | None = None
         self._schema: Schema | None = None
@@ -171,6 +174,7 @@ class Transaction(IntrospectionMixin, OperationsMixin):
         if self.deadline_ms is not None:
             loop = asyncio.get_running_loop()
             self._timer = loop.call_later(self.deadline_ms / 1000, self._on_deadline)
+        self._task = asyncio.current_task()
         self._token = _active.set(_active.get() + (self,))
         return self
 

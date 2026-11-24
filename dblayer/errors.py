@@ -83,7 +83,8 @@ class WriteConflict(DblayerError):
 
 class NestedWriteError(DblayerError):
     """A write was attempted on ``db`` from inside an open transaction on the
-    same database."""
+    same database (or, where ``concurrent_sessions`` is false, any statement
+    outside the transaction from the task holding it)."""
 
 
 class WorkerCrashed(DblayerError):
