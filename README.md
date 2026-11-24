@@ -61,6 +61,15 @@ and `SqliteCWorker` at another build; `make -C cworker SANITIZE=1` builds one
 with AddressSanitizer and UBSan in `cworker/build-asan/`, and `make -C cworker
 SQLITE=system BUILD=build-system` links the system `libsqlite3` instead.
 
+The same binary has a multi-tenant mode (`--multi`: a thread per open
+connection), used by `SqliteCPool(path, pool=CPool(2))` in
+`dblayer/backends/sqlite_cpool.py`: a few processes shared by every
+database, requests for different databases running concurrently. Its tests
+are `sqlite-cpool`, `c-pool`, `tests/worker/test_cworker_multi.py`,
+`tests/worker/test_cpool.py` and `tests/faults/test_cpool_blast_radius.py`;
+`make -C cworker SANITIZE=thread` builds a ThreadSanitizer binary in
+`cworker/build-tsan/`.
+
 ### In-process SQLite on apsw (experimental)
 
 `SqliteApsw` (`dblayer/backends/sqlite_apsw.py`, extra `apsw`) is the
