@@ -223,6 +223,20 @@ def _duckdb_cppworker_available() -> str | None:
     return binary_unavailable()
 
 
+def _duckdb_rsworker(tmp_path: Path) -> Backend:
+    from dblayer.backends.duckdb_rsworker import DuckDBRustWorker
+
+    global _counter
+    _counter += 1
+    return DuckDBRustWorker(tmp_path / f"db{_counter}.duckdb")  # type: ignore[return-value]
+
+
+def _duckdb_rsworker_available() -> str | None:
+    from dblayer.backends.duckdb_rsworker import binary_unavailable
+
+    return binary_unavailable()
+
+
 def _duckdb_msgpack_available() -> str | None:
     return _duckdb_available() or _msgpack_available()
 
@@ -299,6 +313,9 @@ BACKENDS: list[BackendSpec] = [
     ),
     # DuckDB in a C++ worker process (duckdb-cpp-worker/, experimental).
     BackendSpec("duckdb-cppworker", _duckdb_cppworker, available=_duckdb_cppworker_available,
+                native_operations=True, cleanup=_reap_workers),
+    # DuckDB in a Rust worker process (duckdb-rs-worker/, experimental).
+    BackendSpec("duckdb-rsworker", _duckdb_rsworker, available=_duckdb_rsworker_available,
                 native_operations=True, cleanup=_reap_workers),
     BackendSpec(
         "postgres",

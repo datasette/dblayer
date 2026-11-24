@@ -299,7 +299,7 @@ struct Globals {
     jobs: Mutex<HashMap<String, (i64, Arc<JobCtl>)>>,
     /// Open (paused) streams, by id: their connection.
     streams: Mutex<HashMap<String, i64>>,
-    dbs: Mutex<HashMap<String, (Arc<Database>, usize)>>,
+    dbs: Mutex<HashMap<String, DbEntry>>,
 }
 
 /// Interrupt statement `stmt` of a connection, again every few ms until it
@@ -554,23 +554,18 @@ impl Server {
             return Err(dberr("NotSupported", "database is read-only; writes are not allowed"));
         }
         let key = format!("{path}\u{0}{}", String::from_utf8_lossy(&json::encode(&config)));
-        let db = {
+        let conn = {
             let mut dbs = lock(&self.g.dbs);
-            if let Some((db, n)) = dbs.get_mut(&key) {
-                *n += 1;
-                Arc::clone(db)
-            } else {
-                let db = Arc::new(open_database(path, &opts)?);
-                dbs.insert(key.clone(), (Arc::clone(&db), 1));
-                db
+            if !dbs.contains_key(&key) {
+                dbs.insert(key.clone(), open_database(path, &opts)?);
             }
-        };
-        let conn = match db.connect() {
-            Ok(c) => c,
-            Err(e) => {
-                release_db(&self.g, &key);
-                return Err(e.into());
-            }
+            let entry = dbs.get_mut(&key).expect("just inserted");
+            let conn = match entry.spare.pop() {
+                Some(c) => c,
+                None => entry.db.connect()?,
+            };
+            entry.conns += 1;
+            conn
         };
         let cid = self.next_conn;
         self.next_conn += 1;
@@ -773,7 +768,28 @@ impl OpenOptions {
     }
 }
 
-fn open_database(path: &str, o: &OpenOptions) -> Result<Database, Fail> {
+/// One open database file: the DuckDB instance, how many connections use
+/// it, and connections made before its settings were locked.
+pub struct DbEntry {
+    // Field order is drop order: connections before the instance.
+    spare: Vec<Connection>,
+    db: Database,
+    conns: usize,
+}
+
+/// How many configured connections a database keeps (see `open_database`).
+const SPARE_CONNECTIONS: usize = 8;
+
+/// DuckDB fills a streaming result's buffer (`streaming_buffer_size`, 10 MiB
+/// by default, half of it before the first fetch returns). For a query that
+/// yields one row per chunk (an unbounded recursive CTE) that takes seconds,
+/// where the Python client returns its first rows in about a millisecond.
+/// The setting is per connection and cannot be changed once the
+/// configuration is locked, so connections are made and configured before
+/// the lock, and reused (`release_db`).
+const STREAMING_BUFFER: &str = "16KB";
+
+fn open_database(path: &str, o: &OpenOptions) -> Result<DbEntry, Fail> {
     if !o.create && !std::path::Path::new(path).exists() {
         return Err(qerr(format!("unable to open database file {}", py_repr_value(&Value::str(path))), "CANTOPEN"));
     }
@@ -792,25 +808,34 @@ fn open_database(path: &str, o: &OpenOptions) -> Result<Database, Fail> {
     }
     settings.extend(o.extra.iter().cloned());
     let db = Database::open(path, &settings)?;
+    let mut spare = Vec::with_capacity(SPARE_CONNECTIONS);
+    for _ in 0..SPARE_CONNECTIONS {
+        let c = db.connect()?;
+        c.query(&format!("SET streaming_buffer_size = '{STREAMING_BUFFER}'"))?;
+        spare.push(c);
+    }
     // Lock the settings so SQL cannot raise the limits.
     let c = db.connect()?;
     c.query("SET lock_configuration = true")?;
     drop(c);
-    Ok(db)
+    Ok(DbEntry { spare, db, conns: 0 })
 }
 
-fn release_db(g: &Globals, key: &str) {
+/// A connection is done with its database: keep it for a later open (it is
+/// configured; one made after the lock could not be), and close the
+/// instance after its last connection.
+fn release_db(g: &Globals, key: &str, conn: Connection) {
     let mut dbs = lock(&g.dbs);
-    let last = match dbs.get_mut(key) {
-        Some((_, n)) => {
-            *n -= 1;
-            *n == 0
-        }
-        None => false,
-    };
-    if last {
+    let Some(entry) = dbs.get_mut(key) else { return };
+    entry.conns = entry.conns.saturating_sub(1);
+    if entry.spare.len() < SPARE_CONNECTIONS {
+        entry.spare.push(conn);
+    } else {
+        drop(conn);
+    }
+    if entry.conns == 0 {
         // Closing the instance (checkpoint, file lock released) happens
-        // when this last reference drops, here.
+        // when the entry drops, here.
         dbs.remove(key);
     }
 }
@@ -1687,8 +1712,9 @@ impl ConnWorker {
             let mut st = lock(&self.shared.state);
             st.closed = true;
         }
-        self.conn = None;
-        release_db(&self.g, &self.db_key);
+        if let Some(c) = self.conn.take() {
+            release_db(&self.g, &self.db_key, c);
+        }
     }
 }
 
