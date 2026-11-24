@@ -53,6 +53,7 @@ from dblayer.worker.protocol import FrameDecoder, available_codecs, frame, get_c
 VARIANTS = [
     "in-process", "apsw", "apsw-inline", "worker-json", "worker-msgpack", "cworker-json", "cworker-msgpack",
     "cpool-json", "cpool-msgpack",  # the multi-tenant C pool (benchmarks/cpool_bench.py)
+    "nodeworker-json", "nodeworker-msgpack",  # SQLite-WASM in Node (benchmarks/nodeworker_bench.py)
 ]
 
 
@@ -60,6 +61,12 @@ def apsw_available() -> bool:
     from dblayer.backends.sqlite_apsw import apsw_unavailable
 
     return apsw_unavailable() is None
+
+
+def nodeworker_available() -> bool:
+    from dblayer.backends.sqlite_nodeworker import unavailable
+
+    return unavailable() is None
 
 
 def cworker_available() -> bool:
@@ -80,6 +87,10 @@ def make_backend(variant: str, path: Path, **kw: Any) -> Any:
         from cpool_bench import make_cpool
 
         return make_cpool(codec, path)
+    if kind == "nodeworker":
+        from dblayer.backends.sqlite_nodeworker import SqliteNodeWorker
+
+        return SqliteNodeWorker(path, codec=codec, **kw)
     if kind == "cworker":
         from dblayer.backends.sqlite_cworker import SqliteCWorker
 
@@ -394,6 +405,7 @@ async def run_all(quick: bool = False, only: list[str] | None = None) -> dict[st
         if (not v.endswith("-msgpack") or "msgpack" in available_codecs())
         and (not v.startswith(("cworker", "cpool")) or cworker_available())
         and (not v.startswith("apsw") or apsw_available())
+        and (not v.startswith("nodeworker") or nodeworker_available())
         and (only is None or v in only)
     ]
     out: dict[str, Any] = {"round_trip": {}, "rows_1000": {}, "rows_100000": {}, "insert_with_alter": {}}

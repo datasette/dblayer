@@ -39,8 +39,13 @@ const SHUTDOWN_GRACE_MS = 5000;
  * the parent's kill_grace_ms (250 ms by default), so the worker stops it
  * first and says why. */
 const HARD_STOP_MS = Number(process.env.DBLAYER_NODEWORKER_HARD_STOP_MS || 100);
-const SPARES = process.env.DBLAYER_NODEWORKER_SPARES === '0' ? 0 : 1;
+// Executors started ahead of an `open`: "first" (default) starts one with the
+// process, so the first connection's thread boots while Node does; "always"
+// also keeps one ready for each later connection (about 20 MB idle);
+// "0" starts every executor on demand.
+const SPARES = process.env.DBLAYER_NODEWORKER_SPARES ?? 'first';
 const TIMING = process.env.DBLAYER_NODEWORKER_TIMING === '1';
+const YOUNG_MB = Number(process.env.DBLAYER_NODEWORKER_YOUNG_MB ?? 0);
 const T_MAIN = performance.timeOrigin + performance.now();
 // V8's code cache for the JavaScript (the SQLite module's 480 KB of glue
 // above all), in the OS temp directory: about 4 ms off each start.
@@ -130,7 +135,12 @@ class Executor {
         flags: this.flags, debug, memoryLimitMb, maxFrameBytes: maxFrame, lockTable, writeLock, wasmModule,
         // null while the main thread is still compiling: then it follows as a message
       },
-      resourceLimits: memoryLimitMb ? { maxOldGenerationSizeMb: Math.max(64, memoryLimitMb) } : undefined,
+      resourceLimits: {
+        // V8's default young generation (16 MB semi-spaces) is most of an
+        // idle executor's memory; this thread allocates little JavaScript
+        ...(YOUNG_MB ? { maxYoungGenerationSizeMb: YOUNG_MB } : {}),
+        ...(memoryLimitMb ? { maxOldGenerationSizeMb: Math.max(64, memoryLimitMb) } : {}),
+      },
       stdout: true, // the worker's stdout is not our fd 1
       stderr: false,
     });
@@ -306,7 +316,7 @@ let connSeq = 0;
  * new spare behind it. */
 function takeExecutor() {
   const ex = spare ?? new Executor();
-  spare = SPARES ? new Executor() : null;
+  spare = SPARES === 'always' ? new Executor() : null;
   return ex;
 }
 
@@ -513,4 +523,4 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', onEof);
 process.stdin.on('error', onEof);
 
-if (SPARES) spare = new Executor(); // starts now, while the module compiles
+if (SPARES !== '0') spare = new Executor(); // starts now, while the module compiles
