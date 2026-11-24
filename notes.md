@@ -964,3 +964,12 @@ CSV export of a wide 100,000-row table; CPU is the Python server process's own C
 
 - **Datasette: stream JSON responses in chunks.** Serialising a whole JSON response with a single `json.dumps` cost 120 to 160 MB and blocked the event loop for 80 to 235 ms at 100,000 rows here; chunked serialisation of the same data stayed under 10 ms of lag. Measured in dblayer's benchmark with a "Datasette-style" mode written by the subagent, not by running Datasette itself, and Datasette normally caps rows at 1,000 per page, so this bears mainly on `?_shape=`/`_size=max`, on plugins, and on any future streaming JSON export.
 - **Datasette: the CSV streaming path could delegate to the database** where one exists that can serialise (PostgreSQL `COPY`, DuckDB `COPY`, a worker process), for a 4 to 8 times cut in server CPU. A feature idea for the backend interface, not a bug.
+
+### Found: `streaming_buffer_size` fix applied to the C++ DuckDB worker (2026-11-24)
+
+Subagent-reported, load about 24.
+
+- With `streaming_buffer_size='16KB'` set per connection, the C++ worker's first export chunk for an unbounded recursive CTE went from 6,770 ms to 5.3 ms. Its three expected failures are removed (`71a6b56`); that backend now shows 486 passed, 13 skipped, none expected to fail.
+- The small buffer costs little: 100,000-row reads were within noise of the default, at most about 10% slower on plain rows in some runs.
+- **It does not explain the Python DuckDB worker's CI failure.** Through the `duckdb` Python package the first rows arrive in 0.3 to 0.4 ms with either buffer size; only the C API's streaming execute waits for the buffer. That failure is still unexplained. The double time-limit bug fixed by the export subagent is the next candidate.
+- The `LIMIT max_rows+1` wrap is kept as an optimisation.
