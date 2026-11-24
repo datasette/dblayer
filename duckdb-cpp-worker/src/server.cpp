@@ -4,6 +4,7 @@
 #include "server.hpp"
 
 #include <cerrno>
+#include <system_error>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -929,7 +930,16 @@ void do_open(std::unique_ptr<Msg> msg, int64_t id, bool has_id) {
         g_conns[c->id] = c;
         g_threads++;
     }
-    std::thread(conn_thread, c, job, path, config).detach();
+    try {
+        std::thread(conn_thread, c, job, path, config).detach();
+    } catch (const std::system_error &) {  // no thread (RLIMIT_AS, thread limit)
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            g_conns.erase(c->id);
+            g_threads--;
+        }
+        send_error(*g_main_wr, id, has_id, Error("ResourceLimitExceeded", "could not start a connection thread"), nullptr);
+    }
 }
 
 [[noreturn]] void exit_now(int code) {
