@@ -82,6 +82,25 @@ event loop thread instead of hopping to the executor. Its tests are
 skip without apsw. `DBLAYER_APSW_INLINE=1 uv run --all-extras pytest` runs the
 suite with inline reads on.
 
+### SQLite in WebAssembly (experimental)
+
+`SqliteWasm(path, memory_limit_mb=...)` (`dblayer/backends/sqlite_wasm.py`,
+extra `wasm`) runs the C worker's code and SQLite compiled to WebAssembly,
+in this process under wasmtime: an exact memory cap per instance and a
+hard stop for queries no progress handler can reach, without a process.
+Build the module (downloads a pinned, checksummed wasi-sdk into
+`cworker/vendor/` the first time, then about 10 s):
+
+```bash
+make -C cworker wasm
+```
+
+Its tests are `sqlite-wasm` in the conformance suite, `tests/test_sqlite_wasm.py`,
+`tests/faults/test_wasm_faults.py` and `tests/faults/test_wasm_locking.py`;
+they skip until the module is built. How locking works without WASI file
+locks, and what is given up (WAL), is in `docs/sqlite-wasm.md`;
+`benchmarks/wasm_overhead.py` measures it against the other SQLite backends.
+
 ## Demo app
 
 `dblayer_demo/` is a small Datasette-like Starlette app built only on
