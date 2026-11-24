@@ -9,6 +9,8 @@ reason, and the app carries on.
 from __future__ import annotations
 
 import asyncio
+import os
+import urllib.parse
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,8 +62,51 @@ def _sqlite(data_dir: Path) -> Backend:
     return SqliteInProcess(data_dir / "sqlite.db")
 
 
+POSTGRES_DSN_ENV = "DBLAYER_TEST_POSTGRES"
+POSTGRES_DEFAULT_DSN = "postgresql:///dblayer_test?host=/tmp"
+POSTGRES_DATABASE = "dblayer_test"
+"""The only PostgreSQL database the demo will connect to."""
+POSTGRES_SCHEMA = "dblayer_demo"
+"""The only schema the demo creates or writes to."""
+
+
+def postgres_dsn() -> str:
+    return os.environ.get(POSTGRES_DSN_ENV, POSTGRES_DEFAULT_DSN)
+
+
+def _dsn_database(dsn: str) -> str | None:
+    parts = urllib.parse.urlsplit(dsn)
+    query = urllib.parse.parse_qs(parts.query)
+    if "dbname" in query:
+        return query["dbname"][0]
+    return urllib.parse.unquote(parts.path.lstrip("/")) or None
+
+
+def _postgres(data_dir: Path) -> Backend:
+    dsn = postgres_dsn()
+    # Refuse before connecting: the server may hold other, real databases.
+    if _dsn_database(dsn) != POSTGRES_DATABASE:
+        raise ValueError(
+            f"${POSTGRES_DSN_ENV} must name the {POSTGRES_DATABASE!r} database; refusing to connect"
+        )
+    from dblayer.backends.postgres import Postgres
+
+    return Postgres(
+        dsn, schema=POSTGRES_SCHEMA, application_name="dblayer-demo", connect_timeout=5.0
+    )
+
+
+async def _postgres_check(db: Database) -> None:
+    r = await db.execute("select current_database(), current_schema()")
+    database, schema = r.rows[0]
+    if database != POSTGRES_DATABASE or schema != POSTGRES_SCHEMA:
+        raise RuntimeError(f"connected to {database}.{schema}, expected "
+                           f"{POSTGRES_DATABASE}.{POSTGRES_SCHEMA}; refusing to seed")
+
+
 DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite", "SQLite, in process", "SqliteInProcess", _sqlite),
+    DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),
 ]
 
 
