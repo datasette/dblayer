@@ -162,12 +162,12 @@ fn b64decode(s: &[u8]) -> Vec<u8> {
 
 pub fn b64encode(out: &mut Vec<u8>, s: &[u8]) {
     out.reserve(s.len().div_ceil(3) * 4);
-    let mut chunks = s.chunks_exact(3);
-    for c in &mut chunks {
-        let v = (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32;
+    let (chunks, rest) = s.as_chunks::<3>();
+    for &[a, b, c] in chunks {
+        let v = (a as u32) << 16 | (b as u32) << 8 | c as u32;
         out.extend_from_slice(&[B64[(v >> 18) as usize], B64[(v >> 12 & 63) as usize], B64[(v >> 6 & 63) as usize], B64[(v & 63) as usize]]);
     }
-    match *chunks.remainder() {
+    match *rest {
         [a] => {
             let v = (a as u32) << 16;
             out.extend_from_slice(&[B64[(v >> 18) as usize], B64[(v >> 12 & 63) as usize], b'=', b'=']);
