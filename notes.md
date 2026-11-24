@@ -1409,3 +1409,5 @@ Interim, not yet confirmed by a green run.
 - **Likely cause of the Linux hang:** `tests/scale/test_threads.py` holds 1,000 databases open at once. On the Python and Node.js SQLite workers that is 1,000 processes, measured at 38 GB and 62 GB of summed resident memory on macOS, against a 16 GB CI runner. Those two backends now hold 100 open, and the thread assertions compare sets, which also fixes the macOS `11 == 12` failure.
 - **A real bug in the C worker, and the same one in the Rust port:** a cancel that arrived just after a stream's last frame was lost; the stream stayed open and its stale interrupt failed the next statement. That explains three of the four sanitizer-job failures. Fixed.
 - The workflow is now split by backend family, with a timeout on every job and stack dumps on a hang.
+
+With Simon's go-ahead I deleted the 33 pytest temp folders that nothing had touched for over three hours: 20 GB freed, 66 GB free afterwards. The 11 folders modified in the last three hours were left, since running subagents may be using them.
