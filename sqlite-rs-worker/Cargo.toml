@@ -1,0 +1,25 @@
+[package]
+name = "dblayer-sqlite-rsworker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Experimental multi-tenant SQLite worker process for dblayer (docs/worker-protocol.md), in Rust"
+publish = false
+
+[[bin]]
+name = "dblayer-sqlite-rsworker"
+path = "src/main.rs"
+
+# No dependencies at all. SQLite is the C worker's pinned amalgamation,
+# compiled by build.rs with the C worker's own compile options (read from
+# cworker/Makefile) by invoking the C compiler directly; the FFI
+# declarations, and the few POSIX calls the worker needs, are written by
+# hand in src/ffi.rs (no libsqlite3-sys, no libc, no cc).
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+panic = "abort"
+debug = 1
