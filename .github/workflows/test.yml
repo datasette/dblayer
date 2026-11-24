@@ -122,7 +122,7 @@ jobs:
       - name: Run the multi-tenant C worker's tests under ThreadSanitizer
         env:
           DBLAYER_CWORKER: ${{ github.workspace }}/cworker/build-tsan/dblayer-cworker
-          TSAN_OPTIONS: halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1 suppressions=${{ github.workspace }}/cworker/tsan.supp
         run: >-
           uv run --all-extras pytest -ra -k "(cpool or c-pool or cworker_multi) and not rlimit"
           tests/worker/test_cworker_multi.py tests/worker/test_cpool.py tests/faults

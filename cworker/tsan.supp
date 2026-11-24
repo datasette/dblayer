@@ -1,0 +1,8 @@
+# ThreadSanitizer suppressions for the multi-tenant C worker:
+#   TSAN_OPTIONS="suppressions=cworker/tsan.supp halt_on_error=1"
+#
+# SQLite's unixOpen() checks and resets the global `randomnessPid` (fork
+# detection for the PRNG) without a lock when two connections open at once.
+# SQLite's own comment there: "multiple resets are harmless". Inside SQLite,
+# not the worker.
+race:randomnessPid
