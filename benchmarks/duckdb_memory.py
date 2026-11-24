@@ -49,6 +49,33 @@ DECIMAL(12,2), so every value goes through the codec's value types), for
 in-process DuckDB, the worker with JSON and with MessagePack; plus time from
 asleep to first result.
 
+Results with the C++ worker (2026-11-24, macOS, 18 CPUs, PROVISIONAL: other
+agents were building and testing; load averages beside each run;
+footprint in MB, 100,000-row databases, cap 40):
+
+| Overhead (load 26.7 to 27.6) | in-process | Python worker (JSON / msgpack) | Python pool, process up | C++ worker (JSON / msgpack) |
+| --- | --- | --- | --- | --- |
+| one-row read | 456 µs | 984 / 1,099 µs | 592 µs | 748 / 728 µs |
+| extra per row, plain, 100,000 rows | - | 1.02 / 0.61 µs | 0.77 µs | 0.82 / 0.11 µs |
+| extra per row, typed, 100,000 rows | - | 2.54 / 2.90 µs | 2.55 µs | 1.48 / 0.69 µs |
+| asleep to first result | 8.0 ms | 202 / 187 ms (spare: 15 ms) | 9.6 ms | 28.5 / 28.4 ms |
+
+| Memory | in-process | Python worker | Python pool (8 per process) | C++ worker |
+| --- | --- | --- | --- | --- |
+| peak, N=50 (load 16 to 14) | 468 | 2,692 (40 processes) | 860 (8) | 1,130 (40) |
+| peak, N=150 (load 14 to 26) | 454 | 2,690 (40) | 892 (8) | 1,145 (40) |
+| after sleep, parent | 58 to 138 | 35 to 51 | 31 to 33 | 36 to 56 |
+| wake median, N=150 | 16 to 24 ms | 192 to 216 ms | 31 to 57 ms | 37 to 43 ms |
+
+``native`` (load 30.7 to 26.4): process floor before ``open`` 44.7 MB Python
+worker, 2.1 MB C++; with one database open 54.4 / 14.4 MB; after the
+analytical query 68.1 / 28.8 MB. Spawn to ``hello`` 168 / 11.6 ms (exec plus
+dynamic linking of the 67 MB libduckdb), ``open`` 12.4 / 15.6 ms, first
+query 1.8 / 1.8 ms. A point read while a long query runs on the same
+database: 0.81 ms in-process, 6,205 ms Python worker (it waits for the long
+query), 1.04 ms C++ worker. ``insert_rows`` of 10,000 rows, default path
+against the appender: 1,956 / 269 ms on the C++ worker (7.3x).
+
 Check the machine is quiet first: the script prints the load average and
 any ``yes`` CPU burners, and marks results "provisional" when the 1-minute
 load average is over ``--max-load``.
