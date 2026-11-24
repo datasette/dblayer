@@ -8,7 +8,10 @@ FLY_REGION="${FLY_REGION:-sjc}"
 # 8 dedicated CPUs, 16 GB: dedicated, so the figures are not shared-host noise.
 FLY_VM_SIZE="${FLY_VM_SIZE:-performance-8x}"
 FLY_VOLUME="${FLY_VOLUME:-bench_data}"
-FLY_VOLUME_GB="${FLY_VOLUME_GB:-30}"
+# Quick runs peaked at 2.5 GB (clone and Rust targets 1.4 GB, uv/npm caches
+# 1 GB); full runs add 10M-row ClickHouse/DuckDB/SQLite files and 1M-row
+# export tables. 15 GB leaves room; it costs about $0.003 an hour.
+FLY_VOLUME_GB="${FLY_VOLUME_GB:-15}"
 FLY_MACHINE_NAME="${FLY_MACHINE_NAME:-bench}"
 # The machine shuts itself down after this many seconds whatever happens,
 # and is then destroyed (auto_destroy, restart policy "no").

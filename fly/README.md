@@ -15,7 +15,7 @@ Unix-socket connections (trust auth, no TCP, no password).
 | Resource | Setting (`fly/config.sh`, all overridable from the environment) |
 | --- | --- |
 | App | `dblayer-bench` in org `datasette-cloud-dev`; no IPs, certificates or services |
-| Volume | `bench_data`, 30 GB, region `sjc`, no scheduled snapshots, mounted at `/data` |
+| Volume | `bench_data`, 15 GB (the trials used 30), region `sjc`, no scheduled snapshots, mounted at `/data` |
 | Machine | `performance-8x` (8 dedicated CPUs, 16 GB), region `sjc`, `--rm` (auto_destroy), restart policy `no` |
 | Image | `registry.fly.io/dblayer-bench:bench-<hash of Dockerfile and machine/>`, built on Fly's Depot builder |
 
@@ -33,9 +33,17 @@ runner then records those backends as skipped, with the reason.
 
 From the repository root, with `fly` logged in:
 
-    fly/bench.sh main quick          # trial: ~25 minutes end to end
-    fly/bench.sh main full           # final numbers
-    fly/bench.sh <ref> quick tests   # also run the test suite (hang hunting)
+    fly/bench.sh main quick              # trial: about 25 minutes end to end
+    fly/bench.sh main full               # final numbers
+    fly/bench.sh <ref> quick tests       # also run the test suite (capped at 40 minutes)
+    BENCH_TESTS_TIMEOUT_S=6000 fly/bench.sh <ref> tests-only tests   # only the test suite
+
+Measured on the trials (2026-11-24): image build 2.5 minutes the first time,
+under 10 s when only `machine/` changed; machine start 5 to 25 s; building
+every backend about 4.5 minutes (C worker 70 s, WebAssembly 70 s, Rust SQLite
+worker 70 s, Rust DuckDB worker 16 s, C++ DuckDB worker 28 s, npm and
+`uv sync` a few seconds); `--quick` benchmarks 19 minutes (8 of them the
+scale tests); fetch a few seconds.
 
 `bench.sh` is the steps below in order, with `teardown.sh` on exit (also on
 Ctrl-C or an error). The steps can be run one by one:
@@ -79,7 +87,7 @@ $33.00/month and `performance-2x` at $66.00/month in its cheapest regions
 (`iad`, `ewr`), and says prices vary by region; `fly platform vm-sizes` lists
 sizes but no prices. At that rate a `performance-8x` is about $264/month,
 **about $0.36 an hour**, a little more in `sjc`. The volume is $0.15/GB/month
-(30 GB: under a cent an hour). A quick run is well under $1; a full run a
+(15 GB: well under a cent an hour). A quick run is well under $1; a full run a
 dollar or two.
 
 The machine bounds its own life, so a run nobody watches still ends:
@@ -99,6 +107,15 @@ Check that nothing is left:
     fly volumes list -a dblayer-bench                              # error: app not found
 
 ## Notes
+
+* Builds run serially: `cworker/Makefile` and `duckdb-cpp-worker/Makefile`
+  race under `make -j` (the amalgamation unzipped twice; objects compiled
+  before the fetched `duckdb.h` exists).
+* The image precompiles the uv-managed standard library. Without that the
+  unprivileged user cannot write `.pyc` files there, every Python process
+  compiles the stdlib it imports, and the first trial measured `python -c
+  pass` at 138 ms and the Python worker's start-up at 620 ms (30 ms and
+  120 ms with the fix).
 
 * The benchmarks run as an unprivileged user `bench` (some tests check file
   permissions, which root ignores). `TMPDIR`, the uv and npm caches, the
