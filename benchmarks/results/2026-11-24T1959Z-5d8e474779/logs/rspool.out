@@ -1,0 +1,32 @@
+
+Load average (1 min) per round: C [0.490234375, 1.01708984375, 1.0126953125, 1.07958984375], Rust [0.78271484375, 0.9052734375, 1.00830078125, 1.10400390625]
+
+| Measure (median over rounds) | C worker | Rust worker | Rust / C |
+| --- | --- | --- | --- |
+| Warm open to first result (ms) | 0.952 | 0.964 | 1.01 |
+| Bare open round trip (ms) | 0.179 | 0.204 | 1.14 |
+| One-row read (µs) | 228 | 247 | 1.08 |
+| One-row update (µs) | 1.01e+03 | 1.17e+03 | 1.15 |
+| execute 1,000 rows, msgpack (µs/row) | 1.11 | 1.23 | 1.11 |
+| execute 100,000 rows, msgpack (µs/row) | 2.23 | 2.14 | 0.96 |
+| stream 1,000 rows, msgpack (µs/row) | 1.15 | 1.21 | 1.05 |
+| stream 100,000 rows, msgpack (µs/row) | 1.02 | 1.07 | 1.05 |
+| execute 1,000 rows, JSON (µs/row) | 2.6 | 1.78 | 0.68 |
+| execute 100,000 rows, JSON (µs/row) | 3.17 | 2.74 | 0.86 |
+| stream 1,000 rows, JSON (µs/row) | 2.55 | 1.77 | 0.69 |
+| stream 100,000 rows, JSON (µs/row) | 2.02 | 1.72 | 0.85 |
+| Process base footprint (KB) | 847 | 1.45e+03 | 1.71 |
+| Process base RSS (KB) | 2.44e+03 | 3.29e+03 | 1.35 |
+| Footprint per open database (KB) | 171 | 169 | 0.99 |
+| 1 clients: requests/s | 6.97e+03 | 7.17e+03 | 1.03 |
+| 1 clients: parent CPU (cores) | 0.745 | 0.745 | 1.00 |
+| 1 clients: worker CPU (cores) | 0.282 | 0.296 | 1.05 |
+| 4 clients: requests/s | 1.16e+04 | 1.19e+04 | 1.03 |
+| 4 clients: parent CPU (cores) | 0.984 | 0.986 | 1.00 |
+| 4 clients: worker CPU (cores) | 0.686 | 0.696 | 1.01 |
+| 16 clients: requests/s | 1.47e+04 | 1.42e+04 | 0.96 |
+| 16 clients: parent CPU (cores) | 0.99 | 0.99 | 1.00 |
+| 16 clients: worker CPU (cores) | 0.826 | 0.834 | 1.01 |
+| 64 clients: requests/s | 1.4e+04 | 1.37e+04 | 0.98 |
+| 64 clients: parent CPU (cores) | 0.99 | 0.99 | 1.00 |
+| 64 clients: worker CPU (cores) | 0.927 | 0.913 | 0.98 |

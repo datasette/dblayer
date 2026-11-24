@@ -1,0 +1,113 @@
+machine: load average [0.47, 0.75, 0.59], 8 CPUs, 0 'yes' processes
+
+in-process n=50 cap=40 load [0.47, 0.75, 0.59] -> [0.99, 0.86, 0.63]
+  start: parent 50/34 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 454/436 children 0/0 total 454/436 procs 0 | after sleep parent 128/99 children 0/0 procs 0 | wake median 90.3 ms p95 110.3 ms | wall 1.11 s | fds parent 48 children 0
+  cycle 2: peak parent 466/437 children 0/0 total 466/437 procs 0 | after sleep parent 156/126 children 0/0 procs 0 | wake median 45.3 ms p95 74.4 ms | wall 0.73 s | fds parent 47 children None
+  cycle 3: peak parent 451/422 children 0/0 total 451/422 procs 0 | after sleep parent 121/92 children 0/0 procs 0 | wake median 46.9 ms p95 90.6 ms | wall 0.76 s | fds parent 45 children None
+
+in-process+gc n=50 cap=40 load [0.99, 0.86, 0.63] -> [0.91, 0.84, 0.63]
+  start: parent 48/32 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 477/448 children 0/0 total 477/448 procs 0 | after sleep parent 134/105 children 0/0 procs 0 | wake median 73.5 ms p95 105.3 ms | wall 0.99 s | fds parent 48 children 0
+  cycle 2: peak parent 481/452 children 0/0 total 481/452 procs 0 | after sleep parent 167/138 children 0/0 procs 0 | wake median 51.6 ms p95 90.6 ms | wall 0.8 s | fds parent 47 children None
+  cycle 3: peak parent 479/450 children 0/0 total 479/450 procs 0 | after sleep parent 142/113 children 0/0 procs 0 | wake median 51.6 ms p95 79.2 ms | wall 0.77 s | fds parent 47 children None
+
+in-process+trim n=50 cap=40 load [0.91, 0.84, 0.63] -> [0.83, 0.83, 0.62]
+  start: parent 48/32 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 472/452 children 0/0 total 472/452 procs 0 | after sleep parent 105/76 children 0/0 procs 0 | wake median 90.8 ms p95 108.2 ms | wall 1.07 s | fds parent 45 children 0 | malloc_trim -> 1
+  cycle 2: peak parent 502/473 children 0/0 total 502/473 procs 0 | after sleep parent 112/82 children 0/0 procs 0 | wake median 61.8 ms p95 87.4 ms | wall 0.88 s | fds parent 48 children None | malloc_trim -> 1
+  cycle 3: peak parent 481/439 children 0/0 total 481/439 procs 0 | after sleep parent 112/83 children 0/0 procs 0 | wake median 46.5 ms p95 81.9 ms | wall 0.78 s | fds parent 48 children None | malloc_trim -> 1
+
+in-process+settings n=50 cap=40 load [0.83, 0.83, 0.62] -> [0.78, 0.82, 0.62]
+  start: parent 48/32 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 430/397 children 0/0 total 430/397 procs 0 | after sleep parent 103/74 children 0/0 procs 0 | wake median 78.4 ms p95 119.9 ms | wall 1.32 s | fds parent 47 children 0 | malloc_trim -> 1
+  cycle 2: peak parent 444/420 children 0/0 total 444/420 procs 0 | after sleep parent 107/78 children 0/0 procs 0 | wake median 61.5 ms p95 108.8 ms | wall 1.13 s | fds parent 45 children None | malloc_trim -> 1
+  cycle 3: peak parent 441/404 children 0/0 total 441/404 procs 0 | after sleep parent 109/80 children 0/0 procs 0 | wake median 55.3 ms p95 83.3 ms | wall 1.03 s | fds parent 48 children None | malloc_trim -> 1
+
+worker n=50 cap=40 load [0.78, 0.82, 0.62] -> [1.33, 0.94, 0.67]
+  start: parent 30/22 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 37/25 children 3901/1877 total 3937/1903 procs 40 | after sleep parent 33/25 children 0/0 procs 0 | wake median 370.2 ms p95 428.9 ms | wall 3.18 s | fds parent 128 children 360
+  cycle 2: peak parent 38/27 children 3763/1795 total 3802/1822 procs 40 | after sleep parent 34/26 children 0/0 procs 0 | wake median 299.1 ms p95 357.3 ms | wall 2.58 s | fds parent 125 children None
+  cycle 3: peak parent 39/28 children 3646/1724 total 3684/1752 procs 40 | after sleep parent 35/27 children 0/0 procs 0 | wake median 271.4 ms p95 351.1 ms | wall 2.7 s | fds parent 122 children None
+
+worker-pool n=50 cap=40 load [1.33, 0.94, 0.67] -> [1.95, 1.09, 0.72]
+  start: parent 30/22 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 32/22 children 1025/653 total 1057/674 procs 8 | after sleep parent 32/24 children 0/0 procs 0 | wake median 156.3 ms p95 270.2 ms | wall 1.87 s | fds parent 23 children 80
+  cycle 2: peak parent 33/24 children 1006/634 total 1038/656 procs 8 | after sleep parent 33/25 children 0/0 procs 0 | wake median 158.6 ms p95 282.8 ms | wall 1.92 s | fds parent 23 children None
+  cycle 3: peak parent 33/25 children 1032/660 total 1066/683 procs 8 | after sleep parent 33/25 children 0/0 procs 0 | wake median 156.4 ms p95 345.3 ms | wall 2.15 s | fds parent 23 children None
+
+rust-worker n=50 cap=40 load [1.95, 1.09, 0.72] -> [1.81, 1.09, 0.72]
+  start: parent 31/23 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 35/26 children 2918/1090 total 2952/1116 procs 40 | after sleep parent 35/26 children 0/0 procs 0 | wake median 98.1 ms p95 131.7 ms | wall 1.43 s | fds parent 125 children 195
+  cycle 2: peak parent 36/27 children 2924/1096 total 2960/1123 procs 40 | after sleep parent 36/27 children 0/0 procs 0 | wake median 93.1 ms p95 145.5 ms | wall 1.45 s | fds parent 125 children None
+  cycle 3: peak parent 36/28 children 2937/1104 total 2974/1132 procs 40 | after sleep parent 36/28 children 0/0 procs 0 | wake median 107.0 ms p95 130.2 ms | wall 1.41 s | fds parent 128 children None
+
+cpp-worker n=50 cap=40 load [1.81, 1.09, 0.72] -> [1.6, 1.07, 0.72]
+  start: parent 31/23 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 36/27 children 2872/1063 total 2908/1089 procs 40 | after sleep parent 33/25 children 0/0 procs 0 | wake median 106.5 ms p95 190.0 ms | wall 1.46 s | fds parent 128 children 200
+  cycle 2: peak parent 36/27 children 2863/1050 total 2898/1077 procs 40 | after sleep parent 34/25 children 0/0 procs 0 | wake median 106.2 ms p95 179.0 ms | wall 1.3 s | fds parent 128 children None
+  cycle 3: peak parent 37/28 children 2841/1028 total 2878/1057 procs 40 | after sleep parent 34/26 children 0/0 procs 0 | wake median 93.1 ms p95 191.7 ms | wall 1.26 s | fds parent 128 children None
+
+in-process n=150 cap=40 load [1.6, 1.07, 0.72] -> [1.25, 1.02, 0.71]
+  start: parent 48/32 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 505/475 children 0/0 total 505/475 procs 0 | after sleep parent 116/87 children 0/0 procs 0 | wake median 85.8 ms p95 130.8 ms | wall 3.26 s | fds parent 48 children 0
+  cycle 2: peak parent 482/456 children 0/0 total 482/456 procs 0 | after sleep parent 127/98 children 0/0 procs 0 | wake median 77.9 ms p95 148.5 ms | wall 3.52 s | fds parent 47 children None
+  cycle 3: peak parent 476/445 children 0/0 total 476/445 procs 0 | after sleep parent 143/114 children 0/0 procs 0 | wake median 84.7 ms p95 135.8 ms | wall 3.68 s | fds parent 46 children None
+
+in-process+gc n=150 cap=40 load [1.25, 1.02, 0.71] -> [2.24, 1.26, 0.79] PROVISIONAL
+  start: parent 48/32 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 493/463 children 0/0 total 493/463 procs 0 | after sleep parent 135/106 children 0/0 procs 0 | wake median 91.6 ms p95 144.5 ms | wall 3.82 s | fds parent 46 children 0
+  cycle 2: peak parent 495/466 children 0/0 total 495/466 procs 0 | after sleep parent 123/94 children 0/0 procs 0 | wake median 78.9 ms p95 143.8 ms | wall 3.49 s | fds parent 48 children None
+  cycle 3: peak parent 536/510 children 0/0 total 536/510 procs 0 | after sleep parent 139/110 children 0/0 procs 0 | wake median 83.1 ms p95 126.3 ms | wall 3.3 s | fds parent 47 children None
+
+in-process+trim n=150 cap=40 load [2.24, 1.26, 0.79] -> [1.81, 1.21, 0.79] PROVISIONAL
+  start: parent 48/32 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 486/460 children 0/0 total 486/460 procs 0 | after sleep parent 115/86 children 0/0 procs 0 | wake median 83.6 ms p95 126.1 ms | wall 3.26 s | fds parent 47 children 0 | malloc_trim -> 1
+  cycle 2: peak parent 500/471 children 0/0 total 500/471 procs 0 | after sleep parent 120/90 children 0/0 procs 0 | wake median 77.4 ms p95 136.6 ms | wall 3.2 s | fds parent 46 children None | malloc_trim -> 1
+  cycle 3: peak parent 512/485 children 0/0 total 512/485 procs 0 | after sleep parent 120/91 children 0/0 procs 0 | wake median 85.0 ms p95 154.1 ms | wall 3.75 s | fds parent 46 children None | malloc_trim -> 1
+
+in-process+settings n=150 cap=40 load [1.81, 1.21, 0.79] -> [3.18, 1.54, 0.9] PROVISIONAL
+  start: parent 48/32 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 443/410 children 0/0 total 443/410 procs 0 | after sleep parent 113/84 children 0/0 procs 0 | wake median 94.4 ms p95 159.6 ms | wall 4.87 s | fds parent 48 children 0 | malloc_trim -> 1
+  cycle 2: peak parent 463/428 children 0/0 total 463/428 procs 0 | after sleep parent 116/87 children 0/0 procs 0 | wake median 75.2 ms p95 118.6 ms | wall 3.96 s | fds parent 46 children None | malloc_trim -> 1
+  cycle 3: peak parent 451/428 children 0/0 total 451/428 procs 0 | after sleep parent 118/89 children 0/0 procs 0 | wake median 75.6 ms p95 123.1 ms | wall 4.06 s | fds parent 47 children None | malloc_trim -> 1
+
+worker n=150 cap=40 load [3.18, 1.54, 0.9] -> [4.73, 2.16, 1.14] PROVISIONAL
+  start: parent 30/22 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 40/29 children 3828/1809 total 3869/1838 procs 40 | after sleep parent 40/32 children 0/0 procs 0 | wake median 382.9 ms p95 520.4 ms | wall 10.65 s | fds parent 128 children 360
+  cycle 2: peak parent 43/32 children 3880/1860 total 3923/1891 procs 40 | after sleep parent 43/35 children 0/0 procs 0 | wake median 380.1 ms p95 463.4 ms | wall 10.0 s | fds parent 128 children None
+  cycle 3: peak parent 44/35 children 3679/1729 total 3723/1761 procs 40 | after sleep parent 44/36 children 0/0 procs 0 | wake median 368.2 ms p95 462.7 ms | wall 10.32 s | fds parent 125 children None
+
+worker-pool n=150 cap=40 load [4.73, 2.16, 1.14] -> [4.8, 2.36, 1.23] PROVISIONAL
+  start: parent 30/22 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 32/22 children 1032/661 total 1064/683 procs 8 | after sleep parent 32/24 children 0/0 procs 0 | wake median 140.3 ms p95 320.6 ms | wall 5.83 s | fds parent 23 children 80
+  cycle 2: peak parent 33/24 children 1041/670 total 1074/692 procs 8 | after sleep parent 33/25 children 0/0 procs 0 | wake median 162.1 ms p95 319.4 ms | wall 6.09 s | fds parent 23 children None
+  cycle 3: peak parent 34/25 children 1080/708 total 1114/732 procs 8 | after sleep parent 34/26 children 0/0 procs 0 | wake median 164.9 ms p95 316.7 ms | wall 6.03 s | fds parent 23 children None
+
+rust-worker n=150 cap=40 load [4.8, 2.36, 1.23] -> [4.79, 2.53, 1.31] PROVISIONAL
+  start: parent 31/23 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 37/29 children 2937/1103 total 2975/1132 procs 40 | after sleep parent 37/29 children 0/0 procs 0 | wake median 132.1 ms p95 265.3 ms | wall 5.14 s | fds parent 128 children 200
+  cycle 2: peak parent 39/31 children 2936/1102 total 2975/1133 procs 40 | after sleep parent 39/31 children 0/0 procs 0 | wake median 122.5 ms p95 179.2 ms | wall 4.86 s | fds parent 128 children None
+  cycle 3: peak parent 40/32 children 2910/1085 total 2950/1116 procs 40 | after sleep parent 40/32 children 0/0 procs 0 | wake median 109.7 ms p95 193.4 ms | wall 4.58 s | fds parent 128 children None
+
+cpp-worker n=150 cap=40 load [4.79, 2.53, 1.31] -> [6.48, 3.08, 1.52] PROVISIONAL
+  start: parent 31/23 MB (RSS/footprint), children 0/0
+  cycle 1: peak parent 38/30 children 2852/1042 total 2888/1069 procs 40 | after sleep parent 38/29 children 0/0 procs 0 | wake median 116.8 ms p95 193.5 ms | wall 4.72 s | fds parent 128 children 200
+  cycle 2: peak parent 40/32 children 2858/1047 total 2897/1078 procs 40 | after sleep parent 40/32 children 0/0 procs 0 | wake median 118.8 ms p95 192.8 ms | wall 4.49 s | fds parent 128 children None
+  cycle 3: peak parent 42/34 children 2852/1041 total 2893/1073 procs 40 | after sleep parent 42/34 children 0/0 procs 0 | wake median 114.1 ms p95 184.9 ms | wall 4.54 s | fds parent 122 children None
+
+native (load [6.48, 3.08, 1.52] -> [2.91, 2.66, 1.47]):
+  floor: {"worker": {"spawn_to_hello_ms": 197.9, "floor_mb": [44.7, 28.5], "open_ms": 40.5, "first_query_ms": 5.4, "spawn_to_first_result_ms": 247.4, "one_db_open_mb": [79.5, 50.5], "after_analytical_mb": [96.1, 66.9]}, "rust-worker": {"spawn_to_hello_ms": 9.8, "floor_mb": [20.4, 17.5], "open_ms": 43.4, "first_query_ms": 6.3, "spawn_to_first_result_ms": 59.7, "one_db_open_mb": [56.6, 53.5], "after_analytical_mb": [73.2, 70.1]}, "cpp-worker": {"spawn_to_hello_ms": 9.4, "floor_mb": [19.6, 16.7], "open_ms": 48.7, "first_query_ms": 5.1, "spawn_to_first_result_ms": 64.5, "one_db_open_mb": [56.7, 53.7], "after_analytical_mb": [72.0, 69.0]}}
+  concurrent: {"in-process": {"point_read_quiet_ms": 1.56, "point_read_during_long_query_ms": 2.12, "long_query_still_running": true}, "worker": {"point_read_quiet_ms": 3.15, "point_read_during_long_query_ms": 7806.21, "long_query_still_running": false}, "rust-worker": {"point_read_quiet_ms": 2.13, "point_read_during_long_query_ms": 2.57, "long_query_still_running": true}, "cpp-worker": {"point_read_quiet_ms": 2.21, "point_read_during_long_query_ms": 2.84, "long_query_still_running": true}}
+  insert_rows_10k: {"in-process": {"default_ms": 7737.4, "appender_ms": 816.3, "speedup": 9.5}, "worker": {"default_ms": 7671.5, "appender_ms": 897.0, "speedup": 8.6}, "rust-worker": {"default_ms": 7569.2, "appender_ms": 964.6, "speedup": 7.8}, "cpp-worker": {"default_ms": 7961.9, "appender_ms": 1027.0, "speedup": 7.8}}
+
+overhead (load [2.91, 2.66, 1.47] -> [1.5, 2.25, 1.43]):
+  in-process: {"one_row_us": 2281.4, "plain_1000_ms": 3.11, "plain_100000_ms": 142.18, "typed_1000_ms": 2.93, "typed_100000_ms": 122.4, "wake_to_first_result_ms": 27.5, "wake_p90_ms": 29.1}
+  worker-json: {"one_row_us": 2535.8, "plain_1000_ms": 5.95, "plain_100000_ms": 419.61, "typed_1000_ms": 11.03, "typed_100000_ms": 868.79, "wake_to_first_result_ms": 229.1, "wake_p90_ms": 254.8, "plain_1000_extra_us_per_row": 2.84, "plain_100000_extra_us_per_row": 2.774, "typed_1000_extra_us_per_row": 8.1, "typed_100000_extra_us_per_row": 7.464}
+  worker-msgpack: {"one_row_us": 1937.2, "plain_1000_ms": 4.39, "plain_100000_ms": 296.68, "typed_1000_ms": 12.07, "typed_100000_ms": 997.79, "wake_to_first_result_ms": 252.8, "wake_p90_ms": 273.9, "plain_1000_extra_us_per_row": 1.28, "plain_100000_extra_us_per_row": 1.545, "typed_1000_extra_us_per_row": 9.14, "typed_100000_extra_us_per_row": 8.754}
+  worker+spare: {"one_row_us": 2993.6, "plain_1000_ms": 6.11, "plain_100000_ms": 425.81, "typed_1000_ms": 11.33, "typed_100000_ms": 851.83, "wake_to_first_result_ms": 38.3, "wake_p90_ms": 48.9, "plain_1000_extra_us_per_row": 3.0, "plain_100000_extra_us_per_row": 2.836, "typed_1000_extra_us_per_row": 8.4, "typed_100000_extra_us_per_row": 7.294}
+  worker-pool (process already up): {"one_row_us": 2262.2, "plain_1000_ms": 6.16, "plain_100000_ms": 396.82, "typed_1000_ms": 10.78, "typed_100000_ms": 979.08, "wake_to_first_result_ms": 28.7, "wake_p90_ms": 33.4, "plain_1000_extra_us_per_row": 3.05, "plain_100000_extra_us_per_row": 2.546, "typed_1000_extra_us_per_row": 7.85, "typed_100000_extra_us_per_row": 8.567}
+  rust-worker-json: {"one_row_us": 2553.5, "plain_1000_ms": 4.62, "plain_100000_ms": 310.08, "typed_1000_ms": 8.37, "typed_100000_ms": 503.82, "wake_to_first_result_ms": 61.7, "wake_p90_ms": 65.2, "plain_1000_extra_us_per_row": 1.51, "plain_100000_extra_us_per_row": 1.679, "typed_1000_extra_us_per_row": 5.44, "typed_100000_extra_us_per_row": 3.814}
+  rust-worker-msgpack: {"one_row_us": 2921.8, "plain_1000_ms": 4.37, "plain_100000_ms": 186.92, "typed_1000_ms": 6.07, "typed_100000_ms": 396.5, "wake_to_first_result_ms": 55.4, "wake_p90_ms": 61.5, "plain_1000_extra_us_per_row": 1.26, "plain_100000_extra_us_per_row": 0.447, "typed_1000_extra_us_per_row": 3.14, "typed_100000_extra_us_per_row": 2.741}
+  cpp-worker-json: {"one_row_us": 2906.4, "plain_1000_ms": 6.68, "plain_100000_ms": 400.22, "typed_1000_ms": 9.67, "typed_100000_ms": 584.87, "wake_to_first_result_ms": 68.5, "wake_p90_ms": 75.3, "plain_1000_extra_us_per_row": 3.57, "plain_100000_extra_us_per_row": 2.58, "typed_1000_extra_us_per_row": 6.74, "typed_100000_extra_us_per_row": 4.625}
+  cpp-worker-msgpack: {"one_row_us": 3552.7, "plain_1000_ms": 3.86, "plain_100000_ms": 183.12, "typed_1000_ms": 6.72, "typed_100000_ms": 374.38, "wake_to_first_result_ms": 67.7, "wake_p90_ms": 75.3, "plain_1000_extra_us_per_row": 0.75, "plain_100000_extra_us_per_row": 0.409, "typed_1000_extra_us_per_row": 3.79, "typed_100000_extra_us_per_row": 2.52}

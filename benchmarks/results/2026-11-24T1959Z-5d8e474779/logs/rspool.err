@@ -1,0 +1,8 @@
+round 1 c: load 0.5
+round 1 rust: load 0.8
+round 2 rust: load 0.9
+round 2 c: load 1.0
+round 3 c: load 1.0
+round 3 rust: load 1.0
+round 4 rust: load 1.1
+round 4 c: load 1.1

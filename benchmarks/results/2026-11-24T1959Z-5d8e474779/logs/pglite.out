@@ -1,0 +1,132 @@
+# pglite (load average 0.52, 1.50, 1.27)
+  create_ms: 457.22
+  idle_floor_mb: 149.17
+  empty_disk_mb: 40.08
+  wake_ms: 421.76
+  wake_breakdown: {'boot_ms': 83.97, 'compile_ms': 30.04, 'wait_compile_ms': 15.75, 'open_ms': 269.72, 'first_query_ms': 22.25, 'spawn_to_hello_ms': 101.02696399985689}
+  read_1_ms: 0.42
+  insert_many_ms: 5261.44
+  insert_rows_ms: 1076.28
+  read_1k_ms: 11.45
+  read_100k_ms: 1109.47
+  small_tx_ms: 2.28
+  awake_footprint_mb: 503.63
+  disk_mb_200k_rows: 90.28
+  sleep_ms: 76.68
+  awake_n_footprint_mb: 1931.19
+  kill: {'bystander_read_ms': 925.6544620000113, 'time_limit_300_raised_after_ms': 1026.628245999973, 'wake_after_kill_ms': 441.74010899996574}
+  load: 0.82, 1.49, 1.27
+# pglite-initdb (load average 0.82, 1.49, 1.27)
+  create_ms: 3166.39
+  idle_floor_mb: 149.41
+  empty_disk_mb: 40.08
+  wake_ms: 422.25
+  wake_breakdown: {'boot_ms': 95.38, 'compile_ms': 32.59, 'wait_compile_ms': 15.97, 'open_ms': 279.66, 'first_query_ms': 22.37, 'spawn_to_hello_ms': 114.62929599997551}
+  read_1_ms: 0.46
+  insert_many_ms: 5767.01
+  insert_rows_ms: 1234.47
+  read_1k_ms: 11.02
+  read_100k_ms: 1084.62
+  small_tx_ms: 1.93
+  awake_footprint_mb: 515.49
+  disk_mb_200k_rows: 90.28
+  sleep_ms: 75.64
+  load: 1.12, 1.50, 1.28
+# pglite-turbofan (load average 1.12, 1.50, 1.28)
+  create_ms: 493.21
+  idle_floor_mb: 447.88
+  empty_disk_mb: 40.08
+  wake_ms: 404.6
+  wake_breakdown: {'boot_ms': 63.33, 'compile_ms': 25.85, 'wait_compile_ms': 12.06, 'open_ms': 258.85, 'first_query_ms': 21.85, 'spawn_to_hello_ms': 79.39146600006097}
+  read_1_ms: 0.47
+  insert_many_ms: 3847.38
+  insert_rows_ms: 841.44
+  read_1k_ms: 10.74
+  read_100k_ms: 958.05
+  small_tx_ms: 2.29
+  awake_footprint_mb: 561.31
+  disk_mb_200k_rows: 90.28
+  sleep_ms: 116.7
+  awake_n_footprint_mb: 3260.51
+  load: 1.23, 1.49, 1.29
+# sqlite-nodeworker (load average 1.23, 1.49, 1.29)
+  create_ms: 161.0
+  idle_floor_mb: 85.17
+  empty_disk_mb: 0.0
+  wake_ms: 172.7
+  wake_breakdown: {}
+  read_1_ms: 0.42
+  insert_many_ms: 1163.99
+  insert_rows_ms: 876.1
+  read_1k_ms: 2.66
+  read_100k_ms: 207.56
+  small_tx_ms: 2.55
+  awake_footprint_mb: 332.06
+  disk_mb_200k_rows: 8.18
+  sleep_ms: 2.44
+  awake_n_footprint_mb: 1228.43
+  load: 1.20, 1.48, 1.28
+# sqlite-cworker (load average 1.20, 1.48, 1.28)
+  create_ms: 2.02
+  idle_floor_mb: 1.82
+  empty_disk_mb: 0.0
+  wake_ms: 1.84
+  wake_breakdown: {}
+  read_1_ms: 0.12
+  insert_many_ms: 421.73
+  insert_rows_ms: 579.97
+  read_1k_ms: 1.12
+  read_100k_ms: 174.52
+  small_tx_ms: 1.56
+  awake_footprint_mb: 9.25
+  disk_mb_200k_rows: 8.18
+  sleep_ms: 0.23
+  awake_n_footprint_mb: 16.46
+  load: 1.18, 1.47, 1.28
+# psycopg (load average 1.18, 1.47, 1.28)
+  create_ms: 4.87
+  idle_floor_mb: None
+  wake_ms: 4.67
+  wake_breakdown: {}
+  read_1_ms: 0.19
+  insert_many_ms: 2759.68
+  insert_rows_ms: 492.89
+  read_1k_ms: 1.0
+  read_100k_ms: 99.74
+  small_tx_ms: 0.95
+  awake_footprint_mb: None
+  disk_mb_200k_rows: None
+  sleep_ms: 0.39
+  awake_n_footprint_mb: None
+  load: 1.18, 1.47, 1.28
+
+| measurement | pglite | pglite-initdb | pglite-turbofan | sqlite-nodeworker | sqlite-cworker | psycopg |
+| --- | --- | --- | --- | --- | --- | --- |
+| create_ms | 457.22 | 3166.39 | 493.21 | 161.00 | 2.02 | 4.87 |
+| wake_ms | 421.76 | 422.25 | 404.60 | 172.70 | 1.84 | 4.67 |
+| read_1_ms | 0.42 | 0.46 | 0.47 | 0.42 | 0.12 | 0.19 |
+| read_1k_ms | 11.45 | 11.02 | 10.74 | 2.66 | 1.12 | 1.00 |
+| read_100k_ms | 1109.47 | 1084.62 | 958.05 | 207.56 | 174.52 | 99.74 |
+| insert_many_ms | 5261.44 | 5767.01 | 3847.38 | 1163.99 | 421.73 | 2759.68 |
+| insert_rows_ms | 1076.28 | 1234.47 | 841.44 | 876.10 | 579.97 | 492.89 |
+| small_tx_ms | 2.28 | 1.93 | 2.29 | 2.55 | 1.56 | 0.95 |
+| sleep_ms | 76.68 | 75.64 | 116.70 | 2.44 | 0.23 | 0.39 |
+| idle_floor_mb | 149.17 | 149.41 | 447.88 | 85.17 | 1.82 | n/a |
+| awake_footprint_mb | 503.63 | 515.49 | 561.31 | 332.06 | 9.25 | n/a |
+| awake_20_footprint_mb | 1931.19 | n/a | 3260.51 | 1228.43 | 16.46 | n/a |
+| empty_disk_mb | 40.08 | 40.08 | 40.08 | 0.00 | 0.00 | n/a |
+| disk_mb_200k_rows | 90.28 | 90.28 | 90.28 | 8.18 | 8.18 | n/a |
+| load | 0.82, 1.49, 1.27 | 1.12, 1.50, 1.28 | 1.23, 1.49, 1.29 | 1.20, 1.48, 1.28 | 1.18, 1.47, 1.28 | 1.18, 1.47, 1.28 |
+
+pglite wake breakdown (ms): {'boot_ms': 83.97, 'compile_ms': 30.04, 'wait_compile_ms': 15.75, 'open_ms': 269.72, 'first_query_ms': 22.25, 'spawn_to_hello_ms': 101.02696399985689}
+pglite time-limit kill: {'bystander_read_ms': 925.6544620000113, 'time_limit_300_raised_after_ms': 1026.628245999973, 'wake_after_kill_ms': 441.74010899996574}
+
+pglite-initdb wake breakdown (ms): {'boot_ms': 95.38, 'compile_ms': 32.59, 'wait_compile_ms': 15.97, 'open_ms': 279.66, 'first_query_ms': 22.37, 'spawn_to_hello_ms': 114.62929599997551}
+
+pglite-turbofan wake breakdown (ms): {'boot_ms': 63.33, 'compile_ms': 25.85, 'wait_compile_ms': 12.06, 'open_ms': 258.85, 'first_query_ms': 21.85, 'spawn_to_hello_ms': 79.39146600006097}
+
+new-database options in one Node process (liftoff_only=True, load 1.18, 1.47, 1.28):
+  {'rounds': 3, 'liftoff_only': True, 'compile_ms': 23.81804000000001, 'module_serialize': '2 bytes in 0.1 ms', 'initdb_open_ms': 2146.4827819999996, 'template_copy_ms': 60.515190000000075, 'template_copy_open_ms': 220.005134, 'reopen_existing_ms': 161.55422499999986, 'dump_ms': 129.4482279999993, 'dump_bytes': 40594432, 'load_data_dir_open_ms': 487.5068169999995, 'rss_mb': 518}
+
+new-database options in one Node process (liftoff_only=False, load 1.15, 1.45, 1.28):
+  {'rounds': 3, 'liftoff_only': False, 'compile_ms': 24.814699999999988, 'module_serialize': '2 bytes in 0.1 ms', 'initdb_open_ms': 1813.313173, 'template_copy_ms': 53.32054499999958, 'template_copy_open_ms': 207.58756300000005, 'reopen_existing_ms': 149.88196499999958, 'dump_ms': 133.1291709999996, 'dump_bytes': 40594432, 'load_data_dir_open_ms': 464.19200699999965, 'rss_mb': 582}

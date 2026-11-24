@@ -1,0 +1,13 @@
+{"stage": "machine-info", "status": "ok", "returncode": 0, "seconds": 1, "load1_after": 0.00}
+{"stage": "postgres", "status": "ok", "returncode": 0, "seconds": 1, "load1_after": 0.00}
+{"stage": "clone", "status": "ok", "returncode": 0, "seconds": 3, "load1_after": 0.16}
+{"stage": "build-cworker", "status": "ok", "returncode": 0, "seconds": 65, "load1_after": 0.72}
+{"stage": "build-wasm", "status": "ok", "returncode": 0, "seconds": 72, "load1_after": 0.99}
+{"stage": "build-sqlite-rs-worker", "status": "ok", "returncode": 0, "seconds": 67, "load1_after": 1.00}
+{"stage": "build-loadgen", "status": "ok", "returncode": 0, "seconds": 4, "load1_after": 1.08}
+{"stage": "build-duckdb-rs-worker", "status": "ok", "returncode": 0, "seconds": 14, "load1_after": 1.82}
+{"stage": "build-duckdb-cpp-worker", "status": "ok", "returncode": 0, "seconds": 24, "load1_after": 1.54}
+{"stage": "build-nodeworker", "status": "ok", "returncode": 0, "seconds": 1, "load1_after": 1.54}
+{"stage": "build-pglite", "status": "ok", "returncode": 0, "seconds": 1, "load1_after": 1.54}
+{"stage": "python-env", "status": "ok", "returncode": 0, "seconds": 4, "load1_after": 2.14}
+{"stage": "benchmarks", "status": "ok", "returncode": 0, "seconds": 3839}

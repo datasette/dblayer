@@ -1,0 +1,9 @@
+
+Multi-tenant C pool (load average 0.5 0.8 0.4 at start, 1.0 after; provisional)
+  new database on a warm pool: first result 1.38 ms; bare open round trip 0.428 ms
+  memory per open database inside the process: 170.7 KB footprint, 170.7 KB RSS (400 databases; process base 1.7 MB footprint); parent descriptors with all open: 11
+  the same with lookaside off (CPool(lookaside=(0, 0))): 131.4 KB footprint
+  one-row reads, each client on its own database: requests/s (parent CPU share of wall; worker CPU in cores; worker processes; parent descriptors)
+    in-process  1:    3489 (0.90; 0.00; 0p; 9fd)   4:    2849 (1.24; 0.00; 0p; 12fd)  16:    2678 (1.43; 0.00; 0p; 24fd)  64:    2603 (1.43; 0.00; 0p; 72fd)
+    cworker     1:    5859 (0.68; 0.29; 1p; 11fd)   4:    9494 (0.94; 0.72; 4p; 20fd)  16:   11429 (0.97; 0.90; 16p; 56fd)  64:    8297 (0.90; 0.86; 64p; 200fd)
+    cpool       1:    4885 (0.62; 0.27; 1p; 11fd)   4:    9695 (0.95; 0.70; 2p; 14fd)  16:   10344 (0.92; 0.89; 2p; 14fd)  64:   10779 (0.94; 1.04; 2p; 14fd)

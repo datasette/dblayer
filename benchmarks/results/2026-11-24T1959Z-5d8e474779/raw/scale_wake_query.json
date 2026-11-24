@@ -1,0 +1,128 @@
+{
+  "sqlite": {
+    "databases": 999,
+    "cold_median_ms": 0.6335109997053223,
+    "cold_p90_ms": 0.8214999998017447,
+    "warm_median_ms": 0.21289000005708658,
+    "warm_p90_ms": 0.2781600001071638,
+    "sleep_median_ms": 0.23251999982676352,
+    "wake_ms": 0.42062099964823574,
+    "load1_before": 0.76025390625,
+    "load1_after": 0.77978515625
+  },
+  "sqlite-wasm": {
+    "databases": 999,
+    "cold_median_ms": 1.8588819998512918,
+    "cold_p90_ms": 2.551612999923236,
+    "warm_median_ms": 0.3415099999983795,
+    "warm_p90_ms": 0.48367099998358754,
+    "sleep_median_ms": 0.3299609998066444,
+    "wake_ms": 1.5173719998529123,
+    "load1_before": 0.77978515625,
+    "load1_after": 0.77978515625
+  },
+  "duckdb": {
+    "databases": 999,
+    "cold_median_ms": 24.21790099970167,
+    "cold_p90_ms": 27.923783999995067,
+    "warm_median_ms": 1.2713710002572043,
+    "warm_p90_ms": 1.9656019999274577,
+    "sleep_median_ms": 5.049425000379415,
+    "wake_ms": 22.946529999444465,
+    "load1_before": 0.77978515625,
+    "load1_after": 0.8525390625
+  },
+  "sqlite-worker": {
+    "databases": 999,
+    "cold_median_ms": 130.28084900042813,
+    "cold_p90_ms": 145.48758199998701,
+    "warm_median_ms": 0.4826399999728892,
+    "warm_p90_ms": 0.6356809999488178,
+    "sleep_median_ms": 0.18545000011727097,
+    "wake_ms": 129.79820900045524,
+    "load1_before": 0.8525390625,
+    "load1_after": 0.97509765625
+  },
+  "sqlite-cworker": {
+    "databases": 999,
+    "cold_median_ms": 1.8951609999930952,
+    "cold_p90_ms": 2.3637220001546666,
+    "warm_median_ms": 0.14099999998506973,
+    "warm_p90_ms": 0.20531000018308987,
+    "sleep_median_ms": 0.12728000001516193,
+    "wake_ms": 1.7541610000080254,
+    "load1_before": 0.97509765625,
+    "load1_after": 0.97509765625
+  },
+  "sqlite-nodeworker": {
+    "databases": 999,
+    "cold_median_ms": 175.35366599986446,
+    "cold_p90_ms": 196.2049339999794,
+    "warm_median_ms": 1.027311000143527,
+    "warm_p90_ms": 1.55007100011062,
+    "sleep_median_ms": 1.6744810000091093,
+    "wake_ms": 174.32635499972093,
+    "load1_before": 0.97509765625,
+    "load1_after": 1.5361328125
+  },
+  "sqlite-cpool": {
+    "databases": 999,
+    "cold_median_ms": 2.3269920002348954,
+    "cold_p90_ms": 2.988032999837742,
+    "warm_median_ms": 0.17522000007375027,
+    "warm_p90_ms": 0.25839999989329954,
+    "sleep_median_ms": 0.28729000041494146,
+    "wake_ms": 2.151772000161145,
+    "load1_before": 1.5361328125,
+    "load1_after": 1.57373046875
+  },
+  "sqlite-rspool": {
+    "databases": 999,
+    "cold_median_ms": 2.8388420000737824,
+    "cold_p90_ms": 3.7383730000328796,
+    "warm_median_ms": 0.1923699996950745,
+    "warm_p90_ms": 0.29434999987643096,
+    "sleep_median_ms": 0.3336409999974421,
+    "wake_ms": 2.646472000378708,
+    "load1_before": 1.57373046875,
+    "load1_after": 1.447265625
+  },
+  "duckdb-worker": {
+    "databases": 999,
+    "cold_median_ms": 231.80785199974707,
+    "cold_p90_ms": 257.6610549999714,
+    "warm_median_ms": 1.7094509998969443,
+    "warm_p90_ms": 2.572891999989224,
+    "sleep_median_ms": 13.892551000026288,
+    "wake_ms": 230.09840099985013,
+    "load1_before": 1.447265625,
+    "load1_after": 0.9541015625
+  },
+  "duckdb-cppworker": {
+    "databases": 999,
+    "cold_median_ms": 57.210808000036195,
+    "cold_p90_ms": 64.40853399999469,
+    "warm_median_ms": 1.388100999974995,
+    "warm_p90_ms": 1.89159199999267,
+    "sleep_median_ms": 9.016687999974238,
+    "wake_ms": 55.8227070000612,
+    "load1_before": 0.9541015625,
+    "load1_after": 1.06640625
+  },
+  "duckdb-rsworker": {
+    "databases": 999,
+    "cold_median_ms": 53.030763999686314,
+    "cold_p90_ms": 59.11712899978738,
+    "warm_median_ms": 1.3657810000040627,
+    "warm_p90_ms": 1.8134920001102728,
+    "sleep_median_ms": 12.810091000119428,
+    "wake_ms": 51.66498299968225,
+    "load1_before": 1.06640625,
+    "load1_after": 0.96142578125
+  },
+  "pglite": {
+    "error": "RuntimeError: asyncio.run() cannot be called from a running event loop",
+    "load1_before": 0.96142578125,
+    "load1_after": 0.96484375
+  }
+}

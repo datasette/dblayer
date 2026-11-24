@@ -1,0 +1,61 @@
+round 1 rust msgpack 1: {"clients": 1, "codec": "msgpack", "requests": 198187, "rps": 24773, "worker_cpu_cores": 0.746, "worker_cpu_us_per_request": 30.12, "driver_cpu_cores": 0.171, "load1": 0.47}
+round 1 c msgpack 1: {"clients": 1, "codec": "msgpack", "requests": 187199, "rps": 23400, "worker_cpu_cores": 0.727, "worker_cpu_us_per_request": 31.09, "driver_cpu_cores": 0.171, "load1": 0.52}
+round 1 c msgpack 4: {"clients": 4, "codec": "msgpack", "requests": 467563, "rps": 58445, "worker_cpu_cores": 2.552, "worker_cpu_us_per_request": 43.67, "driver_cpu_cores": 0.255, "load1": 0.59}
+round 1 rust msgpack 4: {"clients": 4, "codec": "msgpack", "requests": 675536, "rps": 84442, "worker_cpu_cores": 2.769, "worker_cpu_us_per_request": 32.79, "driver_cpu_cores": 0.314, "load1": 0.62}
+round 1 c msgpack 16: {"clients": 16, "codec": "msgpack", "requests": 520843, "rps": 65105, "worker_cpu_cores": 4.512, "worker_cpu_us_per_request": 69.31, "driver_cpu_cores": 0.262, "load1": 1.22}
+round 1 rust msgpack 16: {"clients": 16, "codec": "msgpack", "requests": 830347, "rps": 103793, "worker_cpu_cores": 5.141, "worker_cpu_us_per_request": 49.53, "driver_cpu_cores": 0.312, "load1": 2.19}
+round 1 c msgpack 64: {"clients": 64, "codec": "msgpack", "requests": 279396, "rps": 34917, "worker_cpu_cores": 3.234, "worker_cpu_us_per_request": 92.63, "driver_cpu_cores": 0.199, "load1": 2.9}
+round 1 rust msgpack 64: {"clients": 64, "codec": "msgpack", "requests": 951938, "rps": 118984, "worker_cpu_cores": 6.345, "worker_cpu_us_per_request": 53.32, "driver_cpu_cores": 0.259, "load1": 2.69}
+round 1 rust json 1: {"clients": 1, "codec": "json", "requests": 184154, "rps": 23019, "worker_cpu_cores": 0.737, "worker_cpu_us_per_request": 32.04, "driver_cpu_cores": 0.176, "load1": 4.23}
+round 1 c json 1: {"clients": 1, "codec": "json", "requests": 190881, "rps": 23860, "worker_cpu_cores": 0.725, "worker_cpu_us_per_request": 30.39, "driver_cpu_cores": 0.182, "load1": 3.74}
+round 1 c json 4: {"clients": 4, "codec": "json", "requests": 495137, "rps": 61892, "worker_cpu_cores": 2.622, "worker_cpu_us_per_request": 42.37, "driver_cpu_cores": 0.264, "load1": 3.32}
+round 1 rust json 4: {"clients": 4, "codec": "json", "requests": 610219, "rps": 76277, "worker_cpu_cores": 2.67, "worker_cpu_us_per_request": 35.0, "driver_cpu_cores": 0.316, "load1": 3.37}
+round 1 c json 16: {"clients": 16, "codec": "json", "requests": 499575, "rps": 62444, "worker_cpu_cores": 4.504, "worker_cpu_us_per_request": 72.12, "driver_cpu_cores": 0.27, "load1": 3.39}
+round 1 rust json 16: {"clients": 16, "codec": "json", "requests": 857048, "rps": 107129, "worker_cpu_cores": 5.21, "worker_cpu_us_per_request": 48.63, "driver_cpu_cores": 0.325, "load1": 4.0}
+round 1 c json 64: {"clients": 64, "codec": "json", "requests": 264174, "rps": 33015, "worker_cpu_cores": 3.044, "worker_cpu_us_per_request": 92.21, "driver_cpu_cores": 0.196, "load1": 4.13}
+round 1 rust json 64: {"clients": 64, "codec": "json", "requests": 992653, "rps": 124075, "worker_cpu_cores": 6.293, "worker_cpu_us_per_request": 50.72, "driver_cpu_cores": 0.274, "load1": 3.95}
+round 2 c msgpack 1: {"clients": 1, "codec": "msgpack", "requests": 197471, "rps": 24684, "worker_cpu_cores": 0.725, "worker_cpu_us_per_request": 29.37, "driver_cpu_cores": 0.179, "load1": 3.71}
+round 2 rust msgpack 1: {"clients": 1, "codec": "msgpack", "requests": 204611, "rps": 25576, "worker_cpu_cores": 0.74, "worker_cpu_us_per_request": 28.93, "driver_cpu_cores": 0.177, "load1": 3.3}
+round 2 rust msgpack 4: {"clients": 4, "codec": "msgpack", "requests": 596404, "rps": 74549, "worker_cpu_cores": 2.601, "worker_cpu_us_per_request": 34.89, "driver_cpu_cores": 0.309, "load1": 3.02}
+round 2 c msgpack 4: {"clients": 4, "codec": "msgpack", "requests": 424423, "rps": 53051, "worker_cpu_cores": 2.409, "worker_cpu_us_per_request": 45.4, "driver_cpu_cores": 0.255, "load1": 2.93}
+round 2 rust msgpack 16: {"clients": 16, "codec": "msgpack", "requests": 794972, "rps": 99370, "worker_cpu_cores": 5.042, "worker_cpu_us_per_request": 50.74, "driver_cpu_cores": 0.31, "load1": 3.02}
+round 2 c msgpack 16: {"clients": 16, "codec": "msgpack", "requests": 430869, "rps": 53854, "worker_cpu_cores": 4.042, "worker_cpu_us_per_request": 75.06, "driver_cpu_cores": 0.235, "load1": 3.74}
+round 2 rust msgpack 64: {"clients": 64, "codec": "msgpack", "requests": 582819, "rps": 72847, "worker_cpu_cores": 4.586, "worker_cpu_us_per_request": 62.95, "driver_cpu_cores": 0.207, "load1": 4.63}
+round 2 c msgpack 64: {"clients": 64, "codec": "msgpack", "requests": 206807, "rps": 25844, "worker_cpu_cores": 2.753, "worker_cpu_us_per_request": 106.52, "driver_cpu_cores": 0.166, "load1": 6.36}
+round 2 c json 1: {"clients": 1, "codec": "json", "requests": 179487, "rps": 22436, "worker_cpu_cores": 0.714, "worker_cpu_us_per_request": 31.81, "driver_cpu_cores": 0.17, "load1": 6.73}
+round 2 rust json 1: {"clients": 1, "codec": "json", "requests": 180144, "rps": 22518, "worker_cpu_cores": 0.726, "worker_cpu_us_per_request": 32.25, "driver_cpu_cores": 0.167, "load1": 5.93}
+round 2 rust json 4: {"clients": 4, "codec": "json", "requests": 615805, "rps": 76975, "worker_cpu_cores": 2.729, "worker_cpu_us_per_request": 35.45, "driver_cpu_cores": 0.316, "load1": 5.33}
+round 2 c json 4: {"clients": 4, "codec": "json", "requests": 446151, "rps": 55768, "worker_cpu_cores": 2.527, "worker_cpu_us_per_request": 45.32, "driver_cpu_cores": 0.259, "load1": 5.22}
+round 2 rust json 16: {"clients": 16, "codec": "json", "requests": 689940, "rps": 86241, "worker_cpu_cores": 4.374, "worker_cpu_us_per_request": 50.71, "driver_cpu_cores": 0.29, "load1": 5.03}
+round 2 c json 16: {"clients": 16, "codec": "json", "requests": 486114, "rps": 60763, "worker_cpu_cores": 4.466, "worker_cpu_us_per_request": 73.5, "driver_cpu_cores": 0.266, "load1": 5.19}
+round 2 rust json 64: {"clients": 64, "codec": "json", "requests": 810042, "rps": 101249, "worker_cpu_cores": 6.002, "worker_cpu_us_per_request": 59.28, "driver_cpu_cores": 0.256, "load1": 5.49}
+round 2 c json 64: {"clients": 64, "codec": "json", "requests": 250130, "rps": 31259, "worker_cpu_cores": 3.139, "worker_cpu_us_per_request": 100.43, "driver_cpu_cores": 0.197, "load1": 8.94}
+round 3 rust msgpack 1: {"clients": 1, "codec": "msgpack", "requests": 194691, "rps": 24336, "worker_cpu_cores": 0.741, "worker_cpu_us_per_request": 30.46, "driver_cpu_cores": 0.176, "load1": 8.87}
+round 3 c msgpack 1: {"clients": 1, "codec": "msgpack", "requests": 209550, "rps": 26194, "worker_cpu_cores": 0.731, "worker_cpu_us_per_request": 27.92, "driver_cpu_cores": 0.177, "load1": 7.66}
+round 3 c msgpack 4: {"clients": 4, "codec": "msgpack", "requests": 497506, "rps": 62188, "worker_cpu_cores": 2.577, "worker_cpu_us_per_request": 41.45, "driver_cpu_cores": 0.266, "load1": 7.12}
+round 3 rust msgpack 4: {"clients": 4, "codec": "msgpack", "requests": 675008, "rps": 84376, "worker_cpu_cores": 2.809, "worker_cpu_us_per_request": 33.29, "driver_cpu_cores": 0.32, "load1": 6.64}
+round 3 c msgpack 16: {"clients": 16, "codec": "msgpack", "requests": 521619, "rps": 65200, "worker_cpu_cores": 4.572, "worker_cpu_us_per_request": 70.13, "driver_cpu_cores": 0.264, "load1": 6.39}
+round 3 rust msgpack 16: {"clients": 16, "codec": "msgpack", "requests": 895151, "rps": 111882, "worker_cpu_cores": 5.291, "worker_cpu_us_per_request": 47.29, "driver_cpu_cores": 0.319, "load1": 7.08}
+round 3 c msgpack 64: {"clients": 64, "codec": "msgpack", "requests": 282413, "rps": 35294, "worker_cpu_cores": 3.254, "worker_cpu_us_per_request": 92.21, "driver_cpu_cores": 0.202, "load1": 7.52}
+round 3 rust msgpack 64: {"clients": 64, "codec": "msgpack", "requests": 900963, "rps": 112594, "worker_cpu_cores": 6.231, "worker_cpu_us_per_request": 55.34, "driver_cpu_cores": 0.254, "load1": 6.82}
+round 3 rust json 1: {"clients": 1, "codec": "json", "requests": 179811, "rps": 22476, "worker_cpu_cores": 0.746, "worker_cpu_us_per_request": 33.2, "driver_cpu_cores": 0.171, "load1": 7.08}
+round 3 c json 1: {"clients": 1, "codec": "json", "requests": 200415, "rps": 25052, "worker_cpu_cores": 0.727, "worker_cpu_us_per_request": 29.04, "driver_cpu_cores": 0.179, "load1": 6.14}
+round 3 c json 4: {"clients": 4, "codec": "json", "requests": 480563, "rps": 60070, "worker_cpu_cores": 2.619, "worker_cpu_us_per_request": 43.59, "driver_cpu_cores": 0.267, "load1": 5.73}
+round 3 rust json 4: {"clients": 4, "codec": "json", "requests": 626668, "rps": 78333, "worker_cpu_cores": 2.749, "worker_cpu_us_per_request": 35.09, "driver_cpu_cores": 0.316, "load1": 5.38}
+round 3 c json 16: {"clients": 16, "codec": "json", "requests": 515104, "rps": 64387, "worker_cpu_cores": 4.557, "worker_cpu_us_per_request": 70.78, "driver_cpu_cores": 0.272, "load1": 5.08}
+round 3 rust json 16: {"clients": 16, "codec": "json", "requests": 760226, "rps": 95025, "worker_cpu_cores": 4.79, "worker_cpu_us_per_request": 50.41, "driver_cpu_cores": 0.307, "load1": 5.08}
+round 3 c json 64: {"clients": 64, "codec": "json", "requests": 246202, "rps": 30768, "worker_cpu_cores": 3.034, "worker_cpu_us_per_request": 98.62, "driver_cpu_cores": 0.191, "load1": 5.28}
+round 3 rust json 64: {"clients": 64, "codec": "json", "requests": 880422, "rps": 110048, "worker_cpu_cores": 6.137, "worker_cpu_us_per_request": 55.77, "driver_cpu_cores": 0.26, "load1": 5.18}
+
+3 round(s) of 8 s per cell; medians
+
+| codec | clients | C req/s | Rust req/s | Rust / C | C worker CPU (cores) | Rust worker CPU (cores) | C CPU µs/req | Rust CPU µs/req |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| msgpack | 1 | 24,684 | 24,773 | 1.00 | 0.73 | 0.74 | 29.4 | 30.1 |
+| msgpack | 4 | 58,445 | 84,376 | 1.44 | 2.55 | 2.77 | 43.7 | 33.3 |
+| msgpack | 16 | 65,105 | 103,793 | 1.59 | 4.51 | 5.14 | 70.1 | 49.5 |
+| msgpack | 64 | 34,917 | 112,594 | 3.22 | 3.23 | 6.23 | 92.6 | 55.3 |
+| json | 1 | 23,860 | 22,518 | 0.94 | 0.72 | 0.74 | 30.4 | 32.2 |
+| json | 4 | 60,070 | 76,975 | 1.28 | 2.62 | 2.73 | 43.6 | 35.1 |
+| json | 16 | 62,444 | 95,025 | 1.52 | 4.50 | 4.79 | 72.1 | 50.4 |
+| json | 64 | 31,259 | 110,048 | 3.52 | 3.04 | 6.14 | 98.6 | 55.8 |

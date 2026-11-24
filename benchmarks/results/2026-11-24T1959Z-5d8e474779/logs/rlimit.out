@@ -1,0 +1,255 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.8, pytest-9.2.0, pluggy-1.7.0 -- /data/src/.venv/bin/python
+rootdir: /data/src
+configfile: pyproject.toml
+plugins: asyncio-1.5.0, anyio-4.16.0, timeout-2.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+timeout: 300.0s
+timeout method: signal
+timeout func_only: False
+collecting ... collected 1033 items / 985 deselected / 48 selected
+
+tests/faults/test_duckdb_worker_faults.py::test_duckdb_memory_limit_applies_inside_the_worker[duckdb-worker] PASSED [  2%]
+tests/faults/test_duckdb_worker_faults.py::test_duckdb_memory_limit_applies_inside_the_worker[duckdb-cppworker] PASSED [  4%]
+tests/faults/test_duckdb_worker_faults.py::test_duckdb_memory_limit_applies_inside_the_worker[duckdb-rsworker] PASSED [  6%]
+tests/faults/test_duckdb_worker_faults.py::test_memory_limit_capability[duckdb-worker] PASSED [  8%]
+tests/faults/test_duckdb_worker_faults.py::test_memory_limit_capability[duckdb-cppworker] PASSED [ 10%]
+tests/faults/test_duckdb_worker_faults.py::test_memory_limit_capability[duckdb-rsworker] PASSED [ 12%]
+tests/faults/test_duckdb_worker_faults.py::test_rlimit_as_bounds_the_whole_worker[duckdb-worker] PASSED [ 14%]
+tests/faults/test_duckdb_worker_faults.py::test_rlimit_as_bounds_the_whole_worker[duckdb-cppworker] PASSED [ 16%]
+tests/faults/test_duckdb_worker_faults.py::test_rlimit_as_bounds_the_whole_worker[duckdb-rsworker] PASSED [ 18%]
+tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[py-worker] PASSED [ 20%]
+tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[c-worker] PASSED [ 22%]
+tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[c-pool] PASSED [ 25%]
+tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[rust-pool] PASSED [ 27%]
+tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[node-worker] PASSED [ 29%]
+tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[py-worker] PASSED [ 31%]
+tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[c-worker] PASSED [ 33%]
+tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[c-pool] PASSED [ 35%]
+tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[rust-pool] FAILED [ 37%]
+tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[node-worker] PASSED [ 39%]
+tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[py-worker] PASSED [ 41%]
+tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[c-worker] PASSED [ 43%]
+tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[c-pool] PASSED [ 45%]
+tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[rust-pool] PASSED [ 47%]
+tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[node-worker] PASSED [ 50%]
+tests/faults/test_worker_limits.py::test_rlimit_as_stops_python_side_allocation[py-worker] PASSED [ 52%]
+tests/faults/test_worker_limits.py::test_rlimit_as_stops_python_side_allocation[c-worker] PASSED [ 54%]
+tests/faults/test_worker_limits.py::test_rlimit_as_stops_python_side_allocation[c-pool] PASSED [ 56%]
+tests/faults/test_worker_limits.py::test_rlimit_as_stops_python_side_allocation[rust-pool] PASSED [ 58%]
+tests/faults/test_worker_limits.py::test_rlimit_as_stops_python_side_allocation[node-worker] SKIPPED [ 60%]
+tests/faults/test_worker_limits.py::test_rlimit_as_in_init_hook_function[py-worker] PASSED [ 62%]
+tests/faults/test_worker_limits.py::test_rlimit_as_in_init_hook_function[c-worker] SKIPPED [ 64%]
+tests/faults/test_worker_limits.py::test_rlimit_as_in_init_hook_function[c-pool] SKIPPED [ 66%]
+tests/faults/test_worker_limits.py::test_rlimit_as_in_init_hook_function[rust-pool] SKIPPED [ 68%]
+tests/faults/test_worker_limits.py::test_rlimit_as_in_init_hook_function[node-worker] SKIPPED [ 70%]
+tests/worker/test_cworker_multi.py::test_heap_limit_is_process_wide_and_one_tenant_recovers[c] PASSED [ 72%]
+tests/worker/test_cworker_multi.py::test_heap_limit_is_process_wide_and_one_tenant_recovers[rust] PASSED [ 75%]
+tests/worker/test_duckdb_worker.py::test_memory_limit_and_threads_apply_inside_the_worker[duckdb-worker] PASSED [ 77%]
+tests/worker/test_duckdb_worker.py::test_memory_limit_and_threads_apply_inside_the_worker[duckdb-cppworker] PASSED [ 79%]
+tests/worker/test_duckdb_worker.py::test_memory_limit_and_threads_apply_inside_the_worker[duckdb-rsworker] PASSED [ 81%]
+tests/worker/test_nodeworker.py::test_sql_limits_and_heap_limit PASSED   [ 83%]
+tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[1] PASSED     [ 85%]
+tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[2] PASSED     [ 87%]
+tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[4] PASSED     [ 89%]
+tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[8] PASSED     [ 91%]
+tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[16] PASSED    [ 93%]
+tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[32] PASSED    [ 95%]
+tests/test_sqlite_apsw.py::test_memory_limit_stops_a_huge_value PASSED   [ 97%]
+tests/test_clickhouse_backend.py::test_memory_limit PASSED               [100%]
+
+=================================== FAILURES ===================================
+_________ test_huge_single_allocation_stopped_by_heap_limit[rust-pool] _________
+
+tmp_path = PosixPath('/data/tmp/pytest-of-bench/pytest-0/test_huge_single_allocation_st3')
+make_worker = <function make_worker.<locals>.make at 0x7fa0daf25850>
+
+    async def test_huge_single_allocation_stopped_by_heap_limit(tmp_path, make_worker):
+        db = Database(make_worker(tmp_path / "h.db", memory_limit_mb=128))
+        try:
+            with pytest.raises(ResourceLimitExceeded):
+>               await db.execute("select length(randomblob(500000000))")
+
+tests/faults/test_worker_limits.py:60: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+dblayer/core/database.py:457: in execute
+    async with (await self._use_pool()).connection(write=False) as conn:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/uv-python/cpython-3.14.8-linux-x86_64-gnu/lib/python3.14/contextlib.py:214: in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+dblayer/core/pool.py:138: in connection
+    conn = await self.acquire(write=write)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+dblayer/core/pool.py:167: in acquire
+    entry = await self._open_entry(write)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+dblayer/core/pool.py:193: in _open_entry
+    conn = await self._backend.open(write=write)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+dblayer/backends/sqlite_cpool.py:582: in open
+    await conn._open()
+dblayer/backends/sqlite_cpool.py:636: in _open
+    await super()._open()
+dblayer/backends/sqlite_worker.py:1091: in _open
+    reply = await self._proc.call(msg, owner=self)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+dblayer/backends/sqlite_cpool.py:156: in call
+    reply = await self._wait(fut, mid)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MuxWorkerProcess pid=28448 dead handles=0>
+fut = <Future finished exception=WorkerCrashed("worker 28448 exited with code -6; stderr: thread 'watchdog' (28449) panicked... Cannot allocate memory (os error 12)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace")>
+mid = 2
+
+    async def _wait(self, fut: asyncio.Future[Any], mid: int) -> Any:
+        try:
+            # asyncio.wait, not shield: once its waiter is cancelled, a
+            # shielded future that later fails (the kill's WorkerCrashed)
+            # is logged by asyncio as "exception in shielded future".
+            await asyncio.wait({fut})
+>           return fut.result()
+                   ^^^^^^^^^^^^
+E           dblayer.errors.WorkerCrashed: worker 28448 exited with code -6; stderr: thread 'watchdog' (28449) panicked at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/pal/unix/stack_overflow.rs:237:13:
+E           failed to allocate an alternative stack: Cannot allocate memory (os error 12)
+E           note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+dblayer/backends/sqlite_cpool.py:226: WorkerCrashed
+==================================== PASSES ====================================
+____________ test_rlimit_as_bounds_the_whole_worker[duckdb-worker] _____________
+----------------------------- Captured stdout call -----------------------------
+
+[duckdb-worker] over RLIMIT_AS: ResourceLimitExceeded: Out of Memory Error: Failed to allocate block of 16777216 bytes (bad allocation)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET pre
+___________ test_rlimit_as_bounds_the_whole_worker[duckdb-cppworker] ___________
+----------------------------- Captured stdout call -----------------------------
+
+[duckdb-worker] over RLIMIT_AS: ResourceLimitExceeded: Out of Memory Error: Failed to allocate block of 16777216 bytes (bad allocation)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET pre
+___________ test_rlimit_as_bounds_the_whole_worker[duckdb-rsworker] ____________
+----------------------------- Captured stdout call -----------------------------
+
+[duckdb-worker] over RLIMIT_AS: ResourceLimitExceeded: Out of Memory Error: Failed to allocate block of 16777216 bytes (bad allocation)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET pre
+_ test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[py-worker] _
+----------------------------- Captured stdout call -----------------------------
+
+[worker] multi-GB value: ResourceLimitExceeded after 368 ms; parent RSS change 0 bytes
+_ test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[c-worker] _
+----------------------------- Captured stdout call -----------------------------
+
+[worker] multi-GB value: ResourceLimitExceeded after 370 ms; parent RSS change 0 bytes
+_ test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[c-pool] _
+----------------------------- Captured stdout call -----------------------------
+
+[worker] multi-GB value: ResourceLimitExceeded after 290 ms; parent RSS change 0 bytes
+_ test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[rust-pool] _
+----------------------------- Captured stdout call -----------------------------
+
+[worker] multi-GB value: ResourceLimitExceeded after 274 ms; parent RSS change 0 bytes
+_ test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[node-worker] _
+----------------------------- Captured stdout call -----------------------------
+
+[worker] multi-GB value: ResourceLimitExceeded after 11196 ms; parent RSS change 0 bytes
+____________ test_rlimit_as_stops_python_side_allocation[py-worker] ____________
+----------------------------- Captured stdout call -----------------------------
+
+[worker] RLIMIT_AS: ResourceLimitExceeded: worker ran out of memory (memory limit)
+____________ test_rlimit_as_stops_python_side_allocation[c-worker] _____________
+----------------------------- Captured stdout call -----------------------------
+
+[worker] RLIMIT_AS: ResourceLimitExceeded: out of memory
+_____________ test_rlimit_as_stops_python_side_allocation[c-pool] ______________
+----------------------------- Captured stdout call -----------------------------
+
+[worker] RLIMIT_AS: ResourceLimitExceeded: worker ran out of memory (memory limit)
+____________ test_rlimit_as_stops_python_side_allocation[rust-pool] ____________
+----------------------------- Captured stdout call -----------------------------
+
+[worker] RLIMIT_AS: ResourceLimitExceeded: out of memory
+_______________ test_rlimit_as_in_init_hook_function[py-worker] ________________
+----------------------------- Captured stdout call -----------------------------
+
+[worker] init-hook function over RLIMIT_AS: ResourceLimitExceeded: worker ran out of memory (memory limit)
+_________________________ test_rlimit_as_against_v8[1] _________________________
+----------------------------- Captured stdout call -----------------------------
+
+[nodeworker] RLIMIT_AS 1 GB: failed (exit -5); ['14: 0x7f6cee _start [/opt/node/bin/node]']
+_________________________ test_rlimit_as_against_v8[2] _________________________
+----------------------------- Captured stdout call -----------------------------
+
+[nodeworker] RLIMIT_AS 2 GB: failed (exit 0); []
+_________________________ test_rlimit_as_against_v8[4] _________________________
+----------------------------- Captured stdout call -----------------------------
+
+[nodeworker] RLIMIT_AS 4 GB: failed (exit 0); []
+_________________________ test_rlimit_as_against_v8[8] _________________________
+----------------------------- Captured stdout call -----------------------------
+
+[nodeworker] RLIMIT_AS 8 GB: failed (exit 0); []
+________________________ test_rlimit_as_against_v8[16] _________________________
+----------------------------- Captured stdout call -----------------------------
+
+[nodeworker] RLIMIT_AS 16 GB: failed (exit 0); []
+________________________ test_rlimit_as_against_v8[32] _________________________
+----------------------------- Captured stdout call -----------------------------
+
+[nodeworker] RLIMIT_AS 32 GB: failed (exit 0); []
+=========================== short test summary info ============================
+PASSED tests/faults/test_duckdb_worker_faults.py::test_duckdb_memory_limit_applies_inside_the_worker[duckdb-worker]
+PASSED tests/faults/test_duckdb_worker_faults.py::test_duckdb_memory_limit_applies_inside_the_worker[duckdb-cppworker]
+PASSED tests/faults/test_duckdb_worker_faults.py::test_duckdb_memory_limit_applies_inside_the_worker[duckdb-rsworker]
+PASSED tests/faults/test_duckdb_worker_faults.py::test_memory_limit_capability[duckdb-worker]
+PASSED tests/faults/test_duckdb_worker_faults.py::test_memory_limit_capability[duckdb-cppworker]
+PASSED tests/faults/test_duckdb_worker_faults.py::test_memory_limit_capability[duckdb-rsworker]
+PASSED tests/faults/test_duckdb_worker_faults.py::test_rlimit_as_bounds_the_whole_worker[duckdb-worker]
+PASSED tests/faults/test_duckdb_worker_faults.py::test_rlimit_as_bounds_the_whole_worker[duckdb-cppworker]
+PASSED tests/faults/test_duckdb_worker_faults.py::test_rlimit_as_bounds_the_whole_worker[duckdb-rsworker]
+PASSED tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[py-worker]
+PASSED tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[c-worker]
+PASSED tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[c-pool]
+PASSED tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[rust-pool]
+PASSED tests/faults/test_worker_limits.py::test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged[node-worker]
+PASSED tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[py-worker]
+PASSED tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[c-worker]
+PASSED tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[c-pool]
+PASSED tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[node-worker]
+PASSED tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[py-worker]
+PASSED tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[c-worker]
+PASSED tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[c-pool]
+PASSED tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[rust-pool]
+PASSED tests/faults/test_worker_limits.py::test_memory_limit_capability_is_linux_only[node-worker]
+PASSED tests/faults/test_worker_limits.py::test_rlimit_as_stops_python_side_allocation[py-worker]
+PASSED tests/faults/test_worker_limits.py::test_rlimit_as_stops_python_side_allocation[c-worker]
+PASSED tests/faults/test_worker_limits.py::test_rlimit_as_stops_python_side_allocation[c-pool]
+PASSED tests/faults/test_worker_limits.py::test_rlimit_as_stops_python_side_allocation[rust-pool]
+PASSED tests/faults/test_worker_limits.py::test_rlimit_as_in_init_hook_function[py-worker]
+PASSED tests/worker/test_cworker_multi.py::test_heap_limit_is_process_wide_and_one_tenant_recovers[c]
+PASSED tests/worker/test_cworker_multi.py::test_heap_limit_is_process_wide_and_one_tenant_recovers[rust]
+PASSED tests/worker/test_duckdb_worker.py::test_memory_limit_and_threads_apply_inside_the_worker[duckdb-worker]
+PASSED tests/worker/test_duckdb_worker.py::test_memory_limit_and_threads_apply_inside_the_worker[duckdb-cppworker]
+PASSED tests/worker/test_duckdb_worker.py::test_memory_limit_and_threads_apply_inside_the_worker[duckdb-rsworker]
+PASSED tests/worker/test_nodeworker.py::test_sql_limits_and_heap_limit
+PASSED tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[1]
+PASSED tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[2]
+PASSED tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[4]
+PASSED tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[8]
+PASSED tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[16]
+PASSED tests/worker/test_nodeworker.py::test_rlimit_as_against_v8[32]
+PASSED tests/test_sqlite_apsw.py::test_memory_limit_stops_a_huge_value
+PASSED tests/test_clickhouse_backend.py::test_memory_limit
+SKIPPED [1] tests/faults/test_worker_limits.py:85: the Node worker does not use RLIMIT_AS (V8 reserves more address space than any useful limit; its WebAssembly memory maximum caps SQLite instead)
+SKIPPED [3] tests/faults/conftest.py:74: init hooks need the Python worker
+SKIPPED [1] tests/faults/test_worker_limits.py:109: the Node worker does not use RLIMIT_AS (V8 reserves more address space than any useful limit; its WebAssembly memory maximum caps SQLite instead)
+FAILED tests/faults/test_worker_limits.py::test_huge_single_allocation_stopped_by_heap_limit[rust-pool]
+=========== 1 failed, 42 passed, 5 skipped, 985 deselected in 23.53s ===========

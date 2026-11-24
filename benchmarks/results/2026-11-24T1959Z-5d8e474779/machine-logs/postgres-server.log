@@ -1,0 +1,17 @@
+2026-11-24 19:54:58.553 UTC [785] LOG:  starting PostgreSQL 18.7 (Debian 18.7-1.pgdg13+5) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+2026-11-24 19:54:58.555 UTC [785] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2026-11-24 19:54:58.559 UTC [791] LOG:  database system was shut down at 2026-11-24 19:54:58 UTC
+2026-11-24 19:54:58.563 UTC [785] LOG:  database system is ready to accept connections
+2026-11-24 19:59:58.665 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 20:01:38.099 UTC [789] LOG:  checkpoint complete: wrote 993 buffers (6.1%), wrote 3 SLRU buffers; 1 WAL file(s) added, 0 removed, 0 recycled; write=99.398 s, sync=0.003 s, total=99.435 s; sync files=312, longest=0.002 s, average=0.001 s; distance=4742 kB, estimate=4742 kB; lsn=0/1C153C0, redo lsn=0/1C15330
+2026-11-24 20:19:58.065 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 20:24:28.010 UTC [789] LOG:  checkpoint complete: wrote 174 buffers (1.1%), wrote 2 SLRU buffers; 0 WAL file(s) added, 0 removed, 10 recycled; write=269.935 s, sync=0.004 s, total=269.945 s; sync files=893, longest=0.001 s, average=0.001 s; distance=162397 kB, estimate=162397 kB; lsn=0/D986568, redo lsn=0/BAAC788
+2026-11-24 20:29:58.344 UTC [789] LOG:  checkpoint starting: time
+2026-11-24 20:34:28.068 UTC [789] LOG:  checkpoint complete: wrote 7372 buffers (45.0%), wrote 2 SLRU buffers; 0 WAL file(s) added, 0 removed, 22 recycled; write=269.698 s, sync=0.001 s, total=269.724 s; sync files=76, longest=0.001 s, average=0.001 s; distance=358445 kB, estimate=358445 kB; lsn=0/218BEF98, redo lsn=0/218B7E08
+2026-11-24 21:03:12.569 UTC [785] LOG:  received fast shutdown request
+2026-11-24 21:03:12.570 UTC [785] LOG:  aborting any active transactions
+2026-11-24 21:03:12.572 UTC [785] LOG:  background worker "logical replication launcher" (PID 794) exited with exit code 1
+2026-11-24 21:03:12.574 UTC [789] LOG:  shutting down
+2026-11-24 21:03:12.575 UTC [789] LOG:  checkpoint starting: shutdown immediate
+2026-11-24 21:03:12.577 UTC [789] LOG:  checkpoint complete: wrote 4 buffers (0.0%), wrote 0 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.003 s; sync files=1, longest=0.001 s, average=0.001 s; distance=28 kB, estimate=322603 kB; lsn=0/218BF048, redo lsn=0/218BF048
+2026-11-24 21:03:12.599 UTC [785] LOG:  database system is shut down

@@ -1,0 +1,16 @@
+make: Entering directory '/data/src/duckdb-cpp-worker'
+./fetch-libduckdb.sh
+downloading https://github.com/duckdb/duckdb/releases/download/v2.0.1/duckdb-shared-libs-linux-amd64.tar.gz
+vendor/libduckdb-2.0.1-linux-amd64
+mkdir -p build
+g++ -std=c++17 -O2 -g  -Wall -Wextra -Wshadow -Ivendor/libduckdb-2.0.1-linux-amd64 -I../cworker/src -c -o build/worker.o src/worker.cpp
+g++ -std=c++17 -O2 -g  -Wall -Wextra -Wshadow -Ivendor/libduckdb-2.0.1-linux-amd64 -I../cworker/src -c -o build/server.o src/server.cpp
+g++ -std=c++17 -O2 -g  -Wall -Wextra -Wshadow -Ivendor/libduckdb-2.0.1-linux-amd64 -I../cworker/src -c -o build/exec.o src/exec.cpp
+g++ -std=c++17 -O2 -g  -Wall -Wextra -Wshadow -Ivendor/libduckdb-2.0.1-linux-amd64 -I../cworker/src -c -o build/values.o src/values.cpp
+g++ -std=c++17 -O2 -g  -Wall -Wextra -Wshadow -Ivendor/libduckdb-2.0.1-linux-amd64 -I../cworker/src -c -o build/types.o src/types.cpp
+g++ -std=c++17 -O2 -g  -Wall -Wextra -Wshadow -Ivendor/libduckdb-2.0.1-linux-amd64 -I../cworker/src -c -o build/schema.o src/schema.cpp
+g++ -std=c++17 -O2 -g  -Wall -Wextra -Wshadow -Ivendor/libduckdb-2.0.1-linux-amd64 -I../cworker/src -c -o build/errors.o src/errors.cpp
+g++ -std=c++17 -O2 -g  -Wall -Wextra -Wshadow -Ivendor/libduckdb-2.0.1-linux-amd64 -I../cworker/src -c -o build/wire.o src/wire.cpp
+cc -std=c11 -O2 -g  -Wall -Wextra -Wshadow -c -o build/codec.o ../cworker/src/codec.c
+g++ -O2 -g  -o build/dblayer-duckdb-worker build/worker.o build/server.o build/exec.o build/values.o build/types.o build/schema.o build/errors.o build/wire.o build/codec.o -Lvendor/libduckdb-2.0.1-linux-amd64 -lduckdb -lpthread -Wl,-rpath,'$ORIGIN/../vendor/libduckdb-2.0.1-linux-amd64'
+make: Leaving directory '/data/src/duckdb-cpp-worker'
