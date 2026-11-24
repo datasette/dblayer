@@ -38,3 +38,43 @@ Each entry is tagged: **Found** (facts discovered), **Built** (what now exists),
 ### Decision: Python floor raised to 3.12
 
 Simon agreed to raise the floor from the spec's 3.11 to 3.12. The SQLite backend uses `sqlite3.connect(autocommit=True)` to switch off implicit transactions, in place of `isolation_level=None`. The milestone 1 subagent was told mid-run.
+
+## 2026-11-23: milestone 1 done (core API and in-process SQLite)
+
+### Built
+
+- Commit `4d317bd`. About 2,500 lines of library code and a 374-test suite (3 capability-gated skips on the in-memory variant). I re-ran it myself: passes on CPython 3.15 (uv's default here) and on 3.12, in under 3 seconds.
+- `Database` with `execute`, `stream`, `execute_write`, all introspection methods, `sleep()` and `close()`. Creating one opens nothing.
+- `core/params.py`: a hand-written scanner that rewrites `:name` and `?` to four target styles, with 115 test cases. Postgres and DuckDB output is unit-tested but has not yet run against the real engines.
+- `core/pool.py`: checkout/return pool, 3 readers and one writer per database. The write slot is a FIFO `asyncio.Lock`; there is no writer thread.
+- `backends/sqlite.py`: all ten connection methods, progress-handler time limits, init hook, named in-memory databases.
+- Conformance tests are parametrised by a `BACKENDS` list in `tests/conftest.py`; a new backend is one entry. Tests skip by capability with `@pytest.mark.requires("flag")`.
+
+### Decision: departures from the spec in milestone 1
+
+- **Limits take a `DEFAULT` sentinel.** Each `Database` holds default limits; a call can override them, and `None` means "no limit". The spec only showed per-call limits.
+- **`execute_write` takes `time_limit_ms`.** This resolves the inconsistency noted earlier.
+- **Extra modules:** `errors.py`, `core/results.py`, `core/database.py`, `core/executor.py`, to avoid import cycles.
+- **Extra exceptions:** `ParameterError` and `TableNotFound`, both subclasses of `QueryError`.
+- **Extra capability flag:** `returning`.
+- **Error mapping lives on the dialect** (`Dialect.map_exception`), because the backend protocol had no hook for it.
+- **Stream time limit is a budget of time spent inside the engine**, not wall-clock time, so a slow consumer does not use it up. The spec did not say which.
+- **`change_hint()` is synchronous.** It only stats files, so making it a coroutine bought nothing.
+- **`Column` is a `str` subclass** with a `.type` attribute, so `result.columns == ("id", "title")` holds as the spec's example shows.
+- **In-memory databases** report `sleep_releases_everything=False` and keep a private anchor connection in the backend.
+
+### Found
+
+- Python's `sqlite3` reports `rowcount=-1` for `WITH ... INSERT`; the backend falls back to `select changes(), last_insert_rowid()`.
+- SQLite gives no declared type for result columns, so `Column.type` is `None` on this backend.
+- A subagent's `git push` was refused by the permission classifier in its own session, though the commit did reach GitHub. Later subagents are told to commit, try one push, and leave it if refused.
+
+### Idea: open problems to discuss
+
+- **`last_pk` is the SQLite rowid.** It differs from the primary key for non-integer keys and is stale after an upsert that took the update path. A portable `last_pk` probably has to come from `RETURNING` on the primary-key columns. Worth deciding whether `last_pk` should exist at all, or whether callers should ask for `RETURNING`.
+- **Abandoned streams.** Breaking out of `async for chunk in db.stream(...)` returns the connection only when the generator is finalised. An open stream also holds a SQLite read transaction. An `async with db.stream(...) as rows:` form would make release deterministic.
+- **Sleep while connections are checked out** closes them on return but never calls `backend.close()`. Harmless for SQLite, wrong for DuckDB, whose instance must be closed to release the file. Milestone 3 needs to fix this.
+- **A `Database` is bound to the event loop that first used it**, because the pool's asyncio primitives are. Datasette tests create many loops; needs a decision.
+- **Cancellation waits for the thread.** A cancelled call interrupts the statement and waits for the worker thread before re-raising, so a connection is never used by two threads. A query that ignores the interrupt therefore delays cancellation. This is the in-process case the worker backend exists to fix.
+- **Creating a missing file on first read.** With the default `create=True`, reading a database whose file does not exist creates an empty file. Datasette would probably prefer an error for reads.
+- **No type checker has been run** over the code yet.
