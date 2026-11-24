@@ -151,8 +151,7 @@ pub fn read(conn: &Connection) -> Result<Value, DuckError> {
         // The last PRIMARY KEY row wins, as in the Python dict.
         constraints
             .iter()
-            .filter(|c| s(&c[0]) == table && s(&c[1]) == "PRIMARY KEY")
-            .next_back()
+            .rfind(|c| s(&c[0]) == table && s(&c[1]) == "PRIMARY KEY")
             .map(|c| strs(&c[2]))
             .unwrap_or_default()
     };

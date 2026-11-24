@@ -144,9 +144,9 @@ pub fn time_tz(micros: i64, offset_s: i32) -> Value {
     ext_str(EXT_TIME, format!("{}{}", time_iso(micros), offset_iso(offset_s as i64)))
 }
 
-/// INTERVAL as the Python client converts it: `timedelta(days=months * 30
-/// + days, microseconds=micros)`, sent as `[days, seconds, microseconds]`
-/// after Python's normalisation.
+/// INTERVAL as the Python client converts it:
+/// `timedelta(days=months * 30 + days, microseconds=micros)`, sent as
+/// `[days, seconds, microseconds]` after Python's normalisation.
 pub fn interval(months: i32, days: i32, micros: i64) -> Result<Value, ConvError> {
     let total = (months as i128 * 30 + days as i128) * MICROS_PER_DAY as i128 + micros as i128;
     let d = total.div_euclid(MICROS_PER_DAY as i128);

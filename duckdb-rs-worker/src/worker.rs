@@ -919,7 +919,7 @@ impl Results {
         Results { columns: vec![], rows: vec![], truncated: false, rowcount }
     }
 
-    fn to_wire(self) -> Value {
+    fn into_wire(self) -> Value {
         let mut out = Value::obj(vec![("columns", Value::List(self.columns.iter().map(|(n, _)| Value::str(n)).collect()))]);
         if !self.columns.is_empty() {
             out.set("types", Value::List(self.columns.iter().map(|(_, t)| Value::Str(t.name())).collect()));
@@ -1114,7 +1114,7 @@ impl ConnWorker {
                 let max_bytes = msg.opt("max_result_bytes").and_then(Value::as_int_lossy);
                 let r = self.execute(ctl, msg.get("sql").and_then(Value::as_str).unwrap_or(""), msg.opt("params"), tl, max_rows, max_bytes);
                 let r = self.guarded(r)?;
-                Ok(Some(self.with_tx(Value::obj(vec![("result", r.to_wire())]))))
+                Ok(Some(self.with_tx(Value::obj(vec![("result", r.into_wire())]))))
             }
             "execute_many" => {
                 let seq = match msg.get("params_seq") {
@@ -1139,7 +1139,7 @@ impl ConnWorker {
                         _ => return Err(Fail::Builtin { class: "ValueError", message: "bad batch statement".into() }),
                     };
                     let r = self.execute(ctl, &sql, params, tl, max_rows, None);
-                    out.push(self.guarded(r)?.to_wire());
+                    out.push(self.guarded(r)?.into_wire());
                 }
                 Ok(Some(self.with_tx(Value::obj(vec![("result", Value::List(out))]))))
             }
