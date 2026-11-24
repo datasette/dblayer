@@ -9,7 +9,7 @@ import pytest
 
 from dblayer import Database, Registry
 
-from ..helpers import count_open_fds
+from ..helpers import IdleClock, count_open_fds, wait_until
 
 pytestmark = pytest.mark.requires("sleep_releases_everything")
 
@@ -29,9 +29,12 @@ async def _prime(make_backend, n):
     return backends
 
 
-async def test_idle_timeout_releases_every_descriptor(make_backend):
+async def test_idle_timeout_releases_every_descriptor(make_backend, monkeypatch):
+    # Time is moved by hand: with a real 50 ms timeout a loaded machine
+    # could close everything before the "descriptors are open" check.
+    clock = IdleClock(monkeypatch)
     backends = await _prime(make_backend, 8)
-    async with Registry(idle_timeout=0.05, max_threads=4) as registry:
+    async with Registry(idle_timeout=100, max_threads=4) as registry:
         dbs = [registry.add(f"d{i}", Database(b)) for i, b in enumerate(backends)]
         await dbs[0].execute("select 1")
         await dbs[0].sleep()
@@ -40,9 +43,14 @@ async def test_idle_timeout_releases_every_descriptor(make_backend):
             await asyncio.gather(*(d.execute("select count(*) from t") for d in dbs))
             await asyncio.gather(*(d.execute_write("insert into t values (1)") for d in dbs))
             assert count_open_fds() > baseline
-            await asyncio.sleep(0.2)
-            assert registry.stats().open_connections == 0
-            assert count_open_fds() == baseline
+            clock.advance(100, registry._hub)
+            await wait_until(
+                lambda: registry.stats().open_connections == 0
+                and all(d.state == "asleep" and d._transition is None for d in dbs)
+            )
+            # Every descriptor comes back (polled: a closed socket or file
+            # can take a moment to leave the descriptor table).
+            await wait_until(lambda: count_open_fds() == baseline)
 
 
 async def test_cap_bounds_descriptors_under_load(make_backend):

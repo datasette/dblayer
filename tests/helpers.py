@@ -39,6 +39,39 @@ async def wait_until(
         await asyncio.sleep(interval)
 
 
+class IdleClock:
+    """Moves the idle-timeout clock by hand.
+
+    Replaces ``time`` in ``dblayer.core.pool`` (``last_used`` stamps) and
+    ``dblayer.core.hub`` (the timer) with real ``time.monotonic()`` plus an
+    offset. ``advance(s)`` makes ``s`` seconds pass at once and runs the
+    hub's timer, so a test can say "60 s later" exactly, however slowly the
+    machine runs. Use long timeouts (tens of seconds) so the real time the
+    test takes is negligible next to them."""
+
+    def __init__(self, monkeypatch: object) -> None:
+        import types
+
+        import dblayer.core.hub as hub_module
+        import dblayer.core.pool as pool_module
+
+        self.offset = 0.0
+        fake = types.SimpleNamespace(**vars(time))
+        fake.monotonic = lambda: time.monotonic() + self.offset
+        for module in (hub_module, pool_module):
+            monkeypatch.setattr(module, "time", fake)  # type: ignore[attr-defined]
+
+    def advance(self, seconds: float, hub: object) -> None:
+        """``seconds`` pass; ``hub``'s timer runs now (the real one it had
+        armed would only fire ``seconds`` too late)."""
+        self.offset += seconds
+        timer = hub._timer  # type: ignore[attr-defined]
+        if timer is not None:
+            timer.cancel()
+            hub._timer = None  # type: ignore[attr-defined]
+        hub._on_timer()  # type: ignore[attr-defined]
+
+
 def check_latency(name: str, seconds: float, spec_bound: float, *, functional: float = EVENTUALLY_S) -> None:
     """A latency promise from the spec, split in two.
 
