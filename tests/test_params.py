@@ -283,3 +283,11 @@ def test_cache_does_not_leak_params():
 )
 def test_leading_keyword(sql, kw):
     assert leading_keyword(sql) == kw
+
+
+def test_dollar_parameters():
+    from dblayer.core.params import dollar_parameters
+
+    sql = "select $1, '$2', $3::int, \"$4\", $tag$ $5 $tag$, a$6, $$ $7 $$ -- $8\n, $10"
+    found = [(sql[s:e], n) for s, e, n in dollar_parameters(sql, POSTGRES_FLAVOR)]
+    assert found == [("$1", 1), ("$3", 3), ("$10", 10)]

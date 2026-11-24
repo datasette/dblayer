@@ -54,6 +54,7 @@ __all__ = [
     "find_placeholders",
     "rewrite",
     "leading_keyword",
+    "dollar_parameters",
 ]
 
 type Params = Mapping[str, Any] | Sequence[Any] | None
@@ -144,11 +145,14 @@ def _is_name_char(ch: str) -> bool:
     return ch.isalnum() or ch == "_"
 
 
-def _scan(sql: str, flavor: SqlFlavor, words: bool) -> Iterator[tuple[str, int, int]]:
+def _scan(
+    sql: str, flavor: SqlFlavor, words: bool, dollars: bool = False
+) -> Iterator[tuple[str, int, int]]:
     """Yield significant tokens as ``(kind, start, end)``.
 
-    kinds: ``named``, ``qmark``, ``numbered`` and, when ``words`` is true,
-    ``word``, ``(`` and ``)``. Strings, comments and quoted identifiers are
+    kinds: ``named``, ``qmark``, ``numbered``; when ``words`` is true,
+    ``word``, ``(`` and ``)``; when ``dollars`` is true, ``dollar`` (a
+    ``$1`` parameter). Strings, comments and quoted identifiers are
     consumed silently.
     """
     n = len(sql)
@@ -190,7 +194,19 @@ def _scan(sql: str, flavor: SqlFlavor, words: bool) -> Iterator[tuple[str, int, 
             else:
                 i += 1
         elif c == "$":
-            i = _skip_dollar(sql, i, flavor)
+            if (
+                dollars
+                and i + 1 < n
+                and sql[i + 1].isdigit()
+                and (i == 0 or not _is_ident_char(sql[i - 1]))
+            ):
+                j = i + 1
+                while j < n and sql[j].isdigit():
+                    j += 1
+                yield ("dollar", i, j)
+                i = j
+            else:
+                i = _skip_dollar(sql, i, flavor)
         elif c == ":":
             if i + 1 < n and sql[i + 1] == ":":
                 i += 2  # ::type cast
@@ -458,6 +474,19 @@ def rewrite(
             code="WRONG_PARAMETER_COUNT",
         )
     return t.sql, list(params)
+
+
+@functools.lru_cache(maxsize=2048)
+def dollar_parameters(
+    sql: str, flavor: SqlFlavor = POSTGRES_FLAVOR
+) -> tuple[tuple[int, int, int], ...]:
+    """``(start, end, number)`` of every ``$n`` parameter outside strings,
+    comments, quoted identifiers and dollar quotes."""
+    return tuple(
+        (start, end, int(sql[start + 1 : end]))
+        for kind, start, end in _scan(sql, flavor, words=False, dollars=True)
+        if kind == "dollar"
+    )
 
 
 _STATEMENT_WORDS = frozenset(
