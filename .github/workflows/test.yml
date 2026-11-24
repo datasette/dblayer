@@ -28,6 +28,8 @@ env:
   PYTEST_ADDOPTS: -v --durations=30 --timeout=300 --timeout-method=signal
   DBLAYER_HANG_DUMP_S: "240"
   DBLAYER_HANG_DUMP_FILE: ${{ github.workspace }}/hang-dump.txt
+  # The Rust jobs' toolchain (the Rust DuckDB and SQLite workers).
+  RUST_TOOLCHAIN: "1.94.1"
 
 jobs:
   # The Linux suite runs as one job per backend family (DBLAYER_CI_SHARD,
@@ -302,6 +304,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # Rust pinned (also in the cache key), so a new stable's lints or
+      # codegen do not change a run: 1.100 added the clippy lint that first
+      # failed the SQLite job. Bump it on purpose, with clippy run locally.
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy && rustup default "$RUST_TOOLCHAIN" && rustc --version
       - uses: astral-sh/setup-uv@v10.4.0
         with:
           python-version: "3.14"
@@ -315,8 +322,8 @@ jobs:
           path: |
             ~/.cargo/registry
             duckdb-rs-worker/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('duckdb-rs-worker/Cargo.lock', 'duckdb-rs-worker/src/**') }}
-          restore-keys: cargo-${{ runner.os }}-
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('duckdb-rs-worker/Cargo.lock', 'duckdb-rs-worker/src/**') }}
+          restore-keys: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
       - name: Build the Rust DuckDB worker
         run: make -C duckdb-rs-worker && duckdb-rs-worker/target/release/dblayer-duckdb-rsworker --version
       - name: Rust unit tests
@@ -340,6 +347,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # Rust pinned (also in the cache key), so a new stable's lints or
+      # codegen do not change a run: 1.100 added the clippy lint that first
+      # failed the SQLite job. Bump it on purpose, with clippy run locally.
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy && rustup default "$RUST_TOOLCHAIN" && rustc --version
       - uses: astral-sh/setup-uv@v10.4.0
         with:
           python-version: "3.14"
@@ -353,8 +365,8 @@ jobs:
           path: |
             ~/.cargo/registry
             sqlite-rs-worker/target
-          key: cargo-sqlite-${{ runner.os }}-${{ hashFiles('sqlite-rs-worker/Cargo.lock', 'sqlite-rs-worker/src/**', 'sqlite-rs-worker/build.rs') }}
-          restore-keys: cargo-sqlite-${{ runner.os }}-
+          key: cargo-sqlite-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('sqlite-rs-worker/Cargo.lock', 'sqlite-rs-worker/src/**', 'sqlite-rs-worker/build.rs') }}
+          restore-keys: cargo-sqlite-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
       - name: Build the Rust SQLite worker
         run: make -C sqlite-rs-worker && sqlite-rs-worker/target/release/dblayer-sqlite-rsworker --version
       - name: Clippy
