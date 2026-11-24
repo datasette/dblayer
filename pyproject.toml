@@ -42,6 +42,11 @@ include = ["dblayer", "dblayer.*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# A passing test's tmp_path is removed at its teardown. The suite makes
+# tens of gigabytes of databases in one session (a PGlite data directory is
+# about 40 MB; the full run filled 45 GB on macOS), more than a CI runner's
+# free disk; a failed test's directory is kept for inspection.
+tmp_path_retention_policy = "failed"
 testpaths = ["tests"]
 markers = [
     "requires(*flags): skip unless the backend has every named capability flag set",

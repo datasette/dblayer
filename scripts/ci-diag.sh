@@ -27,6 +27,7 @@ snapshot)
     echo "== ci-diag snapshot $(date -u +%H:%M:%S) =="
     echo "cpus: $(getconf _NPROCESSORS_ONLN)  load: $(uptime | sed 's/.*load averages*: //')"
     if command -v free >/dev/null; then free -m; else vm_stat | head -5; fi
+    echo "disk: $(df -h . | awk 'NR==2 {print $4 " free of " $2}')  tmp: $(du -sh "${TMPDIR:-/tmp}" 2>/dev/null | cut -f1)"
     echo "workers: $(workers)"
     echo "processes: $(ps -A | wc -l | tr -d ' ')"
     echo "top 15 by RSS:"
@@ -35,7 +36,7 @@ snapshot)
 monitor)
     interval="${2:-60}"
     while sleep "$interval"; do
-        echo "[ci-diag $(date -u +%H:%M:%S)] load $(uptime | sed 's/.*load averages*: //') | $(mem) | $(workers)"
+        echo "[ci-diag $(date -u +%H:%M:%S)] load $(uptime | sed 's/.*load averages*: //') | $(mem) | disk free $(df -h . | awk 'NR==2 {print $4}') | $(workers)"
     done
     ;;
 esac
