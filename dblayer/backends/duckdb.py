@@ -50,6 +50,7 @@ false; ``memory_limit`` is true.
 
 from __future__ import annotations
 
+import contextlib
 import heapq
 import itertools
 import os
@@ -57,7 +58,7 @@ import re
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Executor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -257,6 +258,7 @@ _DML = frozenset({"INSERT", "UPDATE", "DELETE", "MERGE_INTO"})
 _RESULT_TYPES = frozenset({"SELECT", "EXPLAIN", "PRAGMA", "CALL"})
 _READ_TYPES = _RESULT_TYPES
 _FETCH_BATCH = 1024
+_REINTERRUPT_S = 0.005
 _PARSE_CACHE_MAX = 4096
 
 
@@ -426,6 +428,13 @@ class DuckDBConnection:
         self._in_tx = False
         self._tx_failed = False
         self._cancelled = False
+        # Interrupt bookkeeping, shared with the interrupter thread and the
+        # event loop: ``_active`` while a statement runs on this cursor,
+        # ``_stmt`` numbers statements so a late interrupt cannot hit the
+        # next one.
+        self._lock = threading.Lock()
+        self._active = False
+        self._stmt = 0
 
     def __repr__(self) -> str:
         return f"<DuckDBConnection {'write' if self.write else 'read'} {self._backend.path.name}>"
@@ -437,8 +446,50 @@ class DuckDBConnection:
         )
 
     def _on_cancel(self) -> None:
-        self._cancelled = True
-        self._cur.interrupt()
+        with self._lock:
+            self._cancelled = True
+            stmt = self._stmt
+        self._interrupt_while_active(stmt)
+
+    def _interrupt_while_active(self, stmt: int) -> None:
+        """Interrupt statement number ``stmt``, again every few ms until it
+        returns. DuckDB drops an ``interrupt()`` that arrives before the
+        statement has really started (the flag is reset when a query
+        begins), so a single interrupt sent just after the thread marked the
+        statement active would be lost and the statement would run on:
+        forever, for an unbounded query. A statement that has not started
+        yet sees ``_cancelled`` instead; one that has finished is left
+        alone, so the cleanup (ROLLBACK of the read wrapper) is never
+        interrupted."""
+        with self._lock:
+            if not self._active or self._stmt != stmt:
+                return
+            self._cur.interrupt()
+        _interrupter.schedule(_REINTERRUPT_S, lambda: self._interrupt_while_active(stmt))
+
+    @contextlib.contextmanager
+    def _statement(self, time_limit_ms: int | None) -> Iterator[None]:
+        """Worker-thread side of a statement: refuse to start if already
+        cancelled, mark it active for ``_interrupt_while_active`` and arm
+        its time limit."""
+        with self._lock:
+            if self._cancelled:
+                raise QueryInterrupted("query interrupted (cancelled)")
+            self._stmt += 1
+            stmt = self._stmt
+            self._active = True
+        token = None
+        if time_limit_ms is not None:
+            token = _interrupter.schedule(
+                max(time_limit_ms, 0) / 1000, lambda: self._interrupt_while_active(stmt)
+            )
+        try:
+            yield
+        finally:
+            if token is not None:
+                _interrupter.cancel(token)
+            with self._lock:
+                self._active = False
 
     def _guarded[T](self, fn: Callable[..., T], args: tuple[Any, ...]) -> T:
         import duckdb
@@ -520,7 +571,7 @@ class DuckDBConnection:
         wrapped = self._read_only_wrapper()
         ok = False
         try:
-            with _TimeLimit(self._cur, time_limit_ms):
+            with self._statement(time_limit_ms):
                 result = self._run_statement(kind, sql, params, max_rows, max_result_bytes)
             ok = True
             return result
@@ -602,7 +653,8 @@ class DuckDBConnection:
             wrapped = self._read_only_wrapper()
             ok = False
             try:
-                cur = self._cur.executemany(sql, params_seq)
+                with self._statement(None):
+                    cur = self._cur.executemany(sql, params_seq)
                 ok = True
                 return WriteResult(rowcount=cur.rowcount)
             finally:
