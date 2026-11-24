@@ -521,6 +521,15 @@ async def alter_table(
         raise ValueError("a column cannot be both renamed and dropped")
     if not (rename or drop_list or types_map or pk is not UNSET):
         return OperationResult()
+    # Checked before anything runs: a native DROP COLUMN would silently
+    # drop the primary key along with its column.
+    if pk is UNSET and any(p in drop_list for p in info.primary_keys):
+        raise ValueError("cannot drop a primary key column without passing a new pk")
+    if pk is not UNSET:
+        final = {rename.get(c, c) for c in names if c not in drop_list}
+        bad = set(_pk_tuple(pk)) - final
+        if bad:
+            raise ValueError(f"pk column(s) {sorted(bad)} not in the table")
 
     native = d.native_alter_for(info, rename=rename, drop=drop_list, types=types_map)
     if rename and "rename" in native:
@@ -537,6 +546,14 @@ async def alter_table(
         for c in drop_list:
             await tx.execute(d.drop_column_sql(table, c))
         drop_list = []
+    if pk is not UNSET and "pk" in d.native_alter and not (rename or drop_list or types_map):
+        current = _table(await tx.schema(), table)
+        new_pk = _pk_tuple(pk)
+        if new_pk != current.primary_keys:
+            constraint = next((i.name for i in current.indexes if i.origin == "pk"), None)
+            for sql in d.set_primary_key_sql(table, constraint, new_pk):
+                await tx.execute(sql)
+        pk = UNSET
     if rename or drop_list or types_map or pk is not UNSET:
         await rebuild_table(tx, table, rename=rename, drop=drop_list, types=types_map, pk=pk)
     return OperationResult()
@@ -563,7 +580,7 @@ def check_rebuildable(info: TableInfo) -> None:
     opts = _table_options(info)
     if "WITHOUT" in opts or "STRICT" in opts:
         raise NotSupported(f"cannot rebuild {info.name!r}: WITHOUT ROWID / STRICT tables are not supported")
-    if re.search(r"\bCHECK\s*\(", info.definition or "", re.IGNORECASE):
+    if info.checks or re.search(r"\bCHECK\s*\(", info.definition or "", re.IGNORECASE):
         raise NotSupported(f"cannot rebuild {info.name!r}: CHECK constraints would be lost")
 
 

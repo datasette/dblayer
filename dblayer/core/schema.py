@@ -93,6 +93,9 @@ class TableInfo:
     virtual: bool = False
     hidden: bool = False
     """A table callers normally don't list (SQLite FTS shadow tables)."""
+    checks: tuple[str, ...] = ()
+    """CHECK constraints (``CHECK (...)`` text), where the backend reports
+    them separately from ``definition`` (PostgreSQL)."""
 
     @property
     def primary_keys(self) -> tuple[str, ...]:

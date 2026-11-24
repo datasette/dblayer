@@ -1022,10 +1022,13 @@ async def _read_schema(raw: "asyncpg.Connection", schema: str) -> Schema:
         columns.setdefault(oid, []).append((name, type_, not_null, default, generated))
     pks: dict[int, tuple[str, ...]] = {}
     fks: dict[int, list[ForeignKey]] = {}
-    for oid, _name, kind, cols, other, other_cols, on_upd, on_del, _def in await raw.fetch(
+    checks: dict[int, list[str]] = {}
+    for oid, _name, kind, cols, other, other_cols, on_upd, on_del, cdef in await raw.fetch(
         _CONSTRAINTS_SQL, schema
     ):
-        if kind == "p":
+        if kind == "c":
+            checks.setdefault(oid, []).append(cdef)
+        elif kind == "p":
             pks[oid] = tuple(cols)
         elif kind == "f":
             fks.setdefault(oid, []).append(
@@ -1081,6 +1084,7 @@ async def _read_schema(raw: "asyncpg.Connection", schema: str) -> Schema:
                 foreign_keys=tuple(fks.get(oid, ())),
                 indexes=tuple(indexes.get(oid, ())),
                 virtual=kind == "f",
+                checks=tuple(checks.get(oid, ())),
             )
     return Schema(version=version, tables=tables, views=views, triggers=triggers)
 
