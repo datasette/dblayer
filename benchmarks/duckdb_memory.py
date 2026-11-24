@@ -72,7 +72,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-MODES = ["in-process", "in-process+gc", "in-process+trim", "in-process+settings", "worker", "worker-pool"]
+MODES = ["in-process", "in-process+gc", "in-process+trim", "in-process+settings", "worker", "worker-pool", "rust-worker"]
 
 ANALYTICAL = (
     "select grp, count(*) n, avg(val) a, max(s) m, sum(length(s)) l "
@@ -262,6 +262,11 @@ async def memory_child(mode: str, paths: list[Path], cap: int, cycles: int, conc
 
         def make(p: Path) -> Any:
             return DuckDBWorker(p, pool=pool)
+    elif mode == "rust-worker":
+        from dblayer.backends.duckdb_rsworker import DuckDBRustWorker
+
+        def make(p: Path) -> Any:
+            return DuckDBRustWorker(p)
     else:
         from dblayer.backends.duckdb_worker import DuckDBWorker
 
@@ -357,6 +362,12 @@ async def overhead(template: Path, root: Path) -> dict[str, Any]:
     # and a pool process that stays up because another database keeps it.
     variants["worker+spare"] = lambda p: DuckDBWorker(p, spares=spares)
     variants["worker-pool (process already up)"] = lambda p: DuckDBWorker(p, pool=pool)
+    from dblayer.backends.duckdb_rsworker import DuckDBRustWorker, binary_unavailable
+
+    if binary_unavailable() is None:
+        variants["rust-worker-json"] = lambda p: DuckDBRustWorker(p, codec="json")
+        if "msgpack" in available_codecs():
+            variants["rust-worker-msgpack"] = lambda p: DuckDBRustWorker(p, codec="msgpack")
     out: dict[str, Any] = {}
     for name, make in variants.items():
         path = root / f"overhead-{name}.duckdb"
@@ -416,6 +427,134 @@ async def overhead(template: Path, root: Path) -> dict[str, Any]:
     return out
 
 
+# -- the native-worker run -------------------------------------------------------------------
+#
+# ``native``: what a worker process costs before and after it opens a
+# database, where its start-up time goes, whether a point read waits for a
+# long query on the same database, and insert_rows with and without the
+# appender. Compares the Python DuckDB worker and the Rust one.
+
+LONG = "select count(*) from range(3000000000) a where (a.range * 7) % 1000003 = 5"
+
+
+async def _floor(kind: str, template: Path, root: Path) -> dict[str, Any]:
+    from dataclasses import replace
+
+    from dblayer.backends.duckdb_worker import DUCKDB_ENGINE, DUCKDB_PRELOAD
+    from dblayer.backends.duckdb_rsworker import RUST_ENGINE, ConcurrentWorkerProcess, find_binary
+    from dblayer.backends.sqlite_worker import WorkerConfig, WorkerProcess
+
+    path = root / f"floor-{kind}.duckdb"
+    shutil.copyfile(template, path)
+    if kind == "rust-worker":
+        cfg = replace(WorkerConfig(codec="msgpack"), executable=find_binary())
+        proc: WorkerProcess = ConcurrentWorkerProcess(cfg)
+        engine = RUST_ENGINE
+    else:
+        cfg = WorkerConfig(codec="json", preload=DUCKDB_PRELOAD)
+        proc = WorkerProcess(cfg)
+        engine = DUCKDB_ENGINE
+    out: dict[str, Any] = {}
+    t0 = time.perf_counter()
+    await proc.start()
+    out["spawn_to_hello_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    await asyncio.sleep(0.3)
+    assert proc.pid is not None
+    out["floor_mb"] = [_mb(x) for x in mem_of(proc.pid) or (0, 0)]
+    t1 = time.perf_counter()
+    conn = (await proc.call({"type": "open", "path": str(path), "mode": "read", "engine": engine,
+                             "config": {"memory_limit": "256MB", "threads": 2}}, owner=None))["conn"]
+    out["open_ms"] = round((time.perf_counter() - t1) * 1000, 1)
+    t2 = time.perf_counter()
+    await proc.call({"type": "execute", "sql": "select * from t where id = 1", "conn": conn}, owner=None)
+    out["first_query_ms"] = round((time.perf_counter() - t2) * 1000, 1)
+    # Without the 0.3 s pause after hello (taken to read the floor).
+    out["spawn_to_first_result_ms"] = round(out["spawn_to_hello_ms"] + out["open_ms"] + out["first_query_ms"], 1)
+    await asyncio.sleep(0.3)
+    out["one_db_open_mb"] = [_mb(x) for x in mem_of(proc.pid) or (0, 0)]
+    await proc.call({"type": "execute", "sql": ANALYTICAL, "conn": conn}, owner=None)
+    await asyncio.sleep(0.3)
+    out["after_analytical_mb"] = [_mb(x) for x in mem_of(proc.pid) or (0, 0)]
+    proc.close()
+    return out
+
+
+async def _concurrent(make: Any, path: Path) -> dict[str, Any]:
+    from dblayer import Database
+
+    db = Database(make(path), idle_timeout=None, max_read_connections=4)
+    try:
+        await db.execute(POINT, {"id": 1})
+        quiet = []
+        for i in range(50):
+            t0 = time.perf_counter()
+            await db.execute(POINT, {"id": i})
+            quiet.append(time.perf_counter() - t0)
+        long = asyncio.ensure_future(db.execute(LONG, time_limit_ms=8000))
+        await asyncio.sleep(0.2)
+        busy = []
+        for i in range(10):
+            t0 = time.perf_counter()
+            await db.execute(POINT, {"id": i})
+            busy.append(time.perf_counter() - t0)
+            if long.done():
+                break
+        still_running = not long.done()
+        long.cancel()
+        try:
+            await long
+        except BaseException:  # noqa: BLE001 - cancelled or interrupted
+            pass
+        return {
+            "point_read_quiet_ms": round(statistics.median(quiet) * 1000, 2),
+            "point_read_during_long_query_ms": round(statistics.median(busy) * 1000, 2),
+            "long_query_still_running": still_running,
+        }
+    finally:
+        await db.close()
+
+
+async def _inserts(make: Any, root: Path, name: str, rows: int) -> dict[str, Any]:
+    from dblayer import Database
+
+    data = [{"id": i, "name": f"n{i}", "val": i * 0.5, "d": None} for i in range(rows)]
+    out = {}
+    for native in (False, True):
+        db = Database(make(root / f"ins-{name}-{native}.duckdb"), native_operations=native)
+        try:
+            await db.execute_write("create table t (id bigint, name varchar, val double, d date)")
+            t0 = time.perf_counter()
+            await db.insert_rows("t", data)
+            out["appender_ms" if native else "default_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+            assert (await db.execute("select count(*) from t")).rows == [(rows,)]
+        finally:
+            await db.close()
+    out["speedup"] = round(out["default_ms"] / out["appender_ms"], 1)
+    return out
+
+
+async def native(template: Path, root: Path) -> dict[str, Any]:
+    from dblayer.backends.duckdb import DuckDB
+    from dblayer.backends.duckdb_rsworker import DuckDBRustWorker
+    from dblayer.backends.duckdb_worker import DuckDBWorker
+
+    out: dict[str, Any] = {"floor": {}, "concurrent": {}, "insert_rows_10k": {}}
+    for kind in ("worker", "rust-worker"):
+        runs = [await _floor(kind, template, root) for _ in range(5)]
+        summary = dict(runs[-1])  # memory: the last run
+        for k in ("spawn_to_hello_ms", "open_ms", "first_query_ms", "spawn_to_first_result_ms"):
+            summary[k] = round(statistics.median(r[k] for r in runs), 1)  # times: the median
+        out["floor"][kind] = summary
+    makers = {"in-process": lambda p: DuckDB(p), "worker": lambda p: DuckDBWorker(p),
+              "rust-worker": lambda p: DuckDBRustWorker(p)}
+    for name, make in makers.items():
+        path = root / f"conc-{name}.duckdb"
+        shutil.copyfile(template, path)
+        out["concurrent"][name] = await _concurrent(make, path)
+        out["insert_rows_10k"][name] = await _inserts(make, root, name, 10_000)
+    return out
+
+
 # -- orchestration --------------------------------------------------------------------------
 
 
@@ -472,7 +611,7 @@ def print_memory_row(r: dict[str, Any]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", nargs="?", default="all", choices=["memory", "overhead", "all"])
+    ap.add_argument("what", nargs="?", default="all", choices=["memory", "overhead", "native", "all"])
     ap.add_argument("--n", type=int, nargs="+", default=[50, 150])
     ap.add_argument("--modes", nargs="+", default=MODES, choices=MODES)
     ap.add_argument("--rows", type=int, default=100_000)
@@ -500,6 +639,13 @@ def main() -> None:
         template = make_template(root, args.rows)
         if args.what in ("memory", "all"):
             out["memory"] = run_memory(args, root, template)
+        if args.what in ("native", "all"):
+            before = machine_state()
+            out["native"] = asyncio.run(native(template, root))
+            out["native_machine"] = {"before": before, "after": machine_state()}
+            print(f"\nnative (load {before['load']} -> {out['native_machine']['after']['load']}):")
+            for part, r in out["native"].items():
+                print(f"  {part}: {json.dumps(r)}")
         if args.what in ("overhead", "all"):
             before = machine_state()
             out["overhead"] = asyncio.run(overhead(template, root))
