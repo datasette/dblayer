@@ -39,6 +39,7 @@ SLOW_SQL = {
     "duckdb": "select sum(a.range * b.range) from range(1000000) a, range(1000000) b",
 }
 SLOW_SQL["sqlite-worker"] = SLOW_SQL["sqlite"]
+SLOW_SQL["sqlite-cworker"] = SLOW_SQL["sqlite"]
 SLOW_SQL["duckdb-worker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["postgres-psycopg"] = SLOW_SQL["postgres"]
 

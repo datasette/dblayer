@@ -163,6 +163,18 @@ def sqlite_worker_backend(path: Path) -> Backend:
     return SqliteWorker(path)
 
 
+def _sqlite_cworker(config: DemoConfig) -> Backend:
+    # Experimental: the same worker protocol, served by a C program.
+    try:
+        from dblayer.backends.sqlite_cworker import SqliteCWorker, binary_unavailable
+    except ImportError as e:
+        raise Unavailable(f"the SqliteCWorker backend is not available here ({e})") from e
+    reason = binary_unavailable()
+    if reason:
+        raise Unavailable(reason)
+    return SqliteCWorker(config.data_dir / "sqlite-cworker.db")
+
+
 def _duckdb(config: DemoConfig) -> Backend:
     from dblayer.backends.duckdb import DuckDB  # ImportError without the duckdb extra
 
@@ -188,6 +200,7 @@ def duckdb_worker_backend(path: Path, **options: object) -> Backend:
 DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite", "SQLite, in process", "SqliteInProcess", _sqlite),
     DemoSpec("sqlite-worker", "SQLite, in a worker process", "SqliteWorker", _sqlite_worker),
+    DemoSpec("sqlite-cworker", "SQLite, in a C worker process", "SqliteCWorker", _sqlite_cworker),
     DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),
     DemoSpec("duckdb", "DuckDB", "DuckDB", _duckdb),
     DemoSpec("duckdb-worker", "DuckDB, in a worker process", "DuckDBWorker", _duckdb_worker),
