@@ -238,6 +238,97 @@ async def test_duckdb_other_types_json_parse_equal(ddb):
             assert p == q or _cells_equal(str(p), str(q)), (k, p, q)
 
 
+@pytest.fixture
+async def pgdb() -> AsyncIterator[Database]:
+    from . import pg
+
+    reason = pg.unavailable_psycopg()
+    if reason:
+        pytest.skip(reason)
+    backend = pg.make("psycopg")
+    db = Database(backend)
+    try:
+        await db.execute_write(
+            "create table t (id bigint primary key, i bigint, f float8, s text, b bytea, ok boolean, r real)"
+        )
+        data = []
+        for r in rows(3):
+            s = r[3].replace("\x00", "") if r[3] is not None else None  # PostgreSQL text has no NUL
+            data.append((r[0], r[1], r[2], s, r[4], [None, True, False][r[0] % 3], 1.1 if r[0] % 2 else None))
+        async with db.transaction() as tx:
+            await tx.execute_many("insert into t values (:a, :b, :c, :d, :e, :f::boolean, :g)",
+                                  [dict(zip("abcdefg", d)) for d in data])
+        await db.execute_write(
+            "create table x (id bigint, d date, ts timestamp, tz timestamptz, dec numeric(12, 3), u uuid, "
+            "l bigint[], j jsonb)"
+        )
+        await db.execute_write(
+            "insert into x values "
+            "(1, date '2024-01-02', timestamp '2024-01-02 03:04:05', timestamptz '2024-01-02 03:04:05+00', 1.5, "
+            "'12345678-1234-1234-1234-123456789abc', array[1, 2], '{\"a\": 1}'), "
+            "(2, date '1999-12-31', timestamp '2024-01-02 03:04:05.5', "
+            "timestamptz '2024-06-02 03:04:05.123456+02', -0.001, null, '{}', '[]'), "
+            "(3, null, null, null, null, null, null, null)"
+        )
+        yield db
+    finally:
+        await db.close()
+        await pg.drop_schema(backend.schema)
+
+
+PSQL = "select id, i, f, s, b, ok, r, s as s, i as i2 from t order by id"
+
+
+@pytest.mark.parametrize("fmt,shape", FORMATS)
+async def test_postgres_identical_core_types(pgdb, fmt, shape):
+    a = pgdb.export(PSQL, format=fmt, json_shape=shape, chunk_bytes=3000)
+    na = await a.read_all()
+    assert a.native is True
+    nb = await pgdb.export(PSQL, format=fmt, json_shape=shape, native=False).read_all()
+    assert na == nb
+
+
+@pytest.mark.parametrize("max_rows", [0, 1, 399, 400, 401])
+async def test_postgres_max_rows_identical(pgdb, max_rows):
+    for fmt in ("csv", "json"):
+        n = pgdb.export(PSQL, format=fmt, max_rows=max_rows)
+        f = pgdb.export(PSQL, format=fmt, max_rows=max_rows, native=False)
+        assert await n.read_all() == await f.read_all()
+        assert (n.row_count, n.truncated) == (f.row_count, f.truncated)
+
+
+async def test_postgres_params_are_inlined(pgdb):
+    sql = "select id, s from t where id < :n and coalesce(s, '') <> :x order by id"
+    params = {"n": 50, "x": "it's '$1' -- not a param"}
+    for fmt in ("csv", "json"):
+        n = await pgdb.export(sql, params, format=fmt).read_all()
+        f = await pgdb.export(sql, params, format=fmt, native=False).read_all()
+        assert n == f
+
+
+@pytest.mark.parametrize("fmt", ["csv", "tsv"])
+async def test_postgres_other_types_parse_equal(pgdb, fmt):
+    delim = "," if fmt == "csv" else "\t"
+    sql = "select id, d, ts, tz, dec, u from x order by id"
+    na = await pgdb.export(sql, format=fmt).read_all()
+    nb = await pgdb.export(sql, format=fmt, native=False).read_all()
+    ra = list(csv.reader(io.StringIO(na.decode(), newline=""), delimiter=delim))
+    rb = list(csv.reader(io.StringIO(nb.decode(), newline=""), delimiter=delim))
+    assert len(ra) == len(rb) == 4
+    for x, y in zip(ra, rb):
+        assert all(_cells_equal(p, q) for p, q in zip(x, y)), (x, y)
+
+
+async def test_postgres_other_types_json_parse_equal(pgdb):
+    sql = "select id, d, ts, tz, dec, u, l, j from x order by id"
+    na = json.loads(await pgdb.export(sql, format="json").read_all())
+    nb = json.loads(await pgdb.export(sql, format="json", native=False).read_all())
+    for x, y in zip(na["rows"], nb["rows"]):
+        for k in x:
+            p, q = x[k], y[k]
+            assert p == q or _cells_equal(str(p), str(q)), (k, p, q)
+
+
 async def test_duckdb_nested_types_are_valid_json(ddb):
     for native in (True, False):
         doc = json.loads(await ddb.export("select l, st from x order by id", format="json", native=native).read_all())

@@ -240,6 +240,9 @@ class PostgresPsycopg(PostgresBackendBase):
 
     dialect: Dialect = _DIALECT
 
+    export_formats = frozenset({"csv", "tsv", "json"})
+    """Serialised by the server in ``db.export()`` (``_pg_export``)."""
+
     def __init__(
         self,
         dsn: str | None = None,
@@ -654,6 +657,17 @@ class PsycopgConnection:
                 await raw.cursor().execute(s, prepare=False)
             await cur.executemany(sql, seq)
         return WriteResult(rowcount=cur.rowcount if verb in DML else -1)
+
+    export_formats = frozenset({"csv", "tsv", "json"})
+
+    def export(self, sql: str, params: NativeParams, *, encoding: str, max_rows: int | None,
+               time_limit_ms: int | None, chunk_bytes: int) -> Any:
+        """``SupportsExport``: the server serialises (``COPY ... TO STDOUT``;
+        see ``_pg_export``)."""
+        from ._pg_export import PsycopgExport
+
+        return PsycopgExport(self, sql, params, encoding=encoding, max_rows=max_rows,
+                             time_limit_ms=time_limit_ms, chunk_bytes=chunk_bytes)
 
     def stream(
         self,
