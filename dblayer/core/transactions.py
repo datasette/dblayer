@@ -27,7 +27,14 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
-from ..backends.base import BackendConnection, Capabilities, Dialect, SupportsBatch, SupportsOperations
+from ..backends.base import (
+    BackendConnection,
+    Capabilities,
+    Dialect,
+    SupportsBatch,
+    SupportsOperations,
+    SupportsServerDeadline,
+)
 from ..errors import (
     DatabaseClosed,
     NestedWriteError,
@@ -151,7 +158,10 @@ class Transaction(IntrospectionMixin, OperationsMixin):
             conn = await pool.acquire(write=write)
         try:
             with map_errors(db._backend):
-                await conn.begin(self.mode)
+                if self.deadline_ms is not None and isinstance(conn, SupportsServerDeadline):
+                    await conn.begin_with_deadline(self.mode, self.deadline_ms)
+                else:
+                    await conn.begin(self.mode)
         except BaseException as e:
             await pool.release(conn, discard=_should_discard(e))
             raise

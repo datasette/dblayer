@@ -64,6 +64,7 @@ __all__ = [
     "RowStream",
     "SupportsOperations",
     "SupportsBatch",
+    "SupportsServerDeadline",
     "NativeParams",
     "UsesExecutor",
 ]
@@ -467,6 +468,17 @@ class SupportsBatch(Protocol):
         time_limit_ms: int | None,
         max_rows: int | None,
     ) -> list[Results]: ...
+
+
+@runtime_checkable
+class SupportsServerDeadline(Protocol):
+    """Optional, on a ``BackendConnection``: begin a transaction and have the
+    *server* enforce its deadline too (PostgreSQL's
+    ``idle_in_transaction_session_timeout``), so it ends even if the client
+    stops running. The core's own deadline timer still applies. Used in
+    place of ``begin`` when the transaction has a deadline."""
+
+    async def begin_with_deadline(self, mode: str, deadline_ms: int) -> None: ...
 
 
 @runtime_checkable
