@@ -6,6 +6,8 @@ import pytest
 
 from dblayer import OperationResult, QueryError, TableNotFound
 
+from ..helpers import is_text_type
+
 
 def col_types(cols):
     return {c.name: c.type.lower() for c in cols}
@@ -22,7 +24,7 @@ async def test_create_table_portable_types(ops_db):
     cols = await ops_db.table_columns("posts")
     assert [c.name for c in cols] == ["id", "title", "score", "data"]
     types = col_types(cols)
-    assert "int" in types["id"] and "text" in types["title"]
+    assert "int" in types["id"] and is_text_type(types["title"])
     native = ops_db._backend.dialect
     assert types["score"] == native.native_type("float").lower()
     assert types["data"] == native.native_type("blob").lower()
@@ -32,7 +34,7 @@ async def test_create_table_portable_types(ops_db):
 async def test_create_table_python_types_and_native_passthrough(ops_db):
     await ops_db.create_table("t", {"a": int, "b": str, "c": float, "d": bytes, "e": "varchar(20)"})
     types = col_types(await ops_db.table_columns("t"))
-    assert "int" in types["a"] and "text" in types["b"]
+    assert "int" in types["a"] and is_text_type(types["b"])
     assert types["e"] == "varchar(20)"
 
 
@@ -107,7 +109,7 @@ async def test_add_column(ops_db):
     await ops_db.add_column("t", "s")  # default type text
     types = col_types(await ops_db.table_columns("t"))
     assert list(types) == ["a", "n", "s"]
-    assert "int" in types["n"] and "text" in types["s"]
+    assert "int" in types["n"] and is_text_type(types["s"])
     with pytest.raises(QueryError):
         await ops_db.add_column("t", "n", "integer")
 

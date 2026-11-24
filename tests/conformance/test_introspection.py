@@ -5,6 +5,8 @@ import pytest
 from dblayer import TableNotFound
 from dblayer.core.schema import ColumnInfo, ForeignKey, Index, Schema
 
+from ..helpers import is_text_type
+
 
 @pytest.fixture
 async def blog(db):
@@ -35,7 +37,7 @@ async def test_table_columns(blog):
     assert [c.name for c in cols] == ["id", "name", "country"]
     by_name = {c.name: c for c in cols}
     assert "int" in by_name["id"].type.lower()
-    assert "text" in by_name["name"].type.lower()
+    assert is_text_type(by_name["name"].type)
     assert by_name["name"].not_null is True
     assert by_name["country"].not_null is False
     assert by_name["country"].default is not None and "uk" in by_name["country"].default

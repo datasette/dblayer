@@ -9,7 +9,7 @@ from dblayer import IntegrityError, NestedWriteError, SchemaChanged, WriteResult
 
 @pytest.fixture
 async def t(db):
-    await db.execute_write("create table log (id integer primary key, msg text unique)")
+    await db.execute_write("create table log (msg text unique)")
     await db.execute_write("create table counters (name text primary key, n integer)")
     await db.execute_write("insert into counters values ('runs', 0)")
     return db
@@ -25,7 +25,7 @@ async def test_batch_runs_all(t):
     )
     assert len(results) == 3 and all(isinstance(r, WriteResult) for r in results)
     assert [r.rowcount for r in results] == [1, 1, 1]
-    assert (await t.execute("select msg from log order by id")).rows == [("start",), ("end",)]
+    assert (await t.execute("select msg from log order by msg")).rows == [("end",), ("start",)]
     assert (await t.execute("select n from counters")).rows == [(1,)]
 
 

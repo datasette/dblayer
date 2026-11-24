@@ -5,6 +5,13 @@ from __future__ import annotations
 import os
 
 
+def is_text_type(declared: str) -> bool:
+    """True for a text column type as backends report it: ``TEXT`` on SQLite
+    and PostgreSQL, ``VARCHAR`` on DuckDB (its name for ``TEXT``)."""
+    t = declared.lower()
+    return "text" in t or "char" in t or "string" in t
+
+
 def count_open_fds() -> int:
     """Number of open file descriptors in this process.
 

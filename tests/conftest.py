@@ -62,9 +62,26 @@ def _sqlite_memory(tmp_path: Path) -> Backend:
     return SqliteInProcess.memory()
 
 
+def _duckdb_available() -> str | None:
+    try:
+        import duckdb  # noqa: F401
+    except ImportError:
+        return "duckdb is not installed (uv run --extra duckdb pytest)"
+    return None
+
+
+def _duckdb_file(tmp_path: Path) -> Backend:
+    from dblayer.backends.duckdb import DuckDB
+
+    global _counter
+    _counter += 1
+    return DuckDB(tmp_path / f"db{_counter}.duckdb")
+
+
 BACKENDS: list[BackendSpec] = [
     BackendSpec("sqlite", _sqlite_file),
     BackendSpec("sqlite-memory", _sqlite_memory),
+    BackendSpec("duckdb", _duckdb_file, available=_duckdb_available),
 ]
 
 
