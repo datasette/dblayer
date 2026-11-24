@@ -41,6 +41,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+      # The experimental C worker (cworker/): downloads the pinned SQLite
+      # amalgamation and builds one binary, so the sqlite-cworker tests run.
+      - name: Build the C worker
+        run: make -C cworker
       # The demo group (starlette, httpx, ...) runs tests/demo against every
       # backend, PostgreSQL included; without it those tests skip.
       - name: Run tests with every optional backend and the demo app installed
@@ -55,9 +59,32 @@ jobs:
         with:
           python-version: "3.14"
           enable-cache: true
+      # The experimental C worker (cworker/): downloads the pinned SQLite
+      # amalgamation and builds one binary, so the sqlite-cworker tests run.
+      - name: Build the C worker
+        run: make -C cworker
       # No PostgreSQL server here: those tests skip themselves.
       - name: Run tests
         run: uv run --all-extras pytest -ra
+
+  cworker-sanitizers:
+    name: C worker under ASan + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - name: Build the C worker with -fsanitize=address,undefined
+        run: make -C cworker SANITIZE=1
+      # Any sanitizer report makes the worker exit non-zero (UBSan does not
+      # recover), which fails the test that was using it.
+      - name: Run the C worker's tests against the sanitized binary
+        env:
+          DBLAYER_CWORKER: ${{ github.workspace }}/cworker/build-asan/dblayer-cworker
+          ASAN_OPTIONS: detect_leaks=0
+        run: uv run --all-extras pytest -ra -k "cworker or c-worker" tests/worker tests/faults tests/conformance
 
   stdlib-only:
     name: Core with no optional dependencies
