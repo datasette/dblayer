@@ -41,8 +41,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - name: Run tests with every optional backend installed
-        run: uv run --all-extras pytest -ra
+      # The demo group (starlette, httpx, ...) runs tests/demo against every
+      # backend, PostgreSQL included; without it those tests skip.
+      - name: Run tests with every optional backend and the demo app installed
+        run: uv run --all-extras --group demo pytest -ra
 
   macos:
     name: macOS, Python 3.14
