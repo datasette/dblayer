@@ -19,6 +19,7 @@
 // ported from the C worker (cworker/src/worker.c).
 
 import fs from 'node:fs';
+import { enableCompileCache } from 'node:module';
 import { parentPort, workerData, threadId } from 'node:worker_threads';
 import { Writer, Raw, PyFloat, Ext, decode, EXT_CODES } from './codec.mjs';
 import { writeAll, ParentGone, consoleToStderr, setWriteLock } from './io.mjs';
@@ -26,11 +27,21 @@ import { installNodeVfs } from './vfs.mjs';
 import { KW, leadingKeyword, lstripSqlBytes, isDml, pathAsUri } from './sqlutil.mjs';
 import { readSchema } from './schema.mjs';
 
+const now = () => performance.timeOrigin + performance.now();
+const T_START = now();
 consoleToStderr();
 
-const { flags, debug, memoryLimitMb, maxFrameBytes: initialMaxFrame, lockTable, writeLock, wasmModule } = workerData;
+const { flags, debug, memoryLimitMb, maxFrameBytes: initialMaxFrame, lockTable, writeLock } = workerData;
 setWriteLock(writeLock);
+if (process.env.DBLAYER_NODEWORKER_COMPILE_CACHE !== '0') enableCompileCache?.();
+// The compiled module: in workerData, or (for a thread started while the
+// main thread was still compiling it) the first message.
+const modulePromise = workerData.wasmModule
+  ? Promise.resolve(workerData.wasmModule)
+  : new Promise((resolve) => parentPort.once('message', (m) => resolve(m.module)));
 const { default: sqlite3InitModule } = await import('@sqlite.org/sqlite-wasm');
+const T_IMPORTED = now();
+const wasmModule = await modulePromise;
 
 // WebAssembly memory: our own, so its maximum is the worker's memory cap
 // (per connection, as RLIMIT_AS is per process for the Python worker).
@@ -54,6 +65,7 @@ const { capi, wasm } = sqlite3;
 const X = wasm.exports;
 const C = capi;
 const vfs = installNodeVfs(sqlite3, { lockTable, threadId });
+const T_READY = now();
 
 const SQLITE_TRANSIENT = -1;
 const FETCH_BATCH = 256;
@@ -1256,13 +1268,9 @@ function runJob(job) {
 }
 
 parentPort.on('message', (job) => {
-  if (job.kind === 'codec') {
-    setCodec(job.codec);
-    maxFrame = job.maxFrameBytes;
-    return;
-  }
   const done = { done: true };
   if (job.codec && job.codec !== codec) setCodec(job.codec);
+  if (job.maxFrameBytes) maxFrame = job.maxFrameBytes;
   try {
     if (job.kind === 'shutdown') {
       closeAll();
@@ -1295,4 +1303,8 @@ parentPort.on('message', (job) => {
   parentPort.postMessage(done);
 });
 
-parentPort.postMessage({ ready: true, sqliteVersion: capi.sqlite3_libversion() });
+parentPort.postMessage({
+  ready: true,
+  sqliteVersion: capi.sqlite3_libversion(),
+  times: { thread_start: T_START, imported: T_IMPORTED, ready: T_READY },
+});

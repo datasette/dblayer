@@ -26,7 +26,7 @@
 
 import fs from 'node:fs';
 import { Worker } from 'node:worker_threads';
-import { createRequire } from 'node:module';
+import { createRequire, enableCompileCache } from 'node:module';
 import { decode, encode } from './codec.mjs';
 import { writeAll, ParentGone, consoleToStderr, newWriteLock, setWriteLock } from './io.mjs';
 import { newLockTable, releaseThread } from './locks.mjs';
@@ -40,6 +40,11 @@ const SHUTDOWN_GRACE_MS = 5000;
  * first and says why. */
 const HARD_STOP_MS = Number(process.env.DBLAYER_NODEWORKER_HARD_STOP_MS || 100);
 const SPARES = process.env.DBLAYER_NODEWORKER_SPARES === '0' ? 0 : 1;
+const TIMING = process.env.DBLAYER_NODEWORKER_TIMING === '1';
+const T_MAIN = performance.timeOrigin + performance.now();
+// V8's code cache for the JavaScript (the SQLite module's 480 KB of glue
+// above all), in the OS temp directory: about 4 ms off each start.
+if (process.env.DBLAYER_NODEWORKER_COMPILE_CACHE !== '0') enableCompileCache?.();
 
 const require = createRequire(import.meta.url);
 const WASM_PACKAGE = require('@sqlite.org/sqlite-wasm/package.json').version;
@@ -102,10 +107,15 @@ function replyError(id, error, extra = {}) {
 
 // Compiled once; every executor instantiates the same module.
 let wasmModule = null;
-const compiled = WebAssembly.compile(fs.readFileSync(WASM_PATH)).then((m) => (wasmModule = m));
+let T_COMPILED = 0;
+const compiled = WebAssembly.compile(fs.readFileSync(WASM_PATH)).then((m) => {
+  T_COMPILED = performance.timeOrigin + performance.now();
+  wasmModule = m;
+});
 
 class Executor {
   constructor() {
+    this.created = performance.timeOrigin + performance.now();
     this.flags = new Int32Array(new SharedArrayBuffer(16));
     this.queue = [];
     this.current = null;
@@ -118,11 +128,13 @@ class Executor {
     this.worker = new Worker(new URL('./executor.mjs', import.meta.url), {
       workerData: {
         flags: this.flags, debug, memoryLimitMb, maxFrameBytes: maxFrame, lockTable, writeLock, wasmModule,
+        // null while the main thread is still compiling: then it follows as a message
       },
       resourceLimits: memoryLimitMb ? { maxOldGenerationSizeMb: Math.max(64, memoryLimitMb) } : undefined,
       stdout: true, // the worker's stdout is not our fd 1
       stderr: false,
     });
+    if (!wasmModule) compiled.then(() => this.worker.postMessage({ kind: 'module', module: wasmModule }));
     this.worker.stdout.on('data', (d) => process.stderr.write(d));
     this.worker.on('message', (m) => this.onMessage(m));
     this.worker.on('error', (e) => this.onError(e));
@@ -157,6 +169,7 @@ class Executor {
     const { msg, ...wire } = job;
     void msg;
     wire.codec = codec;
+    wire.maxFrameBytes = maxFrame;
     this.worker.postMessage(wire, wire.payload ? [wire.payload.buffer] : []);
   }
 
@@ -164,6 +177,14 @@ class Executor {
     if (m.ready) {
       this.ready = true;
       if (m.sqliteVersion !== SQLITE_VERSION) console.error(`dblayer-nodeworker: SQLite ${m.sqliteVersion}, package says ${SQLITE_VERSION}`);
+      if (TIMING) {
+        // ms since the process started, for benchmarks/nodeworker_bench.py
+        const rel = (t) => +(t - performance.timeOrigin).toFixed(2);
+        console.error(`dblayer-nodeworker timing ${JSON.stringify({
+          main_loaded: rel(T_MAIN), wasm_compiled: rel(T_COMPILED), executor_created: rel(this.created),
+          thread_start: rel(m.times.thread_start), sqlite_imported: rel(m.times.imported), sqlite_ready: rel(m.times.ready),
+        })}`);
+      }
       this.pump();
       return;
     }
@@ -281,16 +302,11 @@ const streams = new Map(); // stream id -> Executor
 let spare = null;
 let connSeq = 0;
 
-async function newExecutor() {
-  await compiled;
-  return new Executor();
-}
-
 /** An executor for a new connection: the spare if one is started, and a
  * new spare behind it. */
-async function takeExecutor() {
-  const ex = spare ? await spare : await newExecutor();
-  spare = SPARES ? newExecutor() : null;
+function takeExecutor() {
+  const ex = spare ?? new Executor();
+  spare = SPARES ? new Executor() : null;
   return ex;
 }
 
@@ -406,10 +422,7 @@ function hello(msg) {
       ops: false,
     }),
   ); // in JSON; everything after it in the agreed codec
-  codec = chosen;
-  const note = { kind: 'codec', codec: chosen, maxFrameBytes: maxFrame };
-  for (const ex of executors.values()) ex.worker.postMessage(note);
-  if (spare) spare.then((ex) => ex.worker.postMessage(note));
+  codec = chosen; // executors get it (and maxFrame) with every job
 }
 
 /** `sleep`: close every connection, reply, exit. */
@@ -500,4 +513,4 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', onEof);
 process.stdin.on('error', onEof);
 
-if (SPARES) spare = newExecutor();
+if (SPARES) spare = new Executor(); // starts now, while the module compiles
