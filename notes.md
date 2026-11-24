@@ -1188,3 +1188,45 @@ Subagent-reported. Timings at load 17 to 44; provisional; single-client figures 
 ### Upstream suggestions
 
 - **Datasette with many databases:** a smaller per-connection lookaside buffer cut per-connection memory by about 25% here (188 KB to 141 KB). Python's `sqlite3` cannot set `SQLITE_DBCONFIG_LOOKASIDE`; apsw can. Measured in the C worker only, not in Datasette.
+
+## 2026-11-24: DuckDB worker in Rust, final report; Rust against C++
+
+Subagent-reported. Timings at load 13 to 83; provisional. Linux CI unverified for both native workers, including their `RLIMIT_AS` tests.
+
+### Found
+
+| Measure | In-process | Python worker | Rust worker | C++ worker |
+| --- | --- | --- | --- | --- |
+| Process floor before open | n/a | 44.8 MB | 2.2 MB | 2.1 MB |
+| One database open | n/a | 53.7 MB | 13.9 MB | 14.1 MB |
+| Asleep to first result | 8.8 ms | 155 ms | 25.2 ms | 26.2 ms |
+| Extra per typed row, 100,000 rows (MessagePack) | n/a | 2.66 µs | 0.69 µs | 0.61 µs |
+| Point read during a long query, same database | 0.83 ms | 6,039 ms | 0.89 ms | 0.82 ms |
+| Peak footprint, 150 databases, cap 40 | 436 MB | 2,690 MB | 1,144 MB | 1,176 MB |
+| `insert_rows` 10,000 rows, default / appender | 1,745 / 235 ms | 2,128 / 300 ms | 1,857 / 255 ms | 1,777 / 225 ms |
+| Lines of code | n/a | n/a | 5,960 Rust + 424 Python | 4,538 C++ + 1,113 shared C + 363 Python |
+| Clean build | n/a | n/a | 7.3 s | about 7 s |
+| Binary | n/a | n/a | 1.08 MB | 392 KB |
+
+- **Rust and C++ are indistinguishable on every resource and speed measure.** Memory within 0.2 MB, start-up within 1 ms, per-row cost within noise. The cost of a native DuckDB worker is DuckDB.
+- **Of the 25 ms to wake:** about 12 ms is exec plus dynamically linking the 65 MB library, 13 ms is opening the database, 1.5 ms is the first query.
+- **The one real bug found in either native worker today was in the C++ one:** a stream's time budget used `-1` to mean "no limit", and a short limit could go negative, so the stream ran unbounded. It hung in about 7 of 10 runs once the buffer fix exposed it; fixed. In Rust the budget is an `Option`, which rules the bug out.
+- **The Rust fuzz test found a quadratic map decoder:** two 100,000-key maps took 14 s. Fixed.
+- **Conformance: both now 429 passed, 12 skipped, none expected to fail.**
+- A gap in the `streaming_buffer_size` fix: each database prepares 8 connections with the small buffer; a ninth concurrent connection gets the 10 MB default again.
+
+### Decision
+
+- **Recommendation from the subagent: choose Rust for the DuckDB worker.** Performance is equal, so the choice is about maintenance: `unsafe` is confined to one file (105 blocks) and denied elsewhere, the type system prevented the sentinel bug the C++ worker had, and decoder fuzzing runs inside `cargo test`. Rust's costs: 21 build-time crates, a larger binary, and its own codecs where C++ shares the C worker's.
+- Keep both only while one cross-checks the other. Drop the Python DuckDB worker except as a source of spares.
+
+### Idea: to discuss
+
+- **If Rust is right for the DuckDB worker, the same argument applies to the SQLite C worker,** where the sanitizers found two memory bugs. A Rust port of the 4,000-line C worker is a candidate.
+- Arrow or batched decoding in the parent: the remaining typed per-row cost is Python decoding.
+- A ThreadSanitizer job for both native DuckDB workers.
+
+### Upstream suggestions
+
+- None for sqlite-utils or Datasette.
+- **DuckDB (not sqlite-utils or Datasette):** the C API's streaming execute waits for half of `streaming_buffer_size` where the Python client does not, and that setting can be neither a database default nor changed after the configuration is locked. Well verified by the subagent on one binary at two settings.
