@@ -159,18 +159,28 @@ def register_all(
     return dbs, RegistrationFigures(len(paths), seconds, traced, rss)
 
 
-def time_registration(spec: ScaleBackend, paths: list[Path], repeat: int = 3) -> float:
+def time_registration(spec: ScaleBackend, paths: list[Path], repeat: int = 5) -> float:
     """Best-of-``repeat`` seconds to create and register ``len(paths)``
-    databases into a fresh registry."""
+    databases into a fresh registry.
+
+    The cyclic garbage collector is paused while timing: a collection
+    scans every live object, so whether one lands inside a sub-millisecond
+    small run made the "linear" comparison fail on CI (9 vs 33 us/db). That
+    is Python's cost, not dblayer's; the per-database work is what this
+    measures."""
     best = float("inf")
     for _ in range(repeat):
         r = Registry()
         names = [f"n{i}" for i in range(len(paths))]
         gc.collect()
-        t0 = time.perf_counter()
-        for n, p in zip(names, paths):
-            r.add(n, Database(spec.make(p)))
-        best = min(best, time.perf_counter() - t0)
+        gc.disable()
+        try:
+            t0 = time.perf_counter()
+            for n, p in zip(names, paths):
+                r.add(n, Database(spec.make(p)))
+            best = min(best, time.perf_counter() - t0)
+        finally:
+            gc.enable()
         r.executor.shutdown()
     return best
 
