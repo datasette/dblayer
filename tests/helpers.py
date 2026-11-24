@@ -170,3 +170,12 @@ def series_sql(db: object, n: int) -> str:
         "with recursive c(x) as (select 1 union all select x + 1 from c "
         f"where x < {n}) select x from c"
     )
+
+
+def infinite_series(db: object) -> str:
+    """``select x`` for x = 1, 2, ... without end, streaming its first rows
+    at once: a recursive CTE, or ``system.numbers`` on ClickHouse (whose
+    recursive CTE yields about 3,000 rows a second)."""
+    if db.dialect.name == "clickhouse":  # type: ignore[attr-defined]
+        return "select number + 1 as x from system.numbers"
+    return "with recursive c(x) as (select 1 union all select x + 1 from c) select x from c"

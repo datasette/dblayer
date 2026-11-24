@@ -151,8 +151,10 @@ class ClickHouseDialect(Dialect):
     def column_sql(self, col: ColumnDef, *, key: bool = False) -> str:
         t = self._column_type(col, key=key)
         parts = [self.quote_identifier(col.name), t]
-        if not _nullable(t):
-            # Sessions run with data_type_default_nullable=1.
+        if not _nullable(t) and (col.not_null or key or col.type.lower() in _PORTABLE):
+            # Sessions run with data_type_default_nullable=1, which would
+            # make the type Nullable; a native type without NOT NULL is
+            # left to that default, as other engines' columns are nullable.
             parts.append("NOT NULL")
         if col.default is not None:
             parts.append(self.default_clause(col.default))
@@ -221,14 +223,16 @@ class ClickHouseDialect(Dialect):
         types: Mapping[str, str],
     ) -> frozenset[str]:
         """ClickHouse refuses to rename, retype or drop a sorting-key column
-        (ALTER_OF_COLUMN_IS_FORBIDDEN); those changes rebuild."""
+        (ALTER_OF_COLUMN_IS_FORBIDDEN), and to drop or retype a column a
+        data-skipping index uses; those changes rebuild."""
         keyed = set(info.primary_keys)
+        indexed = {c for i in info.indexes for c in i.columns if c is not None}
         native = set(self.native_alter)
         if keyed & set(rename):
             native.discard("rename")
-        if keyed & set(types):
+        if (keyed | indexed) & set(types):
             native.discard("types")
-        if keyed & set(drop):
+        if (keyed | indexed) & set(drop):
             native.discard("drop")
         return frozenset(native)
 
@@ -285,7 +289,8 @@ class ClickHouseDialect(Dialect):
             return ResourceLimitExceeded(message)
         if code == 164:
             return QueryError(message, "READ_ONLY")
-        if code == 349 or "Cannot convert NULL" in message:  # NULL into a non-Nullable column
+        if code == 349 or "Cannot convert NULL" in message or "Cannot insert NULL value" in message:
+            # NULL into a non-Nullable column (NOT NULL)
             return IntegrityError(message, "NOT_NULL")
         return QueryError(message, name)
 
@@ -567,6 +572,14 @@ _SESSION: dict[str, Any] = {
     "max_recursive_cte_evaluation_depth": 100_000_000,
     "max_query_size": 64 << 20,
     "max_ast_elements": 1 << 22,
+    # Native export (db.export) formats.
+    "output_format_csv_crlf_end_of_line": 1,
+    "format_csv_null_representation": "",
+    "output_format_json_quote_64bit_integers": 0,
+    "output_format_json_quote_denormals": 0,
+    "output_format_json_escape_forward_slashes": 0,
+    "output_format_json_validate_utf8": 1,
+    "output_format_decimal_trailing_zeros": 1,
 }
 
 
@@ -651,7 +664,6 @@ class ClickHouse:
     See the module docstring."""
 
     dialect: Dialect
-    export_formats = frozenset({"csv", "tsv", "json"})
 
     def __init__(
         self,
@@ -663,6 +675,7 @@ class ClickHouse:
         threads: int | None = 2,
         exact_rowcount: bool = True,
         allow_host_access: bool = False,
+        engine_export: bool = False,
         settings: Mapping[str, Any] | None = None,
         executor: Executor | None = None,
     ) -> None:
@@ -678,6 +691,16 @@ class ClickHouse:
         """Count the rows an UPDATE / DELETE matches before running it (the
         engine does not report it). False: rowcount is -1."""
         self.allow_host_access = allow_host_access
+        self.export_formats: frozenset[str] = (
+            frozenset({"csv", "json"}) if engine_export else frozenset()
+        )
+        """``db.export()`` formats ClickHouse serialises itself. Empty by
+        default: its CSV quotes every string and writes ``2`` for 2.0, its
+        JSON writes floats the same way, and a ``String`` holding bytes is
+        written raw, so the output is only *parse-equal* to
+        docs/export-formats.md for text and integers, not identical as the
+        contract asks. ``engine_export=True`` turns it on (CSV and the JSON
+        shapes) for callers who accept that; the benchmark measures both."""
         """Let *write* connections use INTO OUTFILE / FROM INFILE. Read
         connections never can."""
         self.settings = dict(settings or {})
@@ -705,6 +728,15 @@ class ClickHouse:
         )
         self._created = False
         self.connections_opened = 0
+        self.fds_per_statement = 12
+        """File descriptors one running statement may hold beyond its
+        connection's (an INSERT writes a new part, several files, and the
+        engine's pipeline threads hold more): about 8 measured under load
+        in tests/conformance/test_lifecycle_fds.py, 12 allowed."""
+        from collections import Counter
+
+        self.native_calls: Counter[str] = Counter()
+        """Named operations run by the native override, by name."""
 
     def __repr__(self) -> str:
         return f"ClickHouse({str(self.path)!r}, database={self.database!r})"
@@ -820,6 +852,7 @@ class ClickHouseConnection:
         self._tag = "dblayer-" + uuid.uuid4().hex[:16]
         self._lock = threading.Lock()
         self._seq = 0
+        self.last_seq = 0
         self._active: int | None = None
         self._cancelled = False
 
@@ -859,14 +892,18 @@ class ClickHouseConnection:
         _interrupter.schedule(_REKILL_S, lambda: self._kill_while_active(seq))
 
     @contextlib.contextmanager
-    def _statement(self, time_limit_ms: int | None) -> Iterator[str]:
+    def _statement(self, time_limit_ms: int | None, seq: int | None = None) -> Iterator[str]:
         """Number the statement, mark it active and arm its time limit.
-        Yields the tag comment to prefix the SQL with."""
+        Yields the tag comment to prefix the SQL with. A streamed query
+        passes its first number (``last_seq``) for every later fetch, so a
+        KILL finds it by the tag it was sent with."""
         with self._lock:
             if self._cancelled:
                 raise QueryInterrupted("query interrupted (cancelled)")
-            self._seq += 1
-            seq = self._seq
+            if seq is None:
+                self._seq += 1
+                seq = self._seq
+            self.last_seq = seq
             self._active = seq
         token = None
         if time_limit_ms is not None:
@@ -1125,6 +1162,107 @@ class ClickHouseConnection:
     def _schema(self) -> Schema:
         return _read_schema(self._conn, self._schema_version())
 
+    # -- native operations -------------------------------------------------------------
+
+    async def run_operation(self, name: str, args: dict[str, Any]) -> object:
+        """``insert_rows`` into an existing table as one Arrow stream per
+        group of rows with the same keys (``SupportsOperations``), with the
+        same key check as the default path. Declines ``alter``, ``ignore``,
+        ``replace``, a missing table, and column types it does not convert
+        (the default path then runs)."""
+        if name != "insert_rows" or not args.get("rows"):
+            return NotImplemented
+        if args.get("ignore") or args.get("replace") or args.get("alter"):
+            return NotImplemented
+        result = await self._run(self._native_insert, args["table"], args["rows"], args.get("pk"))
+        if result is not NotImplemented:
+            self._backend.native_calls[name] += 1
+        return result
+
+    def _native_insert(self, table: str, rows: list[dict[str, Any]], pk: Any) -> object:
+        from ..core.operations import OperationResult, _groups
+
+        info = _table_info(self._conn, table)
+        if info is None:
+            return NotImplemented
+        types, table_pk = info
+        groups = []
+        for cols, group in _groups(rows):
+            if any(c not in types for c in cols):
+                return NotImplemented  # the default path reports the engine's error
+            data = _arrow_stream(cols, [types[c] for c in cols], group)
+            if data is None:
+                return NotImplemented
+            groups.append((cols, data))
+        keys = tuple(pk) if isinstance(pk, (list, tuple)) else ((pk,) if pk else table_pk)
+        if keys:
+            self._check_new_keys(table, keys, rows)
+        d = self._backend.dialect
+        total = 0
+        for cols, data in groups:
+            if self._in_tx:
+                self._tx_writes += 1
+            with self._statement(None) as tag:
+                ins = self._conn.send_insert(
+                    f"{tag}INSERT INTO {d.quote_identifier(table)} ({d.quote_identifiers(cols)})",
+                    "ArrowStream",
+                )
+                try:
+                    ins.append(data)
+                    total += ins.finish().rows_written
+                except BaseException:
+                    with contextlib.suppress(Exception):
+                        ins.cancel()
+                    raise
+        return OperationResult(rowcount=total)
+
+    def _check_new_keys(self, table: str, pk: Sequence[str], rows: list[dict[str, Any]]) -> None:
+        from ..core.emulated_keys import _CHUNK
+
+        d = self._backend.dialect
+        keys = [tuple(r.get(c) for c in pk) for r in rows]
+        if len(set(keys)) != len(keys):
+            dup = next(k for i, k in enumerate(keys) if k in keys[:i])
+            raise IntegrityError(_dup_message(table, pk, dup), "UNIQUE")
+        cols = d.quote_identifiers(pk)
+        key = cols if len(pk) == 1 else f"({cols})"
+        for i in range(0, len(keys), _CHUNK):
+            part = keys[i : i + _CHUNK]
+            marks = ", ".join(
+                ("?" if len(pk) == 1 else "(" + ", ".join("?" for _ in pk) + ")") for _ in part
+            )
+            from ..core.params import rewrite
+
+            sql, params = rewrite(
+                f"SELECT {cols} FROM {d.quote_identifier(table)} WHERE {key} IN ({marks}) LIMIT 1",
+                [v for k in part for v in k],
+                d.paramstyle,
+                d.flavor,
+            )
+            native, values = bind(sql, params)
+            data = self._conn.query(native, "Arrow", params=values).bytes()
+            found = _rows(_read_arrow(data)) if data else []
+            if found:
+                raise IntegrityError(_dup_message(table, pk, found[0]), "UNIQUE")
+
+    # -- export ----------------------------------------------------------------------
+
+    @property
+    def export_formats(self) -> frozenset[str]:
+        return self._backend.export_formats
+
+    def export(
+        self,
+        sql: str,
+        params: NativeParams,
+        *,
+        encoding: str,
+        max_rows: int | None,
+        time_limit_ms: int | None,
+        chunk_bytes: int,
+    ) -> "_ClickHouseExport":
+        return _ClickHouseExport(self, sql, params, encoding, max_rows, time_limit_ms)
+
     # -- misc --------------------------------------------------------------------------
 
     async def interrupt(self) -> None:
@@ -1195,6 +1333,7 @@ class _ClickHouseStream:
         self._eof = False
         self._done = False
         self._started = False
+        self._query_seq: int | None = None
         self.columns: tuple[Column, ...] | None = None
 
     def __aiter__(self) -> "_ClickHouseStream":
@@ -1223,7 +1362,8 @@ class _ClickHouseStream:
                 raise QueryInterrupted("query interrupted (time limit exceeded)")
             start = time.perf_counter()
             try:
-                with conn._statement(None if self._remaining_ms is None else int(self._remaining_ms)) as tag:
+                limit = None if self._remaining_ms is None else int(self._remaining_ms)
+                with conn._statement(limit, self._query_seq) as tag:
                     if not self._started:
                         self._started = True
                         st = conn._check(self._sql)
@@ -1236,6 +1376,7 @@ class _ClickHouseStream:
                         native, values = bind(self._sql, self._params)
                         self._native = (native, values)
                         self._res = low.send_query(tag + native, "Arrow", params=values)
+                        self._query_seq = conn.last_seq
                     chunk = low.streaming_fetch_result(self._res)
             finally:
                 if self._remaining_ms is not None:
@@ -1371,3 +1512,242 @@ def _read_schema(conn: Any, version: str) -> Schema:
         )
     return Schema(version=version, tables=out_tables, views=views, triggers={})
 
+
+
+# -- native insert -------------------------------------------------------------------------
+
+
+def _dup_message(table: str, pk: Sequence[str], key: Sequence[Any]) -> str:
+    return (
+        f"UNIQUE constraint failed: {table}.{', '.join(pk)} (key {list(key)!r} already "
+        "exists; checked by dblayer, the engine does not enforce keys)"
+    )
+
+
+def _table_info(conn: Any, table: str) -> tuple[dict[str, str], tuple[str, ...]] | None:
+    """Column types and primary key of ``table`` (None if no such table)."""
+    data = conn.query(
+        "SELECT t.primary_key, c.name, c.type FROM system.tables t "
+        "JOIN system.columns c ON c.database = t.database AND c.table = t.name "
+        "WHERE t.database = currentDatabase() AND t.name = {t:String} "
+        "AND t.engine NOT LIKE '%View' ORDER BY c.position",
+        "Arrow",
+        params={"t": table.translate(_ESCAPES)},
+    ).bytes()
+    rows = _rows(_read_arrow(data)) if data else []
+    if not rows:
+        return None
+    return {r[1]: r[2] for r in rows}, _split_key(rows[0][0] or "")
+
+
+def _arrow_type(ch_type: str) -> tuple[Any, bool] | None:
+    """Arrow type to send for a ClickHouse column type, and whether NULL is
+    allowed; None for types this path does not convert."""
+    import pyarrow as pa
+
+    nullable = ch_type.startswith("Nullable(")
+    base = ch_type[len("Nullable(") : -1] if nullable else ch_type
+    if base.startswith("LowCardinality("):
+        base = base[len("LowCardinality(") : -1]
+        if base.startswith("Nullable("):
+            nullable, base = True, base[len("Nullable(") : -1]
+    if base in ("Int8", "Int16", "Int32", "Int64"):
+        return pa.int64(), nullable
+    if base in ("UInt8", "UInt16", "UInt32", "UInt64"):
+        return pa.uint64(), nullable
+    if base in ("Float32", "Float64"):
+        return pa.float64(), nullable
+    if base == "String":
+        return pa.binary(), nullable
+    if base == "Bool":
+        return pa.bool_(), nullable
+    return None
+
+
+def _arrow_stream(cols: Sequence[str], types: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> bytes | None:
+    """The rows as one Arrow IPC stream, or None to decline."""
+    import pyarrow as pa
+
+    arrays = []
+    fields = []
+    for c, t in zip(cols, types):
+        at = _arrow_type(t)
+        if at is None:
+            return None
+        atype, nullable = at
+        values = [r[c] for r in rows]
+        if not nullable and any(v is None for v in values):
+            raise IntegrityError(f"NOT NULL constraint failed: {c}", "NOT_NULL")
+        if atype == pa.binary():
+            values = [v.encode() if isinstance(v, str) else v for v in values]
+        elif atype != pa.bool_():
+            values = [int(v) if isinstance(v, bool) else v for v in values]
+        try:
+            arrays.append(pa.array(values, type=atype))
+        except (pa.ArrowInvalid, pa.ArrowTypeError, TypeError, OverflowError):
+            return None
+        fields.append(pa.field(c, atype, nullable=nullable))
+    batch = pa.RecordBatch.from_arrays(arrays, schema=pa.schema(fields))
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, batch.schema) as writer:
+        writer.write_batch(batch)
+    return sink.getvalue().to_pybytes()
+
+
+# -- native export -------------------------------------------------------------------------
+
+# ClickHouse output formats per export encoding. The session settings
+# (_SESSION) bring them close to docs/export-formats.md: CRLF and NULL as an
+# empty unquoted CSV field, JSON numbers unquoted, NaN and infinities as
+# null, "/" not escaped, invalid UTF-8 replaced. TSV is not native: the
+# CSV delimiter is a session setting, which a readonly=1 connection cannot
+# change per query, and ClickHouse's own TSV escapes with backslashes.
+_EXPORT_FORMATS = {
+    "csv": "CSV",
+    "json-objects": "JSONEachRow",
+    "ndjson": "JSONEachRow",
+    "json-arrays": "JSONCompactEachRow",
+}
+
+
+class _ClickHouseExport:
+    """``SupportsExport`` source. Without ``max_rows`` the bytes come from
+    ClickHouse's own formats (JSON lines are one row each, so the leading
+    comma of the JSON shapes is added between lines). With ``max_rows`` the
+    rows are read as Arrow and encoded by the core's Python encoder, since
+    a CSV chunk cannot be split into rows without parsing it."""
+
+    def __init__(
+        self,
+        conn: ClickHouseConnection,
+        sql: str,
+        params: NativeParams,
+        encoding: str,
+        max_rows: int | None,
+        time_limit_ms: int | None,
+    ) -> None:
+        self._conn = conn
+        self._sql = sql
+        self._params = params
+        self._encoding = encoding
+        self._max_rows = max_rows
+        self._time_limit_ms = time_limit_ms
+        self.row_count = 0
+        self.truncated = False
+        self._res: Any = None
+        self._stream: _ClickHouseStream | None = None
+        self._encoder: Any = None
+        self._first = True
+        self._done = False
+        self._query_seq: int | None = None
+        self.native = max_rows is None
+
+    async def start(self) -> Sequence[Column]:
+        if not self.native:
+            from ..core.export import PyRowEncoder
+
+            self._stream = _ClickHouseStream(
+                self._conn, self._sql, self._params, 1000, self._time_limit_ms, None
+            )
+            try:
+                self._pending = await self._stream.__anext__()
+            except StopAsyncIteration:
+                self._pending = []
+            cols = self._stream.columns or ()
+            self._encoder = PyRowEncoder(self._encoding, cols)
+            return cols
+        return await self._conn._run(self._start_native)
+
+    def _start_native(self) -> Sequence[Column]:
+        conn = self._conn
+        st = conn._check(self._sql)
+        if st.kind not in _RESULT_KINDS:
+            raise QueryError("export() runs queries that return rows", "NOT_A_QUERY")
+        native, values = bind(self._sql, self._params)
+        cols = conn._describe(native, values)
+        fmt = _EXPORT_FORMATS[self._encoding]
+        low = conn._conn._conn
+        with conn._statement(self._time_limit_ms) as tag:
+            self._res = low.send_query(tag + native, fmt, params=values)
+            self._query_seq = conn.last_seq
+        return cols
+
+    def __aiter__(self) -> "_ClickHouseExport":
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._done:
+            raise StopAsyncIteration
+        if not self.native:
+            return await self._next_fallback()
+        chunk = await self._conn._run(self._next_native)
+        if chunk is None:
+            self._done = True
+            self._res = None
+            raise StopAsyncIteration
+        return chunk
+
+    def _next_native(self) -> bytes | None:
+        low = self._conn._conn._conn
+        while True:
+            with self._conn._statement(self._time_limit_ms, self._query_seq):
+                chunk = low.streaming_fetch_result(self._res)
+            if chunk is None:
+                return None
+            data = chunk.bytes()
+            if not data:
+                if chunk.rows_read() == 0:
+                    return None
+                continue
+            lines = data.count(b"\n")
+            self.row_count += lines
+            if self._encoding in ("json-objects", "json-arrays"):
+                body = data[:-1].replace(b"\n", b"\n,") + b"\n"
+                if not self._first:
+                    body = b"," + body
+                data = body
+            self._first = False
+            return data
+
+    async def _next_fallback(self) -> bytes:
+        assert self._stream is not None and self._encoder is not None
+        while True:
+            rows = self._pending
+            self._pending = []
+            if not rows:
+                try:
+                    rows = await self._stream.__anext__()
+                except StopAsyncIteration:
+                    self._done = True
+                    raise
+            assert self._max_rows is not None
+            room = self._max_rows - self.row_count
+            if len(rows) > room:
+                self.truncated = True
+                rows = rows[:room]
+            if rows:
+                self.row_count += len(rows)
+                out = self._encoder.encode(rows).encode()
+            else:
+                out = b""
+            if self.truncated:
+                self._done = True
+                await self._stream.aclose()
+            if out:
+                return out
+            if self._done:
+                raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self._done = True
+        if self._stream is not None:
+            await self._stream.aclose()
+        res, self._res = self._res, None
+        if res is not None and not self._conn._closed:
+            low = self._conn._conn._conn
+
+            def cancel() -> None:
+                with contextlib.suppress(Exception):
+                    low.streaming_cancel_query(res)
+
+            await run_blocking(self._conn._backend.executor, cancel)

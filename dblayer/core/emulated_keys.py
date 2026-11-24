@@ -26,7 +26,7 @@ from ..errors import IntegrityError
 if TYPE_CHECKING:
     from .operations import TxLike
 
-__all__ = ["insert_keyed", "upsert_keyed"]
+__all__ = ["insert_keyed", "upsert_keyed", "check_no_overlap"]
 
 _CHUNK = 500  # keys per lookup statement
 
@@ -159,3 +159,21 @@ async def upsert_keyed(
     await _delete_keys(tx, table, pk, list(merged))
     await _insert(tx, table, [*merged.values(), *fresh.values()])
     return len(rows)
+
+
+async def check_no_overlap(tx: "TxLike", source: str, target: str, pk: Sequence[str]) -> None:
+    """Raise ``IntegrityError`` if a key of ``source`` is already in
+    ``target`` (staged-import ``append``, before its ``INSERT ... SELECT``)."""
+    d = tx.dialect
+    cols = d.quote_identifiers(pk)
+    key = cols if len(pk) == 1 else f"({cols})"
+    r = await tx.execute(
+        f"SELECT {cols} FROM {d.quote_identifier(source)} WHERE {key} IN "
+        f"(SELECT {cols} FROM {d.quote_identifier(target)}) LIMIT 1"
+    )
+    if r.rows:
+        raise IntegrityError(
+            f"UNIQUE constraint failed: {target}.{', '.join(pk)} (key {list(r.rows[0])!r} "
+            "already exists; checked by dblayer, the engine does not enforce keys)",
+            "UNIQUE",
+        )

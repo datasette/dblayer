@@ -5,14 +5,13 @@ from contextlib import aclosing
 
 import pytest
 
-from ..helpers import series_sql
+from ..helpers import infinite_series, series_sql
 
 from dblayer import QueryInterrupted, ResourceLimitExceeded, Row
 
 
 
 
-INFINITE = "with recursive c(x) as (select 1 union all select x + 1 from c) select x from c"
 
 
 async def test_stream_chunks(db):
@@ -70,7 +69,7 @@ async def test_stream_time_limit_interrupts(db):
 async def test_backpressure_infinite_stream_can_be_abandoned(db):
     # If the backend read ahead, this would never finish.
     got = []
-    async with aclosing(db.stream(INFINITE, chunk_rows=100)) as s:
+    async with aclosing(db.stream(infinite_series(db), chunk_rows=100)) as s:
         async for chunk in s:
             got.extend(chunk)
             if len(got) >= 300:
@@ -106,7 +105,7 @@ async def test_concurrent_streams_and_reads(make_db):
 
 
 async def test_stream_context_manager_releases_on_break(db):
-    async with db.stream(INFINITE, chunk_rows=10) as chunks:
+    async with db.stream(infinite_series(db), chunk_rows=10) as chunks:
         async for chunk in chunks:
             assert db.stats().in_use_read == 1
             break
@@ -116,7 +115,7 @@ async def test_stream_context_manager_releases_on_break(db):
 
 async def test_stream_context_manager_releases_on_error(db):
     with pytest.raises(KeyError):
-        async with db.stream(INFINITE, chunk_rows=10) as chunks:
+        async with db.stream(infinite_series(db), chunk_rows=10) as chunks:
             async for _ in chunks:
                 raise KeyError
     assert db.stats().in_use_read == 0
@@ -129,7 +128,7 @@ async def test_stream_context_manager_unstarted(db):
 
 
 async def test_stream_aclose(db):
-    s = db.stream(INFINITE, chunk_rows=10)
+    s = db.stream(infinite_series(db), chunk_rows=10)
     await s.__anext__()
     await s.aclose()
     assert db.stats().in_use_read == 0

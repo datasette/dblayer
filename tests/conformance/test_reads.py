@@ -86,6 +86,8 @@ async def test_cast_of_parameter(db):
     ids=repr,
 )
 async def test_portable_values_round_trip(db, value):
+    if isinstance(value, bytes) and not db.capabilities.distinct_blob_type:
+        pytest.skip("backend lacks capability: distinct_blob_type")
     r = await db.execute("select :v as v", {"v": value})
     got = r.rows[0]["v"]
     assert got == value

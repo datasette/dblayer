@@ -15,11 +15,10 @@ import math
 
 import pytest
 
-from ..helpers import series_sql
+from ..helpers import infinite_series, series_sql
 
 from dblayer import QueryError, QueryInterrupted, ResourceLimitExceeded
 
-INFINITE = "with recursive c(x) as (select 1 union all select x + 1 from c) select x from c"
 
 
 
@@ -176,7 +175,7 @@ async def test_max_rows_zero(db, native):
 async def test_max_rows_stops_an_unbounded_query(db, native, request):
     if not native:
         _no_recursive_cte_streaming(request)
-    stream = db.export(INFINITE, format="csv", max_rows=10, native=native)
+    stream = db.export(infinite_series(db), format="csv", max_rows=10, native=native)
     data = await asyncio.wait_for(stream.read_all(), 10)
     assert data.count(b"\r\n") == 11
     assert stream.truncated is True
@@ -218,7 +217,7 @@ async def test_time_limit_mid_stream(db, native, request):
     _no_recursive_cte_streaming(request)
     chunks = 0
     with pytest.raises(QueryInterrupted):
-        async with db.export(INFINITE, format="csv", time_limit_ms=200, native=native) as s:
+        async with db.export(infinite_series(db), format="csv", time_limit_ms=200, native=native) as s:
             async for _ in s:
                 chunks += 1
     assert chunks > 0
@@ -227,14 +226,14 @@ async def test_time_limit_mid_stream(db, native, request):
 
 
 async def test_time_limit_before_first_row(db, native):
-    sql = "select count(*) from (" + INFINITE + ") t"
+    sql = "select count(*) from (" + infinite_series(db) + ") t"
     with pytest.raises(QueryInterrupted):
         await asyncio.wait_for(body(db, sql, format="csv", time_limit_ms=150, native=native), 20)
     assert (await db.execute("select 2 as a")).rows == [(2,)]
 
 
 async def test_close_early_releases_connection(db, native):
-    async with db.export(INFINITE, format="ndjson", chunk_bytes=1024, native=native) as s:
+    async with db.export(infinite_series(db), format="ndjson", chunk_bytes=1024, native=native) as s:
         async for _ in s:
             assert db.stats().in_use_read == 1
             break
@@ -246,7 +245,7 @@ async def test_cancel_mid_stream_releases_connection(db, native):
     started = asyncio.Event()
 
     async def consume() -> None:
-        async with db.export(INFINITE, format="csv", chunk_bytes=1024, native=native) as s:
+        async with db.export(infinite_series(db), format="csv", chunk_bytes=1024, native=native) as s:
             async for _ in s:
                 started.set()
                 await asyncio.sleep(0.01)

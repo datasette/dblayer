@@ -57,7 +57,8 @@ async def test_sleeping_caller_expires_and_other_writers_proceed(t):
     await other
     if serialised:
         check_latency("deadline -> other writer proceeds", other_done_at - t0 - 0.1, 0.2)
-    assert (await t.execute("select v from t")).rows == [("other",)]
+    expected = [("other",)] if t.capabilities.transactions else [("mine",), ("other",)]
+    assert (await t.execute("select v from t order by v")).rows == expected
 
 
 async def test_clean_exit_after_expiry_raises(t):

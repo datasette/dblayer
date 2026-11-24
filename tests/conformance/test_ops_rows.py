@@ -33,8 +33,9 @@ async def test_insert_rows_creates_table(ops_db):
     cols = {c.name: c.type.lower() for c in await ops_db.table_columns("t")}
     assert "int" in cols["id"] and is_text_type(cols["name"]) and "int" in cols["flag"]
     assert await ops_db.primary_keys("t") == ["id"]
+    data = b"x" if ops_db.capabilities.distinct_blob_type else "x"
     assert await dump(ops_db, "t") == [
-        {"id": 1, "name": "a", "score": 1.5, "data": b"x", "flag": 1}
+        {"id": 1, "name": "a", "score": 1.5, "data": data, "flag": 1}
     ]
 
 
@@ -167,6 +168,7 @@ async def test_insert_rows_batches_let_other_writers_in(posts):
         assert order == ["other", "import"]
 
 
+@pytest.mark.requires("transactions")
 async def test_insert_rows_on_tx_is_atomic(posts):
     with pytest.raises(IntegrityError):
         async with posts.transaction() as tx:

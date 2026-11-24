@@ -4,7 +4,7 @@ path (``ops_db``) and asserts the same results."""
 
 import pytest
 
-from dblayer import OperationResult, QueryError, TableNotFound
+from dblayer import NotSupported, OperationResult, QueryError, TableNotFound
 
 from ..helpers import is_text_type
 
@@ -26,8 +26,9 @@ async def test_create_table_portable_types(ops_db):
     types = col_types(cols)
     assert "int" in types["id"] and is_text_type(types["title"])
     native = ops_db._backend.dialect
-    assert types["score"] == native.native_type("float").lower()
-    assert types["data"] == native.native_type("blob").lower()
+    # ClickHouse reports nullable columns as Nullable(<type>).
+    assert native.native_type("float").lower() in types["score"]
+    assert native.native_type("blob").lower() in types["data"]
     assert await ops_db.primary_keys("posts") == ["id"]
 
 
@@ -36,7 +37,8 @@ async def test_create_table_python_types_and_native_passthrough(ops_db):
     types = col_types(await ops_db.table_columns("t"))
     assert "int" in types["a"] and is_text_type(types["b"])
     # Passed through unchanged (DuckDB accepts the length and drops it).
-    assert types["e"] in ("varchar(20)", "character varying(20)", "varchar")
+    # ClickHouse: VARCHAR(n) is an alias of String.
+    assert types["e"] in ("varchar(20)", "character varying(20)", "varchar", "nullable(string)")
 
 
 async def test_create_table_compound_pk_not_null_defaults(ops_db):
@@ -54,6 +56,7 @@ async def test_create_table_compound_pk_not_null_defaults(ops_db):
     assert (await ops_db.execute("select weight, note from tags")).rows == [(1, "it's")]
 
 
+@pytest.mark.requires("foreign_keys")
 async def test_create_table_foreign_keys(ops_db):
     await ops_db.create_table("authors", {"id": "integer", "name": "text"}, pk="id")
     await ops_db.create_table(
@@ -118,10 +121,15 @@ async def test_add_column(ops_db):
 async def test_create_index(ops_db):
     await ops_db.create_table("t", {"a": "text", "b": "integer"})
     await ops_db.create_index("t", ["a", "b"])
-    await ops_db.create_index("t", "b", name="b_unique", unique=True)
+    unique = ops_db.capabilities.unique_constraints
+    if unique:
+        await ops_db.create_index("t", "b", name="b_unique", unique=True)
+    else:
+        with pytest.raises(NotSupported):
+            await ops_db.create_index("t", "b", name="b_unique", unique=True)
     idx = {i.name: i for i in await ops_db.indexes("t")}
     assert idx["idx_t_a_b"].columns == ("a", "b") and not idx["idx_t_a_b"].unique
-    assert idx["b_unique"].unique
+    assert not unique or idx["b_unique"].unique
     with pytest.raises(QueryError):
         await ops_db.create_index("t", ["a", "b"])
     await ops_db.create_index("t", ["a", "b"], if_not_exists=True)
@@ -134,6 +142,7 @@ async def test_operation_on_missing_table(ops_db):
         await ops_db.add_column("missing", "a")
 
 
+@pytest.mark.requires("transactions")
 async def test_operations_inside_transaction_are_atomic(ops_db):
     with pytest.raises(RuntimeError):
         async with ops_db.transaction() as tx:

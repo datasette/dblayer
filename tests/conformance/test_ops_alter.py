@@ -21,7 +21,10 @@ async def people(ops_db):
         defaults={"email": "none"},
     )
     await ops_db.create_index("people", ["name"], name="idx_people_name")
-    await ops_db.create_index("people", ["email"], name="idx_people_email", unique=True)
+    # Unique where the engine enforces it (not ClickHouse).
+    await ops_db.create_index(
+        "people", ["email"], name="idx_people_email", unique=ops_db.capabilities.unique_constraints
+    )
     await ops_db.insert_rows(
         "people",
         [
@@ -71,7 +74,7 @@ async def test_rebuild_preserves_constraints_indexes_and_defaults(people):
     assert await people.primary_keys("people") == ["id"]
     idx = {i.name: i for i in await people.indexes("people") if i.origin == "c"}
     assert set(idx) == {"idx_people_name", "idx_people_email"}
-    assert idx["idx_people_email"].unique
+    assert idx["idx_people_email"].unique is people.capabilities.unique_constraints
     await people.insert_rows("people", [{"id": 3, "name": "cy"}])
     assert (await dump(people, "people"))[-1]["email"] == "none"
 
@@ -102,6 +105,7 @@ async def test_alter_bad_arguments(people):
     assert await people.alter_table("people") == OperationResult()
 
 
+@pytest.mark.requires("foreign_keys")
 async def test_outbound_foreign_keys_preserved(ops_db):
     await ops_db.create_table("authors", {"id": "integer"}, pk="id")
     await ops_db.create_table(
@@ -117,6 +121,7 @@ async def test_outbound_foreign_keys_preserved(ops_db):
     ]
 
 
+@pytest.mark.requires("foreign_keys")
 async def test_inbound_foreign_keys_still_point_at_table(ops_db):
     await ops_db.create_table("authors", {"id": "integer", "name": "text"}, pk="id")
     await ops_db.create_table(
@@ -145,6 +150,7 @@ async def test_views_survive_alter(ops_db):
     assert (await ops_db.execute("select * from v")).rows == [(1, "x")]
 
 
+@pytest.mark.requires("transactions")
 async def test_alter_inside_transaction_rolls_back(people):
     with pytest.raises(RuntimeError):
         async with people.transaction() as tx:

@@ -70,7 +70,10 @@ async def test_cap_bounds_descriptors_under_load(make_backend):
         per_place = count_open_fds() - baseline
         await dbs[0].sleep()
         assert count_open_fds() == baseline
-        limit = baseline + cap * max(per_place, 1) + ALLOWANCE_PER_THREAD * threads
+        # A backend may declare more per running statement (ClickHouse: an
+        # INSERT writes a new part, several files at once).
+        allowance = max(ALLOWANCE_PER_THREAD, getattr(backends[0], "fds_per_statement", 0))
+        limit = baseline + cap * max(per_place, 1) + allowance * threads
         peak = 0
 
         async def op(d, write):

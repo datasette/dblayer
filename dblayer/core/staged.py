@@ -229,6 +229,10 @@ class StagedImport:
                         # Only reachable with alter=True (chunks added it).
                         await tx.execute(d.add_column_sql(self.table, ColumnDef(c.name, c.type)))
                 q = d.quote_identifiers(cols)
+                if not tx.capabilities.unique_constraints and target.primary_keys:
+                    from .emulated_keys import check_no_overlap
+
+                    await check_no_overlap(tx, self.staging, self.table, target.primary_keys)
                 await tx.execute(
                     f"INSERT INTO {d.quote_identifier(self.table)} ({q}) "
                     f"SELECT {q} FROM {d.quote_identifier(self.staging)}"
