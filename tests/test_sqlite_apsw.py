@@ -220,3 +220,174 @@ async def test_expanded_sql_is_kept_when_tracing(tmp_path):
     conn = db._pool._idle_read[0].conn  # type: ignore[union-attr]
     assert conn.last_expanded_sql == "select 1, 'it''s'"
     await db.close()
+
+
+# -- memory: limits and status --------------------------------------------------
+
+
+@pytest.fixture
+def heap_limit_reset():
+    from dblayer.backends.sqlite_apsw import set_process_heap_limit
+
+    previous = apsw.hard_heap_limit(-1)
+    yield
+    set_process_heap_limit(previous // (1024 * 1024))
+
+
+async def test_memory_limit_stops_a_huge_value(tmp_path, heap_limit_reset):
+    import sqlite3
+
+    from dblayer import ResourceLimitExceeded
+
+    backend = SqliteApsw(tmp_path / "m.db", memory_limit_mb=64)
+    assert backend.capabilities.memory_limit
+    assert not SqliteApsw(tmp_path / "n.db").capabilities.memory_limit
+    db = Database(backend)
+    with pytest.raises(ResourceLimitExceeded):
+        await db.execute("select length(randomblob(200 * 1024 * 1024))")
+    assert apsw.hard_heap_limit(-1) == 64 * 1024 * 1024
+    # Process-wide for apsw's SQLite: another database is limited too ...
+    other = Database(SqliteApsw(tmp_path / "o.db"))
+    with pytest.raises(ResourceLimitExceeded):
+        await other.execute("select length(randomblob(200 * 1024 * 1024))")
+    # ... but not the standard library's SQLite, a separate copy.
+    conn = sqlite3.connect(":memory:")
+    assert conn.execute("select length(randomblob(100 * 1024 * 1024))").fetchone() == (
+        100 * 1024 * 1024,
+    )
+    conn.close()
+    assert (await db.execute("select 1")).rows == [(1,)]  # still usable
+    await db.close()
+    await other.close()
+
+
+async def test_max_value_bytes_is_per_connection(tmp_path):
+    from dblayer import ResourceLimitExceeded
+
+    db = Database(SqliteApsw(tmp_path / "v.db", max_value_bytes=1000))
+    assert (await db.execute("select length(randomblob(1000))")).rows == [(1000,)]
+    with pytest.raises(ResourceLimitExceeded):
+        await db.execute("select randomblob(1001)")
+    other = Database(SqliteApsw(tmp_path / "w.db"))
+    assert (await other.execute("select length(randomblob(5000))")).rows == [(5000,)]
+    await db.close()
+    await other.close()
+
+
+async def test_memory_status_per_backend_and_process(tmp_path):
+    from dblayer.backends.sqlite_apsw import process_memory_status
+
+    backend = SqliteApsw(tmp_path / "s.db", cache_size_kb=512)
+    assert backend.memory_status()["connections"] == 0
+    db = Database(backend)
+    await db.execute_write("create table t (id integer primary key, b blob)")
+    await db.execute_write(
+        "with recursive c(i) as (select 1 union all select i + 1 from c where i < 300) "
+        "insert into t (b) select randomblob(1000) from c"
+    )
+    await db.execute("select count(*), sum(length(b)) from t")
+    s = backend.memory_status()
+    assert s["connections"] == 2  # one reader, one writer
+    # Pages read into each connection's cache (overflow pages bypass it:
+    # SQLITE_DIRECT_OVERFLOW_READ), parsed schema, prepared statements.
+    assert s["cache_used"] > 8192 and s["schema_used"] > 0 and s["stmt_used"] > 0
+    p = process_memory_status()
+    assert p["memory_used"] >= s["cache_used"]
+    assert p["memory_high_water"] >= p["memory_used"]
+    await db.close()
+    assert backend.memory_status()["connections"] == 0
+
+
+# -- untrusted SQL --------------------------------------------------------------
+
+
+@pytest.fixture
+async def untrusted_db(tmp_path):
+    db = Database(SqliteApsw(tmp_path / "u.db", untrusted=True))
+    await db.execute_write("create table t (id integer primary key, v)")
+    await db.execute_write("insert into t (v) values ('a')")
+    yield db
+    await db.close()
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "attach database ':memory:' as other",
+        "attach database 'file:/tmp/elsewhere.db' as other",
+        "pragma cache_size = 100000",
+        "pragma query_only = 0",
+        "pragma writable_schema = 1",
+        "pragma journal_mode = delete",
+        "select load_extension('/tmp/evil')",
+        "create temp table x (y)",  # writes to temp; not stmt_readonly
+        "create temp view x as select 1",
+    ],
+)
+async def test_untrusted_blocks(untrusted_db, sql):
+    with pytest.raises(QueryError):
+        await untrusted_db.execute(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select * from t",
+        "pragma table_info(t)",
+        "select * from pragma_table_xinfo('t')",
+        "pragma cache_size",
+        "explain select * from t",
+        "explain query plan select * from t",
+        "with recursive c(x) as (select 1 union all select x + 1 from c where x < 5) select * from c",
+    ],
+)
+async def test_untrusted_allows_reads(untrusted_db, sql):
+    assert (await untrusted_db.execute(sql)).rows
+
+
+async def test_untrusted_introspection_and_writes_still_work(untrusted_db):
+    assert await untrusted_db.table_names() == ["t"]
+    assert [c.name for c in await untrusted_db.table_columns("t")] == ["id", "v"]
+    # The write connection is not locked down: dblayer's own operations
+    # need pragmas there.
+    await untrusted_db.execute_write("pragma user_version = 3")
+    assert (await untrusted_db.execute("pragma user_version")).rows == [(3,)]
+
+
+async def test_trusted_read_connections_allow_temp_writes(file_db):
+    # As on SqliteInProcess: mode=ro does not cover the temp schema.
+    await file_db.execute("create temp table x (y)")
+
+
+# -- cancellation: no lost-interrupt window ---------------------------------------
+
+
+UNBOUNDED = "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c"
+
+
+async def test_cancel_at_random_points_always_returns(file_db):
+    """A cancel can land before the statement starts, as it starts, or while
+    it runs. Every one must stop the statement: the progress handler reads
+    the cancel flag, so an interrupt that arrives early is not lost."""
+    import random
+
+    rng = random.Random(1)
+    for _ in range(200):
+        task = asyncio.create_task(file_db.execute(UNBOUNDED))
+        for _ in range(rng.randrange(4)):
+            await asyncio.sleep(0)
+        if rng.random() < 0.5:
+            await asyncio.sleep(rng.random() / 1000)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 10)
+    assert (await file_db.execute("select 1")).rows == [(1,)]
+
+
+async def test_cancel_flag_does_not_leak_into_the_next_call(tmp_path):
+    backend = SqliteApsw(tmp_path / "c.db")
+    conn = await backend.open(write=False)
+    conn._on_cancel()  # as if a previous call had been cancelled
+    r = await conn.execute("select 1", {}, time_limit_ms=None, max_rows=None)
+    assert r.rows == [(1,)]
+    await conn.close()
