@@ -335,6 +335,8 @@ class PsycopgConnection:
         self._closed = False
         self._session_timeout = 0
         self._local_timeout: int | None = None
+        self._rearm_idle_timer = False
+        self._server_deadline: float | None = None
 
     def __repr__(self) -> str:
         kind = "write" if self.write else "read"
@@ -381,13 +383,33 @@ class PsycopgConnection:
         """The client-side backstop behind ``statement_timeout``: on expiry
         psycopg cancels the statement on the server and waits for it."""
         timeout = self._client_timeout(time_limit_ms)
-        if timeout is None:
-            return await aw
         try:
+            if timeout is None:
+                return await aw
             async with asyncio.timeout(timeout):
                 return await aw
         except TimeoutError:
             raise interrupted() from None
+        except Exception as e:
+            self._raise_if_expired(e)
+            raise
+
+    def _raise_if_expired(self, exc: BaseException) -> None:
+        """The server ends a session whose transaction ran past its server
+        deadline. asyncpg reads the server's FATAL message (SQLSTATE 25P03);
+        psycopg in pipeline mode often reports only "server closed the
+        connection unexpectedly". A lost connection after the server
+        deadline passed is taken to be that."""
+        deadline = self._server_deadline
+        if deadline is None or time.monotonic() < deadline:
+            return
+        if self._raw.closed or self._raw.broken:
+            from ..errors import TransactionExpired
+
+            raise TransactionExpired(
+                "the server ended the session: the transaction ran past its "
+                "deadline and was rolled back"
+            ) from exc
 
     async def _rollback_to_savepoint(self) -> None:
         if self._raw.closed or not self._in_tx():
@@ -480,7 +502,7 @@ class PsycopgConnection:
             await cur.execute(sql, args)
             return cur
         aux = raw.cursor()
-        async with raw.pipeline():
+        async with self._pipe():
             for i, s in enumerate(pre):
                 last = i == len(pre) - 1
                 await aux.execute(s, first_args if (last and first_args) else None)
@@ -567,7 +589,7 @@ class PsycopgConnection:
             raw = self._raw
             pre = self._timeout_sql(time_limit_ms)
             curs = []
-            async with raw.pipeline():
+            async with self._pipe():
                 if pre:
                     await raw.cursor().execute(pre)
                 for sql, params in statements:
@@ -594,7 +616,7 @@ class PsycopgConnection:
         if savepoint:
             pre.append(f"SAVEPOINT {SAVEPOINT}")
         try:
-            result = await self._execute_many(sql, seq, pre)
+            result = await self._timed(self._execute_many(sql, seq, pre), None)
         except BaseException:
             if savepoint:
                 await self._rollback_to_savepoint()
@@ -607,12 +629,11 @@ class PsycopgConnection:
         raw = self._raw
         cur = raw.cursor()
         verb = leading_keyword(sql, POSTGRES_FLAVOR)
-        if pre:
-            async with raw.pipeline():
-                for s in pre:
-                    await raw.cursor().execute(s)
-                await cur.executemany(sql, seq)
-        else:
+        # executemany() always runs in a pipeline, so it goes through _pipe()
+        # for the idle-timer re-arm too.
+        async with self._pipe():
+            for s in pre:
+                await raw.cursor().execute(s)
             await cur.executemany(sql, seq)
         return WriteResult(rowcount=cur.rowcount if verb in DML else -1)
 
@@ -638,19 +659,50 @@ class PsycopgConnection:
         """``BEGIN`` plus, with a deadline, ``SET LOCAL
         idle_in_transaction_session_timeout`` (deadline + grace), in one
         round trip: if the client stops running, the server ends the
-        session, which rolls the transaction back."""
-        sql = begin_sql(mode, deadline_ms, self.backend.server_deadline_grace_ms)
+        session, which rolls the transaction back.
+
+        On PostgreSQL 17+ ``transaction_timeout`` is set to the same value.
+        It is needed here: psycopg ends every pipeline with Sync then Flush,
+        and the server disarms its idle-in-transaction timer when the Flush
+        arrives without arming it again (``scripts/psycopg_flush_disarms_
+        idle_timeout.py``), so after any pipelined call the idle timeout
+        alone would never fire. On older servers each pipeline in such a
+        transaction is followed by an empty query, which re-arms the timer
+        at the cost of a round trip."""
+        modern = self._raw.info.server_version >= 170000
+        sql = begin_sql(
+            mode,
+            deadline_ms,
+            self.backend.server_deadline_grace_ms,
+            transaction_timeout=modern,
+        )
         self._end_tx()
         await self._raw.execute(sql)
+        self._rearm_idle_timer = deadline_ms is not None and not modern
+        if deadline_ms is not None:
+            grace = self.backend.server_deadline_grace_ms
+            self._server_deadline = time.monotonic() + (deadline_ms + grace) / 1000
 
     def _end_tx(self) -> None:
         self._local_timeout = None
+        self._rearm_idle_timer = False
+        self._server_deadline = None
+
+    @contextlib.asynccontextmanager
+    async def _pipe(self) -> AsyncIterator[None]:
+        """psycopg's pipeline mode (one round trip for everything queued in
+        the block), re-arming the server's idle-in-transaction timer
+        afterwards where only that timer enforces the deadline."""
+        async with self._raw.pipeline():
+            yield
+        if self._rearm_idle_timer and self._in_tx():
+            await self._raw.execute("")
 
     async def commit(self) -> None:
         if self._closed or not self._in_tx():
             return
         try:
-            cur = await self._raw.execute("COMMIT")
+            cur = await self._timed(self._raw.execute("COMMIT"), None)
         finally:
             self._end_tx()
         if cur.statusmessage == "ROLLBACK":
@@ -698,7 +750,7 @@ class PsycopgConnection:
         raw = self._raw
         curs = [raw.cursor() for _ in queries]
         try:
-            async with raw.pipeline():
+            async with self._pipe():
                 aux = raw.cursor()
                 if pre:
                     await aux.execute(pre)
@@ -718,7 +770,7 @@ class PsycopgConnection:
     async def _fetch_many(self, queries: Sequence[str], schema: str) -> list[list[Any]]:
         raw = self._raw
         curs = [raw.cursor() for _ in queries]
-        async with raw.pipeline():
+        async with self._pipe():
             for cur, q in zip(curs, queries):
                 await cur.execute(q, [schema])
         return [await c.fetchall() for c in curs]
@@ -770,7 +822,7 @@ class PsycopgConnection:
                 "; ".join(s for s in (pre, f"SAVEPOINT {SAVEPOINT}" if savepoint else None) if s)
             )
         try:
-            result = await op(**args)
+            result = await self._timed(op(**args), None)
         except BaseException:
             if savepoint:
                 await self._rollback_to_savepoint()

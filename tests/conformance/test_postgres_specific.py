@@ -1,7 +1,9 @@
 """Behaviour specific to the PostgreSQL backend, against the real server.
 
-Not parametrised by backend: these construct ``Postgres`` directly, each on
-its own schema in the ``dblayer_test`` database (see ``tests/pg.py``).
+Not parametrised by the conformance ``BACKENDS`` list: these construct the
+backends directly, each on its own schema in the ``dblayer_test`` database
+(see ``tests/pg.py``), and run once per driver (``asyncpg``: ``Postgres``;
+``psycopg``: ``PostgresPsycopg``).
 """
 
 from __future__ import annotations
@@ -19,15 +21,23 @@ from .. import pg
 pytestmark = pytest.mark.skipif(pg.unavailable() is not None, reason=pg.unavailable() or "")
 
 
+@pytest.fixture(params=pg.DRIVERS)
+def driver(request: pytest.FixtureRequest) -> str:
+    reason = pg.driver_unavailable(request.param)
+    if reason:
+        pytest.skip(reason)
+    return request.param
+
+
 @pytest.fixture
-async def make_pg() -> AsyncIterator[Callable[..., Database]]:
+async def make_pg(driver: str) -> AsyncIterator[Callable[..., Database]]:
     """``make_pg(backend_kwargs=None, **database_kwargs)``: a Database on a
     fresh schema. Several calls with ``schema=`` share one schema."""
     made: list[Database] = []
     schemas: set[str] = set()
 
     def make(*, schema: str | None = None, backend: dict[str, Any] | None = None, **kw: Any) -> Database:
-        b = pg.make(schema=schema, **(backend or {}))
+        b = pg.make(driver, schema=schema, **(backend or {}))
         schemas.add(b.schema)
         db = Database(b, **kw)
         made.append(db)
@@ -165,22 +175,28 @@ async def test_introspection_details(db):
 
 
 @pytest.fixture
-def spy(monkeypatch):
+def spy(monkeypatch, driver):
     """Counts COPYs, and native operations that ran (did not decline)."""
-    import asyncpg
-
-    from dblayer.backends.postgres import PostgresConnection
-
     counts = {"copy": 0, "insert_rows": 0, "upsert_rows": 0}
-    copy = asyncpg.Connection.copy_records_to_table
+    if driver == "asyncpg":
+        import asyncpg
+
+        from dblayer.backends.postgres import PostgresConnection as conn_cls
+
+        target, attr = asyncpg.Connection, "copy_records_to_table"
+    else:
+        from dblayer.backends.postgres_psycopg import PsycopgConnection as conn_cls
+
+        target, attr = conn_cls, "_copy"
+    copy = getattr(target, attr)
 
     async def counting_copy(self, *a, **kw):
         counts["copy"] += 1
         return await copy(self, *a, **kw)
 
-    monkeypatch.setattr(asyncpg.Connection, "copy_records_to_table", counting_copy)
+    monkeypatch.setattr(target, attr, counting_copy)
     for name in ("insert_rows", "upsert_rows"):
-        original = getattr(PostgresConnection, f"_op_{name}")
+        original = getattr(conn_cls, f"_op_{name}")
 
         def wrap(original=original, name=name):
             async def op(self, **kw):
@@ -191,21 +207,31 @@ def spy(monkeypatch):
 
             return op
 
-        monkeypatch.setattr(PostgresConnection, f"_op_{name}", wrap())
+        monkeypatch.setattr(conn_cls, f"_op_{name}", wrap())
     return counts
 
 
-async def test_insert_rows_uses_copy(db, spy):
+async def test_insert_rows_uses_copy(db, spy, driver):
     r = await db.insert_rows("t", [{"id": i, "v": f"v{i}"} for i in range(250)], pk="id")
     assert (r.rowcount, r.table_created) == (250, True)
     assert spy["copy"] == 3 and spy["insert_rows"] == 3  # batch_size=100
     # Conflict handling is not COPY's: the default path takes those.
     r = await db.insert_rows("t", [{"id": 1, "v": "x"}, {"id": 999, "v": "y"}], ignore=True)
     assert r.rowcount == 1 and spy["copy"] == 3
-    # Values COPY's binary codecs refuse go through INSERT, as by default.
+    # asyncpg: values the binary COPY codecs refuse go through INSERT, as by
+    # default. psycopg's text COPY takes an int for a text column.
     r = await db.insert_rows("t", [{"id": 1000, "v": 5}])
-    assert r.rowcount == 1 and spy["insert_rows"] == 4 and spy["copy"] == 3
+    copies = 3 if driver == "asyncpg" else 4
+    assert r.rowcount == 1 and spy["insert_rows"] == 4 and spy["copy"] == copies
     assert (await db.execute("select v from t where id = 1000")).rows == [("5",)]
+    # A float for an integer column: text COPY would refuse "1.5"; both
+    # drivers send it through INSERT. They then disagree: asyncpg's int8
+    # codec truncates 1.5 to 1 in the client, psycopg sends a float8 and the
+    # server's assignment cast rounds it to 2. (SQLite would store 1.5.)
+    await db.create_table("n", {"id": "integer", "x": "integer"}, pk="id")
+    r = await db.insert_rows("n", [{"id": 1, "x": 1.5}])
+    assert spy["copy"] == copies
+    assert (await db.execute("select x from n")).rows == [(1 if driver == "asyncpg" else 2,)]
 
 
 async def test_upsert_rows_is_one_statement_per_group(db, spy):

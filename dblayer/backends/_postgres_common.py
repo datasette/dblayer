@@ -66,9 +66,10 @@ def map_sqlstate(state: str, message: str) -> DblayerError:
         return interrupted()
     if state in ("40001", "40P01"):
         return WriteConflict(message)
-    if state == "25P03":
+    if state in ("25P03", "25P04"):
+        # idle_in_transaction_session_timeout, transaction_timeout (PG 17+)
         return TransactionExpired(
-            "the server ended the session: the transaction was idle past "
+            "the server ended the session: the transaction ran past "
             "its deadline and was rolled back"
         )
     if state.startswith("23"):
@@ -205,10 +206,15 @@ def row_bytes(row: Sequence[Any]) -> int:
     return size
 
 
-def begin_sql(mode: str, deadline_ms: int | None, grace_ms: int) -> str:
+def begin_sql(
+    mode: str, deadline_ms: int | None, grace_ms: int, *, transaction_timeout: bool = False
+) -> str:
     """``BEGIN`` for a transaction mode plus, with a deadline, ``SET LOCAL
     idle_in_transaction_session_timeout`` (deadline + grace), for one simple
-    query."""
+    query. ``transaction_timeout=True`` (PostgreSQL 17+) also sets
+    ``transaction_timeout``, which counts from BEGIN whatever the session
+    is doing, so it also ends a transaction whose idle timer was disarmed
+    (see ``postgres_psycopg``: a Flush message after Sync does that)."""
     if mode == "write":
         sql = "BEGIN READ WRITE"
     elif mode == "read":
@@ -216,7 +222,10 @@ def begin_sql(mode: str, deadline_ms: int | None, grace_ms: int) -> str:
     else:
         raise ValueError(f"unknown transaction mode {mode!r}")
     if deadline_ms is not None:
-        sql += f"; SET LOCAL idle_in_transaction_session_timeout = {int(deadline_ms) + grace_ms}"
+        server_ms = int(deadline_ms) + grace_ms
+        sql += f"; SET LOCAL idle_in_transaction_session_timeout = {server_ms}"
+        if transaction_timeout:
+            sql += f"; SET LOCAL transaction_timeout = {server_ms}"
     return sql
 
 
