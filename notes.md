@@ -310,3 +310,48 @@ Subagent-reported; combined suite not yet re-run by me while milestone 3 is stil
 - `test_duckdb_backend.py::test_long_analytical_query_interrupted_within_100ms` failed on the macOS runner.
 - `test_lifecycle_fds.py::test_idle_timeout_releases_every_descriptor[postgres]` failed once locally and passes alone.
 - All three are timing-dependent. Tight wall-clock bounds from the spec (50 ms, 100 ms) do not hold on shared CI machines; they need either looser bounds in CI or a measurement that does not depend on the scheduler.
+
+## 2026-11-23: milestone 3 done (lifecycle and registry)
+
+### Built
+
+- Sixteen commits, `86f734f` to `d857cc9`. `Registry` with lazy `get()` through a resolver, a shared fixed-size thread pool, a global connection cap with least-recently-used eviction, a wake lock, `on_wake` / `on_sleep` / `on_evict` hooks, `evict()` to the Cold state and `stats()`.
+- `Database` uses `__slots__`; its pool, schema cache and staging set are created lazily and dropped on sleep. New `state` property and `idle_timeout` setting.
+- Idle timeout with one timer for the whole hub, not one per database.
+- The 10,000-database scale test, a 1,000-database DuckDB variant and the thread-count test.
+- I ran the whole suite with every backend after it landed: 1,805 passed, 58 skipped, 2 failed. Both failures are timing-dependent idle-timeout tests (`test_write_and_read_connections_time_out_separately[postgres]`, `test_many_databases_share_one_timer[duckdb]`), run while another subagent was loading the machine. The subagent's own last run and its CI run were green.
+
+### Found: scale test figures (subagent-reported, on this Mac)
+
+| Measure | Result | Spec target |
+| --- | --- | --- |
+| Memory per asleep, never-used database | 513 B (tracemalloc), 569 B (RSS) | under 2 KB |
+| Registering | 0.86 µs per database at both 1,000 and 10,000 | linear |
+| Load | 20,000 requests over 3,363 databases in 2.9 s (about 7,000 requests/s) | none |
+| Open file descriptors | baseline 9, peak 73 with a cap of 64 | cap plus allowance |
+| Threads | 9 before, 9 during | constant |
+| DuckDB, 1,000 databases | 3,000 requests in 5.1 s (591 requests/s) | reported only |
+
+- A `Database` plus backend cost 1,569 B before `__slots__` and 368 B after.
+- **A per-connection cap does not bound DuckDB.** Descriptors and memory scale with awake instances, and queued callers kept evicted databases awake: 30 instances open under a cap of 6. Fixed by counting places (below).
+- **asyncpg connections stranded on a closed event loop cannot be closed from another loop,** so their sockets leak. One test is marked xfail for PostgreSQL. This is a second argument for trying psycopg 3.
+- **At saturation almost every returned connection is closed to make room for a waiter:** about 11,000 wakes for 20,000 requests with 96 workers and a cap of 64. Correct, but wasteful.
+- The DuckDB backend's statement-parse cache grows 55 to 543 B per wake and sleep cycle per database.
+
+### Decision: departures from the spec
+
+- **The cap counts "places", not connections.** A place is a connection, and an awake database always holds at least one place until its backend is released. This is what makes the cap bound DuckDB instances and file descriptors.
+- **Idle timeout and cap share one structure** (a hub with an LRU of idle connections and a single timer).
+- **`registry.get()` raises `UnknownDatabase`** where the spec's resolver returns `None`.
+- **A `Database` can move between event loops** when nothing is checked out: it sleeps and starts again on the new loop.
+- **`evict()` works only on an asleep database and never waits,** so it is safe to call from hooks. The "copied out before eviction" rule lives in the hook, not the registry.
+- **`on_sleep` errors are logged, not raised.**
+- **Sleep drops the schema cache**, as the spec says, so the first introspection after a wake reads the schema again.
+
+### Idea: to discuss
+
+- **Cap policy at saturation:** prefer evicting a database with no queued callers, to cut the wake/sleep churn.
+- **Weighted places:** let a backend declare what an awake instance costs (DuckDB: 2 descriptors and about 5 MB), so one cap can mix cheap and expensive backends honestly.
+- **A waiting timeout on the cap.** A task that holds one connection and asks for another can deadlock silently when the cap is full.
+- **Quota-driven eviction in the registry** (`evict_lru(bytes)`); today the test helper owns that policy.
+- **`Registry.close()` shuts the thread pool down on the event loop thread,** which would block behind a query that ignores interrupts.
