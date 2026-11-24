@@ -250,6 +250,19 @@ def _duckdb_rsworker(config: DemoConfig) -> Backend:
     return DuckDBRustWorker(config.data_dir / "duckdb-rsworker.duckdb")
 
 
+def _duckdb_cppworker(config: DemoConfig) -> Backend:
+    # Experimental: DuckDB in a C++ worker process (build with
+    # `make -C duckdb-cpp-worker`); needs no duckdb package here.
+    try:
+        from dblayer.backends.duckdb_cppworker import DuckDBCppWorker, binary_unavailable
+    except ImportError as e:
+        raise Unavailable(f"the DuckDBCppWorker backend is not available here ({e})") from e
+    reason = binary_unavailable()
+    if reason:
+        raise Unavailable(reason)
+    return DuckDBCppWorker(config.data_dir / "duckdb-cppworker.duckdb")
+
+
 DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite", "SQLite, in process", "SqliteInProcess", _sqlite),
     DemoSpec("sqlite-apsw", "SQLite, in process (apsw)", "SqliteApsw", _sqlite_apsw),
@@ -261,6 +274,7 @@ DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("duckdb", "DuckDB", "DuckDB", _duckdb),
     DemoSpec("duckdb-worker", "DuckDB, in a worker process", "DuckDBWorker", _duckdb_worker),
     DemoSpec("duckdb-rsworker", "DuckDB, in a Rust worker process", "DuckDBRustWorker", _duckdb_rsworker),
+    DemoSpec("duckdb-cppworker", "DuckDB, in a C++ worker process", "DuckDBCppWorker", _duckdb_cppworker),
     DemoSpec(
         "postgres-psycopg",
         "PostgreSQL (psycopg 3)",

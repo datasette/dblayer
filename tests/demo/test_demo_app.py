@@ -45,6 +45,7 @@ SLOW_SQL["sqlite-wasm"] = SLOW_SQL["sqlite"]
 SLOW_SQL["sqlite-apsw"] = SLOW_SQL["sqlite"]
 SLOW_SQL["duckdb-worker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["duckdb-rsworker"] = SLOW_SQL["duckdb"]
+SLOW_SQL["duckdb-cppworker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["postgres-psycopg"] = SLOW_SQL["postgres"]
 
 
