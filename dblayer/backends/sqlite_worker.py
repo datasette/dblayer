@@ -1374,7 +1374,10 @@ class WorkerStream:
         self._spent_ms += (time.perf_counter() - t0) * 1000
         for f in frames:
             if "columns" in f and self.columns is None:
-                self.columns = tuple(Column(c) for c in f["columns"])
+                types = f.get("types") or ()
+                self.columns = tuple(
+                    Column(c, types[i] if i < len(types) else None) for i, c in enumerate(f["columns"])
+                )
             if "error" in f:
                 self._done = True
                 raise error_from_wire(f["error"])

@@ -45,7 +45,15 @@ Value types beyond the portable set (dates, decimals, UUIDs from a DuckDB or
 PostgreSQL engine) go through one extension point,
 `dblayer.worker.protocol.register_value_type(ValueType(tag, ext_code, cls,
 to_wire, from_wire))`: JSON sends `{"$x": [tag, to_wire(v)]}`, MessagePack an
-ext type `ext_code`. None are registered by default; SQLite needs none.
+ext type `ext_code`. The standard library types DuckDB returns are
+registered by default (`STANDARD_VALUE_TYPES`, ext codes 16 to 23):
+`datetime` (a `ZoneInfo` zone is kept by name), `date`, `time`, `Decimal`,
+`UUID`, `timedelta`, and two marker shapes, `map` (a dict with non-string
+keys, or a single `$b`/`$d`/`$x` key) and `tuple` (a fixed-size array).
+Markers are applied only to result columns whose declared type can hold a
+map, struct or array (`MAP(`, `STRUCT(`, `UNION(`, `[`), so plain results
+pay nothing. Results carry `types` (the declared column types) when the
+engine reports any; the first `stream` frame does too.
 
 ## Messages
 

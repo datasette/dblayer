@@ -120,22 +120,21 @@ def test_schema_round_trip(codec):
 
 
 def test_value_type_extension_point(codec):
-    """Engines returning non-portable values (DuckDB/PostgreSQL dates,
-    decimals) register them; both codecs then carry them intact."""
-    import datetime
+    """Engines returning other values register them; both codecs then carry
+    them intact (the standard ones, dates and decimals, are registered by
+    default)."""
     import decimal
+    import fractions
 
     from dblayer.worker.protocol import ValueType, register_value_type, unregister_value_type
 
-    register_value_type(ValueType("decimal", 16, decimal.Decimal, str, decimal.Decimal))
-    register_value_type(ValueType("date", 17, datetime.date, datetime.date.isoformat, datetime.date.fromisoformat))
+    register_value_type(ValueType("fraction", 40, fractions.Fraction, str, fractions.Fraction))
     try:
         msg = {
             "type": "op",
-            "rows": [[decimal.Decimal("1.10"), datetime.date(2026, 11, 23)]],
+            "rows": [[decimal.Decimal("1.10"), fractions.Fraction(1, 3)]],
             "args": {"rows": [{"$x": 1}]},
         }
         assert codec.decode(codec.encode(msg)) == msg
     finally:
-        unregister_value_type("decimal")
-        unregister_value_type("date")
+        unregister_value_type("fraction")

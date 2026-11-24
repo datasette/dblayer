@@ -88,8 +88,10 @@ from .protocol import (
     available_codecs,
     frame,
     get_codec,
+    nested_columns,
     results_to_wire,
     schema_to_wire,
+    wire_rows,
 )
 
 _DML = frozenset({"SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "VALUES", "MERGE"})
@@ -153,7 +155,7 @@ class Conn:
 
 
 class Stream:
-    __slots__ = ("id", "wc", "rs", "credit", "first")
+    __slots__ = ("id", "wc", "rs", "credit", "first", "nested")
 
     def __init__(self, sid: Any, wc: Conn, rs: Any, credit: int) -> None:
         self.id = sid
@@ -161,6 +163,7 @@ class Stream:
         self.rs = rs
         self.credit = credit
         self.first = True
+        self.nested: list[int] = []
 
 
 class Server:
@@ -672,14 +675,19 @@ class Server:
             except StopAsyncIteration:
                 chunk = None
             if s.first:
-                msg["columns"] = [str.__str__(c) for c in s.rs.columns or ()]
+                cols = s.rs.columns or ()
+                msg["columns"] = [str.__str__(c) for c in cols]
+                types = [getattr(c, "type", None) for c in cols]
+                if any(t is not None for t in types):
+                    msg["types"] = types
+                    s.nested = nested_columns(types)
                 s.first = False
             if chunk is None:
                 await self._drop_stream(s.id)
                 msg["end"] = True
                 self.send(msg)
                 return
-            msg["rows"] = chunk
+            msg["rows"] = wire_rows(chunk, s.nested)
             s.credit -= 1
             self.send(msg)
 
