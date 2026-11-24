@@ -1151,3 +1151,40 @@ Subagent-reported. Measurements at load 19 to 25; provisional. CI not confirmed.
 ### Built: a proposed revision of the API (2026-11-24)
 
 `dblayer-api-revision-proposal.md`, written by me at Simon's request from the findings in these notes. It proposes four contract changes (errors end a transaction, with explicit savepoints; atomicity declared per operation; containment as a declared level with `untrusted=True`; no security by scanning SQL text), a set of smaller API additions, changes to the backend interface (interrupt contract, operations as data, capabilities in `hello`, execution strategy), registry changes (weighted places, bounded wakes) and nine decisions for Simon. Nothing in it is implemented, and it rests on the subagents' reports, not yet on a line-by-line code review.
+
+## 2026-11-24: multi-tenant C worker (`sqlite-cpool`), final report
+
+Subagent-reported. Timings at load 17 to 44; provisional; single-client figures swung 3 to 10 times between repeats. The interim section above has the scaling table and the blast-radius summary; this adds what is new.
+
+### Found
+
+- **Full suite with its fixes: 6,271 passed, 3,272 skipped, 4 expected failures.** The skips are backends not built in that worktree.
+- **1,000-database scale test: 9,122 requests/s** (50,000 requests, 10% writes, skewed load, 96 workers) on 2 processes, with descriptors peaking at 15 and threads flat. Reference points from earlier runs: single-tenant C worker 633, Python worker 232, in-process about 7,000. This is the first worker backend to beat in-process SQLite on that test.
+- **One-row update: 320 µs,** against 358 µs for the single-tenant C worker and 506 µs in-process.
+- **A paused stream on another tenant fails loudly at a kill** (`WorkerCrashed` at its next chunk) and is not retried; its database then reconnects.
+- **A process killed from outside retries nothing,** since there is no known culprit.
+- **Isolation inside one process:** page cache and lookaside are per connection; the heap limits are per process, so one tenant can briefly take the whole limit and make others' allocations fail. Tenants otherwise compete only for CPU: a one-row round trip while another tenant ran a long query had a median of 97 µs.
+- **Caps:** 256 connections per process, then the pool overflows to new processes up to 16, then raises `ResourceLimitExceeded`.
+- **In the demo fleet the 40-connection cap is the limit,** not the backend: 500-way fan-outs all succeeded, warm p50 506 to 852 ms.
+- **The TSan step has never run in CI:** GitHub skipped it whenever the ASan step before it failed. Changed to run regardless; not yet confirmed in CI.
+- **A featured pool's worker process outlived its event loop at demo shutdown** (its linger timer died with the loop), which broke a demo stats test whenever the demo tests ran together. Fixed with `close_default_pool()`.
+- **The scratchpad directory is shared between subagents:** one overwrote another's output file. Briefs should give each its own subdirectory.
+- Size: about 440 lines of C added to the C worker for multi-tenant mode, and 649 lines of Python for the pool backend.
+
+### Decision
+
+- No socketpair-per-tenant or shared-memory transport was built: the measured limit is the parent's event loop (about 18 µs of parent CPU per request), not the pipe.
+- Demo fleet mix is now 500 in-process SQLite, 200 C worker, 100 multi-tenant C, 100 DuckDB, 50 DuckDB worker, 30 PostgreSQL, 20 Python worker.
+- **Recommendation from the subagent:** multi-tenant is the right default for many lightly used databases. One C process per connection is better for few, heavy or untrusted tenants that may need a hard kill or a per-database memory limit. apsw inline wins on one-row latency where the SQL is trusted. Before making it the fleet default: a green TSan run in CI, and a decision on per-database memory limits, which a shared process cannot give.
+
+### Idea: to discuss
+
+- **More than one parent event loop, or `uvloop`,** to get past about 54,000 requests/s.
+- **Separate read and write processes,** so a kill only ever hits reads, which are retried.
+- **Lookaside off by default** saves about 47 KB per open database.
+- **Quarantine on a first soft-threshold overrun,** not only after a kill.
+- **`timeout-minutes` on the CI jobs,** which have none.
+
+### Upstream suggestions
+
+- **Datasette with many databases:** a smaller per-connection lookaside buffer cut per-connection memory by about 25% here (188 KB to 141 KB). Python's `sqlite3` cannot set `SQLITE_DBCONFIG_LOOKASIDE`; apsw can. Measured in the C worker only, not in Datasette.
