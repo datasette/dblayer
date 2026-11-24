@@ -269,7 +269,9 @@ class CPool:
     * ``size``: worker processes for ordinary tenants (default 2), started on
       demand. A connection goes to an idle process, else a new one while
       there are fewer than ``size``, else the one with fewest connections.
-    * ``max_connections``: per process (the worker's thread cap).
+    * ``max_connections``: per process (the worker's thread cap). When
+      every process is full, more are started, up to ``max_processes``
+      (default 16); past that an open raises ``ResourceLimitExceeded``.
     * ``quarantine_s``: after a kill, the culprit's database places new
       connections on a separate quarantine process for this long (0: off).
     * ``heap_limit_mb``, ``soft_heap_limit_mb``: process-wide SQLite heap
@@ -291,6 +293,7 @@ class CPool:
         binary: str | os.PathLike[str] | None = None,
         codec: str | None = None,
         max_connections: int = 256,
+        max_processes: int = 16,
         quarantine_s: float = 60.0,
         heap_limit_mb: int | None = None,
         soft_heap_limit_mb: int | None = None,
@@ -305,6 +308,7 @@ class CPool:
         if size < 1:
             raise ValueError("size must be at least 1")
         self.size = size
+        self.max_processes = max(max_processes, size)
         self.linger = linger
         self.quarantine_s = quarantine_s
         self.config: MultiWorkerConfig = _intern(  # type: ignore[assignment]
@@ -393,19 +397,26 @@ class CPool:
             if proc is None or not proc.alive or proc.handles >= cap:
                 proc = await self._start(True)
         else:
-            self.procs = [p for p in self.procs if p.alive]
-            live = [p for p in self.procs if p.handles < cap]
-            idle = [p for p in live if p.handles == 0]
-            if idle:
-                proc = idle[0]
-            elif len(self.procs) < self.size or not live:
-                if len(self.procs) >= self.size and not live and self.procs:
+            # Re-evaluated after every start: concurrent opens that waited
+            # for one start must not all land on the new process.
+            while True:
+                self.procs = [p for p in self.procs if p.alive]
+                live = [p for p in self.procs if p.handles < cap]
+                idle = [p for p in live if p.handles == 0]
+                if idle:
+                    proc = idle[0]
+                    break
+                n = len(self.procs)
+                if n < self.size or (not live and n < self.max_processes):
+                    await self._start(False)
+                    continue
+                if not live:
                     raise ResourceLimitExceeded(
-                        f"every C pool process has {cap} connections (max_connections x size)"
+                        f"every C pool process is full: {n} processes x {cap} connections "
+                        "(max_processes x max_connections)"
                     )
-                proc = await self._start(False)
-            else:
                 proc = min(live, key=lambda p: p.handles)
+                break
         proc.handles += 1
         if proc.idle_timer is not None:
             proc.idle_timer.cancel()

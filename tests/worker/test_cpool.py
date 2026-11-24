@@ -144,7 +144,7 @@ async def test_many_databases_share_size_processes(tmp_path, pool):
 async def test_connection_cap_per_process(tmp_path):
     from dblayer.backends.sqlite_cpool import CPool
 
-    pool = CPool(1, linger=0, max_connections=2)
+    pool = CPool(1, linger=0, max_connections=2, max_processes=1)
     dbs = [make(pool, tmp_path / f"c{i}.db") for i in range(2)]
     try:
         await dbs[0].execute("select 1")
@@ -155,6 +155,24 @@ async def test_connection_cap_per_process(tmp_path):
             await third.execute("select 1")
         await dbs[0].sleep()
         assert (await third.execute("select 3")).rows == [(3,)]
+    finally:
+        for d in dbs:
+            await d.close()
+        pool.close()
+
+
+async def test_full_processes_overflow_to_more_up_to_max_processes(tmp_path):
+    """size is a target: when every process is at max_connections, the
+    pool starts more (up to max_processes), even for many concurrent
+    first opens, and never puts more than max_connections on one."""
+    from dblayer.backends.sqlite_cpool import CPool
+
+    pool = CPool(1, linger=0, max_connections=4, max_processes=8)
+    dbs = [make(pool, tmp_path / f"o{i}.db") for i in range(12)]
+    try:
+        await asyncio.gather(*(d.execute("select 1") for d in dbs))
+        procs = pool.processes()
+        assert len(procs) == 3 and all(p.handles == 4 for p in procs)
     finally:
         for d in dbs:
             await d.close()
