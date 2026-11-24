@@ -100,7 +100,8 @@ def _pct(xs: list[float], q: float) -> float:
 
 
 async def measure(spec: ScaleBackend, root: Path, n: int, repeat: int) -> dict[str, Any]:
-    paths = spec.create_files(root / spec.id, n)
+    # In a thread: some create_files (PGlite's) call asyncio.run themselves.
+    paths = await asyncio.to_thread(spec.create_files, root / spec.id, n)
     registry = Registry(max_open_connections=64, max_threads=8, idle_timeout=None)
     cold: list[float] = []
     warm: list[float] = []

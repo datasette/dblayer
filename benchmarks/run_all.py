@@ -164,7 +164,7 @@ TOPICS: list[Topic] = [
           ["benchmarks/scale_wake_query.py", "--json", "{json}"], quick=["--n", "100"], full=["--n", "1000"],
           timeout=(900, 3600)),
     Topic("scale_tests", "Scale tests (tests/scale, through their harness)",
-          ["-m", "pytest", "tests/scale", "-m", "scale", "-s", "-q", "-p", "no:cacheprovider", "--timeout=1800"],
+          ["-m", "pytest", "tests/scale", "-s", "-q", "-p", "no:cacheprovider", "--timeout=1800"],
           quick_env={"DBLAYER_SCALE_N": "300"}, timeout=(1200, 5400), pytest=True),
 ]
 
