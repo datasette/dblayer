@@ -23,6 +23,10 @@ then goes to sleep: it closes the backend (where
 ``capabilities.sleep_releases_everything``) and drops the pool, so an asleep
 database holds no pool at all.
 
+Idle connections are registered with the database's ``Hub``, which closes
+them after ``idle_timeout`` seconds unused (one timer per hub, none per
+database).
+
 A pool belongs to the event loop it was created on; its database replaces it
 when used from another loop (see ``Database._use_pool``).
 """
@@ -38,6 +42,7 @@ from typing import TYPE_CHECKING
 
 from ..backends.base import Backend, BackendConnection
 from ..errors import DatabaseClosed
+from .hub import Hub
 
 if TYPE_CHECKING:
     from .database import Database
@@ -64,7 +69,7 @@ class PoolStats:
 
 
 class _Entry:
-    __slots__ = ("conn", "write", "generation", "last_used", "pool")
+    __slots__ = ("conn", "write", "generation", "last_used", "pool", "timeout")
 
     def __init__(
         self, conn: BackendConnection, write: bool, generation: int, pool: "Pool"
@@ -74,6 +79,7 @@ class _Entry:
         self.generation = generation
         self.last_used = time.monotonic()
         self.pool = pool
+        self.timeout = pool.idle_timeout
 
 
 class Pool:
@@ -96,6 +102,8 @@ class Pool:
         "_closed",
         "open",
         "users",
+        "hub",
+        "idle_timeout",
     )
 
     def __init__(self, db: "Database", loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -119,6 +127,8 @@ class Pool:
         """Connections open, being opened or being closed."""
         self.users = 0
         """Callers inside ``acquire`` or holding a connection."""
+        self.hub: Hub = db._get_hub()
+        self.idle_timeout: float | None = db._idle_timeout()
 
     # -- checkout ------------------------------------------------------------
 
@@ -201,13 +211,23 @@ class Pool:
 
     def _check_in(self, entry: _Entry) -> None:
         (self._idle_write if entry.write else self._idle_read).append(entry)
+        self.hub.track(entry)
+
+    def _remove_idle(self, entry: _Entry) -> None:
+        """Called by the hub when it takes an idle connection away (idle
+        timeout); the hub then closes it with ``_close_entry``."""
+        (self._idle_write if entry.write else self._idle_read).remove(entry)
 
     def _reusable(self, entry: _Entry) -> bool:
         return not self._closed and entry.generation == self._generation
 
     def _take_idle(self, write: bool) -> _Entry | None:
+        # Most recently used first, so that surplus connections age out.
         idle = self._idle_write if write else self._idle_read
-        return idle.pop() if idle else None
+        entry = idle.pop() if idle else None
+        if entry is not None:
+            self.hub.untrack(entry)
+        return entry
 
     def _check_empty(self) -> None:
         if self.open == 0 and self.users == 0:
@@ -223,6 +243,8 @@ class Pool:
         entries = self._idle_read + self._idle_write
         self._idle_read = []
         self._idle_write = []
+        for e in entries:
+            self.hub.untrack(e)
         return entries
 
     async def close_idle(self) -> int:

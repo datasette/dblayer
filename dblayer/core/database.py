@@ -14,6 +14,7 @@ from .api import IntrospectionMixin, OperationsMixin
 from .common import DEFAULT, Opt, map_errors, pick, spawn
 from .operations import OperationResult
 from .params import Params, rewrite
+from .hub import Hub, default_hub
 from .pool import DEFAULT_MAX_READ_CONNECTIONS, Pool, PoolStats
 from .results import Results, Row, WriteResult, make_index
 from .schema import Schema, SchemaCache
@@ -86,6 +87,8 @@ class Database(IntrospectionMixin, OperationsMixin):
         "_closed_total",
         "_awake",
         "_transition",
+        "idle_timeout",
+        "_hub",
     )
 
     def __init__(
@@ -101,6 +104,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         chunk_rows: int = 1000,
         deadline_ms: int | None = DEFAULT_DEADLINE_MS,
         native_operations: bool = True,
+        idle_timeout: Opt[float] = DEFAULT,
     ) -> None:
         if max_read_connections < 1:
             raise ValueError("max_read_connections must be at least 1")
@@ -123,6 +127,12 @@ class Database(IntrospectionMixin, OperationsMixin):
         self._opened_total = 0
         self._closed_total = 0
         self._awake = False
+        self.idle_timeout = idle_timeout
+        """Seconds a connection may sit unused before it is closed; when the
+        last one closes the database is asleep. ``DEFAULT`` takes the hub's
+        (registry's) setting, 30 s unless configured; ``None`` never closes
+        idle connections."""
+        self._hub: Hub | None = None
         self._transition: tuple[str, asyncio.Future[Any]] | None = None
         """A wake or sleep in progress: ``(kind, future)``."""
 
@@ -155,6 +165,14 @@ class Database(IntrospectionMixin, OperationsMixin):
         return pool.stats()
 
     # -- helpers -------------------------------------------------------------
+
+    def _get_hub(self) -> Hub:
+        return self._hub if self._hub is not None else default_hub()
+
+    def _idle_timeout(self) -> float | None:
+        if self.idle_timeout is DEFAULT:
+            return self._get_hub().idle_timeout
+        return self.idle_timeout  # type: ignore[return-value]
 
     def _get_pool(self) -> Pool:
         pool = self._pool
