@@ -311,6 +311,8 @@ class SqliteInProcess:
                 pass
             else:
                 os.close(fd)
+        if not write and not self.immutable and self._path is not None:
+            self._recover_hot_journal()
         raw = sqlite3.connect(
             self._uri(write),
             uri=True,
@@ -328,6 +330,30 @@ class SqliteInProcess:
             raw.close()
             raise
         return raw
+
+    def _recover_hot_journal(self) -> None:
+        """A writer killed mid-transaction in rollback-journal mode leaves
+        a hot journal, and a ``mode=ro`` connection cannot roll it back:
+        every read fails with ``SQLITE_READONLY_ROLLBACK`` until a writer
+        opens the file. When a journal file exists, read through a
+        read-write connection once, which lets SQLite roll it back (it does
+        so only if no live writer holds the lock, so this never touches a
+        transaction in progress). Costs one ``stat`` otherwise."""
+        assert self._path is not None
+        if not os.path.exists(self._path + "-journal"):
+            return
+        try:
+            rw = sqlite3.connect(
+                Path(self._path).as_uri() + "?mode=rw", uri=True, timeout=self.busy_timeout
+            )
+        except sqlite3.Error:
+            return  # read-only file or directory: nothing we can do
+        try:
+            rw.execute("select count(*) from sqlite_master").fetchone()
+        except sqlite3.Error:
+            pass
+        finally:
+            rw.close()
 
 
 def _stat(path: str) -> tuple[int, int] | None:
@@ -410,7 +436,21 @@ class SqliteConnection:
         max_rows: int | None,
         max_result_bytes: int | None = None,
     ) -> Results:
-        return await self._run(self._execute, sql, params, time_limit_ms, max_rows, max_result_bytes)
+        return await self._run(
+            self._execute_recovering, sql, params, time_limit_ms, max_rows, max_result_bytes
+        )
+
+    def _execute_recovering(self, *args: Any) -> Results:
+        """``_execute``; on a read connection that meets a hot journal left
+        by a killed writer (``SQLITE_READONLY_ROLLBACK``), recover through a
+        read-write connection and retry once."""
+        try:
+            return self._execute(*args)
+        except sqlite3.OperationalError as e:
+            if self.write or getattr(e, "sqlite_errorname", None) != "SQLITE_READONLY_ROLLBACK":
+                raise
+            self._backend._recover_hot_journal()
+            return self._execute(*args)
 
     def _execute(
         self,
