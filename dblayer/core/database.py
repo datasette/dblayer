@@ -14,6 +14,7 @@ from ..backends.base import Backend, Capabilities, Dialect
 from ..errors import DatabaseClosed, NestedWriteError
 from .api import IntrospectionMixin, OperationsMixin
 from .common import DEFAULT, Opt, map_errors, pick, spawn
+from .export import DEFAULT_CHUNK_BYTES, ExportStream, make_export
 from .operations import OperationResult
 from .params import Params, rewrite
 from .hub import Hub, LifecycleHook, default_hub
@@ -536,6 +537,53 @@ class Database(IntrospectionMixin, OperationsMixin):
             raise
         finally:
             await pool.release(conn, discard=discard)
+
+    def export(
+        self,
+        sql: str,
+        params: Params = None,
+        *,
+        format: str = "csv",
+        json_shape: str = "objects",
+        header: bool = True,
+        time_limit_ms: Opt[int] = DEFAULT,
+        max_rows: Opt[int] = DEFAULT,
+        max_bytes: int | None = None,
+        chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+        native: bool = True,
+    ) -> ExportStream:
+        """One read as a stream of ``bytes`` in ``format`` (``"csv"``,
+        ``"tsv"``, ``"json"`` with ``json_shape`` ``"objects"``,
+        ``"arrays"`` or ``"array"``, or ``"ndjson"``), as defined in
+        ``docs/export-formats.md``. The backend serialises when it can
+        (``export_formats``; ``native=False`` forces the Python fallback).
+
+        Use as ``async with db.export(sql) as body: async for chunk in
+        body: ...``; one read connection is held until the stream ends or
+        is closed. ``max_rows`` truncates (``body.truncated``);
+        ``max_bytes`` raises ``ResourceLimitExceeded`` before passing the
+        cap; ``time_limit_ms`` is a budget of time spent waiting on the
+        backend, as for ``stream()``."""
+        self._check_open()
+        return make_export(
+            self,
+            sql,
+            params,
+            format=format,
+            json_shape=json_shape,
+            header=header,
+            time_limit_ms=time_limit_ms,
+            max_rows=max_rows,
+            max_bytes=max_bytes,
+            chunk_bytes=chunk_bytes,
+            native=native,
+        )
+
+    @property
+    def export_formats(self) -> frozenset[str]:
+        """Export format families (``"csv"``, ``"tsv"``, ``"json"``) this
+        database's backend serialises itself; the rest use the fallback."""
+        return frozenset(getattr(self._backend, "export_formats", ()) or ())
 
     async def execute_write(
         self,

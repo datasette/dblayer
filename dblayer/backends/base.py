@@ -64,6 +64,8 @@ __all__ = [
     "RowStream",
     "SupportsOperations",
     "SupportsBatch",
+    "SupportsExport",
+    "ExportSource",
     "SupportsServerDeadline",
     "NativeParams",
     "UsesExecutor",
@@ -486,6 +488,58 @@ class SupportsBatch(Protocol):
         time_limit_ms: int | None,
         max_rows: int | None,
     ) -> list[Results]: ...
+
+
+@runtime_checkable
+class ExportSource(Protocol):
+    """What ``SupportsExport.export`` returns: the row bytes of one export.
+
+    ``start()`` runs the statement far enough to know the result columns
+    and returns them (the core writes the header row or JSON envelope from
+    them). Iterating then yields chunks of row bytes in the requested
+    encoding (``docs/export-formats.md``; for the JSON encodings, every row
+    after the first starts with ``,``). A chunk may be ``bytes`` or a
+    ``memoryview`` the source does not touch again. ``row_count`` counts
+    rows produced so far; ``truncated`` is final once iteration ends.
+    ``aclose()`` stops the statement (it may be mid-chunk: a client went
+    away) and must leave the connection reusable."""
+
+    row_count: int
+    truncated: bool
+
+    async def start(self) -> Sequence[Column]: ...
+    def __aiter__(self) -> AsyncIterator[bytes | memoryview]: ...
+    async def __anext__(self) -> bytes | memoryview: ...
+    async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class SupportsExport(Protocol):
+    """Optional, on a ``BackendConnection``: serialise a read's result to
+    CSV, TSV or JSON in the backend (``db.export()``).
+
+    ``export_formats`` lists the format families done natively
+    (``"csv"``, ``"tsv"``, ``"json"``; JSON covers every shape and
+    NDJSON); for any other the core uses its Python fallback. A
+    ``Backend`` may carry the same attribute, for callers to see before a
+    connection is open. ``encoding`` is one of ``"csv"``, ``"tsv"``,
+    ``"json-objects"``, ``"json-arrays"``, ``"ndjson"``. ``max_rows``: stop
+    after that many rows and set ``truncated`` if another existed.
+    ``time_limit_ms`` is advisory (the core enforces it as well).
+    ``chunk_bytes`` is a target chunk size."""
+
+    export_formats: frozenset[str]
+
+    def export(
+        self,
+        sql: str,
+        params: NativeParams,
+        *,
+        encoding: str,
+        max_rows: int | None,
+        time_limit_ms: int | None,
+        chunk_bytes: int,
+    ) -> ExportSource: ...
 
 
 @runtime_checkable
