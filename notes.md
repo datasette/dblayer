@@ -726,3 +726,52 @@ Simon chose two of the ambitious ideas above, each given to its own subagent:
 ### Decision: try the socket handoff (2026-11-24)
 
 Simon asked for idea 1 from the ambitious list. It is added to the export experiment as a fourth transport for the C SQLite worker: Python sends the HTTP headers, then passes the client connection's file descriptor to the worker, which writes the body itself. Known preconditions to be confirmed by the experiment: plain HTTP/1.1 only (no TLS terminated in Python, no HTTP/2), no compression or other response middleware, and ASGI gives an application no supported way to reach the socket.
+
+## 2026-11-24: in-process SQLite on apsw
+
+Subagent-reported. Timings taken at load 9 to 17 with nine other subagents running; provisional. CI result unknown (runs were cancelled by later pushes, then `gh` was rate-limited).
+
+### Built
+
+- `dblayer/backends/sqlite_apsw.py` (`SqliteApsw`), optional extra `apsw`, registered as `sqlite-apsw`: 372 passed, 6 skipped, the same six skips as the standard-library backend. Also passes with inline reads switched on. 49 apsw-specific tests.
+- `dblayer/backends/_sqlite_common.py`: dialect, error mapping and schema reading shared by both in-process SQLite backends.
+- Twelve commits, `ca42c7c` to `c1c8959`.
+
+### Found
+
+- **Removing the thread hop works.** With `inline_reads=True`, a cheap read runs on the event loop thread under a budget of 10,000 opcodes or 2 ms. A one-row read drops from about 61 µs to 9.6 µs, against 53 µs for the C worker. Over budget in mid-step, the read-only statement is stopped and re-run on a thread; over budget between rows, the same cursor carries on from another thread. The longest event-loop gap during a slow query was 0.31 ms.
+- **Most of that is available on the standard `sqlite3` module too.** A raw measurement outside dblayer: 3.2 µs inline against 29 µs through an executor. What the standard module lacks is a way to know a statement is read-only before running it.
+- **`SqliteInProcess` has a `last_pk` bug:** the before/after `last_insert_rowid()` comparison reports `None` for an insert that reuses the previous insert's rowid (insert 5, delete, insert 5). apsw's sentinel approach gets it right and needs no extra SQL.
+- **apsw gives result columns their declared types,** through views too; the standard module cannot.
+- **A real but process-wide heap limit.** `hard_heap_limit` stops a 200 MB `randomblob` with the database still usable, but it is one limit for every apsw database in the process, last value wins, and it counts only SQLite's own allocations.
+- **An "untrusted" mode is cheap:** an authorizer plus DEFENSIVE, TRUSTED_SCHEMA off and an attach limit of zero blocks ATTACH, pragma writes, `load_extension` and temp objects, while leaving ordinary reads and introspection working.
+- **`sqlite3_stmt_readonly` is true for `ATTACH`, `BEGIN` and `PRAGMA x = 1`,** so it cannot be the only check for untrusted SQL.
+- **The memdb idea from earlier notes does not work for us.** A memdb write transaction shuts readers out, which breaks the core's rule that reads proceed alongside a writer. apsw's wheel also omits shared cache. So apsw has no usable multi-connection in-memory database.
+- **The lost-interrupt window can be closed by design:** a cancel flag read by the progress handler, plus one interrupt. 200 random-point cancels all returned.
+- Per-row cost is about 15 to 20% lower than the standard module. One-row updates and bulk inserts are the same.
+- apsw bundles SQLite 3.54.1; uv's Python has 3.53.1.
+
+### Decision
+
+- **Recommendation from the subagent: offer both, keep the standard module as the default,** and port inline reads to `SqliteInProcess` as the next step. Revisit if heap limits or untrusted SQL become requirements.
+
+### Idea: to discuss
+
+- **Port inline reads to the standard-library backend.** This is probably the largest single speed-up available for the default path: about six times on small reads.
+- **Fix `last_pk` in `SqliteInProcess`** (rowid reuse).
+- **Expose SQLite memory status in `RegistryStats`.**
+- **A busy handler that checks the cancel flag,** so a cancel also ends a wait for a lock.
+- **A custom VFS reading by HTTP range requests** for cold databases in object storage, with `immutable=1`.
+
+### Upstream suggestions
+
+- **Datasette: an inline fast path for cheap queries.** Running a query on the event loop thread under an opcode budget, and falling back to a thread when it is exceeded, cut a one-row read about six times here, and a raw test suggests it works on the standard `sqlite3` module. Measured in dblayer only; Datasette's `execute_fn` path not tested.
+- **Datasette: lock down arbitrary SQL with an authorizer** plus DEFENSIVE, TRUSTED_SCHEMA=0 and an attach limit of zero. The authorizer half works on the standard module (`set_authorizer`). Behaviour verified here; Datasette's current protections not compared.
+- **Datasette, issue 1270:** a cancel flag read by the progress handler closes the lost-interrupt window without repeated interrupts. Verified here with 200 cancels.
+- **Datasette: typed result columns** need `sqlite3_column_decltype`, which the standard module does not expose. A reason to consider apsw as an optional driver.
+- **sqlite-utils:** any before/after `last_insert_rowid()` comparison has the rowid-reuse blind spot found in `SqliteInProcess`. Not checked against sqlite-utils' code.
+
+### Unverified or fragile
+
+- Two apsw backends with different `memory_limit_mb` values in one process fight over the single heap limit.
+- The inline budget does not bound a slow user-defined function or a cold disk read inside one opcode.
