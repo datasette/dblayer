@@ -842,7 +842,13 @@ class DuckDBConnection:
     # -- misc ----------------------------------------------------------------
 
     async def interrupt(self) -> None:
-        self._cur.interrupt()  # thread-safe
+        # Only while a statement runs: an interrupt landing on the read
+        # wrapper's ROLLBACK after the statement left that ROLLBACK undone,
+        # and the next BEGIN failed with "transaction is aborted" (macOS CI,
+        # test_interrupt[duckdb]). Same guard as _interrupt_while_active.
+        with self._lock:
+            if self._active:
+                self._cur.interrupt()  # thread-safe
 
     async def close(self) -> None:
         if not self._closed:

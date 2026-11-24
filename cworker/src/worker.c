@@ -35,6 +35,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #include <pthread.h>
 #ifndef CWORKER_WASM
 #include <signal.h>
@@ -2723,6 +2726,16 @@ int main(int argc, char **argv) {
         /* Heap limits need memory statistics (off in some system builds). */
         sqlite3_config(SQLITE_CONFIG_MEMSTATUS, 1);
     }
+    /* Under RLIMIT_AS, glibc's per-thread malloc arenas would spend the
+     * limit on reservations: a thread's first malloc maps a fresh 64 MB
+     * heap, and with --memory-limit-mb 64 the reader's arena (created
+     * after the limit, at the first open) took all of it, so every lane's
+     * 4 MB stack then failed and no database could open (Linux CI). One
+     * arena keeps the limit for memory actually used. */
+#ifdef __GLIBC__
+    if (g_memory_limit_mb > 0)
+        mallopt(M_ARENA_MAX, 1);
+#endif
     sqlite3_initialize();
     /* Process-wide: every connection in this process shares them. */
     if (g_heap_limit_mb > 0) {
