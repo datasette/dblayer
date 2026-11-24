@@ -1108,7 +1108,13 @@ class WorkerConnection:
         if self._shared:
             assert b.workers is not None
             b.workers.release(old)
-            self._proc = await b.workers.acquire()
+            try:
+                self._proc = await b.workers.acquire()
+            except BaseException:
+                # Holds no process now (the old one is released): closed,
+                # so that close() does not release it a second time.
+                self._closed = True
+                raise
         else:
             self._proc = b._new_process()
             await self._proc.start()
@@ -1116,7 +1122,16 @@ class WorkerConnection:
         try:
             await self._open()
         except BaseException:
+            # Give the new process back now: close() returns at once for a
+            # closed connection, so marking it closed alone (as before) left
+            # a dedicated child running and a shared process's handle held,
+            # which kept it alive after every database had closed.
             self._closed = True
+            self._cancel_deadline_timer()
+            if self._shared:
+                b.workers.release(self._proc)  # type: ignore[union-attr]
+            else:
+                self._proc.close()
             raise
 
     async def _call(self, msg: dict[str, Any], *, limit_ms: float | None = None) -> dict[str, Any]:
@@ -1308,14 +1323,19 @@ class WorkerConnection:
         if self._shared:
             if self._conn_id is not None:
                 proc.notice_handlers.pop(self._conn_id, None)
-            if proc.alive and self._conn_id is not None:
-                try:
-                    if asyncio.get_running_loop() is proc.loop:
-                        await proc.call({"type": "close", "conn": self._conn_id}, owner=self)
-                except Exception:
-                    pass
-            assert self._backend.workers is not None
-            self._backend.workers.release(proc)
+            try:
+                if proc.alive and self._conn_id is not None:
+                    try:
+                        if asyncio.get_running_loop() is proc.loop:
+                            await proc.call({"type": "close", "conn": self._conn_id}, owner=self)
+                    except Exception:
+                        pass
+            finally:
+                # Even when the close message was cancelled: the connection
+                # is marked closed, so nothing would release it later and
+                # its handle would keep the shared process alive.
+                assert self._backend.workers is not None
+                self._backend.workers.release(proc)
         else:
             proc.close()
 

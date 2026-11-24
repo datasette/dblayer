@@ -94,8 +94,16 @@ async def _no_children_left() -> None:
         from dblayer.backends.sqlite_worker import WorkerProcess
 
         procs = [o for o in gc.get_objects() if isinstance(o, WorkerProcess)]
-        state = [(p.pid, type(p).__name__, p.handles, p.dead, p.idle_timer) for p in procs if p.pid in live_worker_pids()]
-        pytest.fail(f"worker processes still running: {live_worker_pids()}; {state}")
+        from dblayer.backends.sqlite_worker import WorkerConnection
+
+        live = live_worker_pids()
+        state = [(p.pid, type(p).__name__, p.handles, p.dead) for p in procs if p.pid in live]
+        conns = [
+            (c._proc.pid, c._closed, c._conn_id, c.write)
+            for c in gc.get_objects()
+            if isinstance(c, WorkerConnection) and c._proc.pid in live
+        ]
+        pytest.fail(f"worker processes still running: {live}; {state}; connections: {conns}")
 
 
 async def test_cancel_during_start_up(worker_spec, make_backend) -> None:  # type: ignore[no-untyped-def]

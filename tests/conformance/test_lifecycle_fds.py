@@ -3,6 +3,7 @@ eviction, sleep, close and registry close all give every descriptor back,
 and the open count stays within the cap plus a fixed allowance."""
 
 import asyncio
+import os
 import random
 
 import pytest
@@ -16,6 +17,29 @@ pytestmark = pytest.mark.requires("sleep_releases_everything")
 # Descriptors a connection may hold beyond its own while a statement runs
 # (a rollback journal during a write, a temp file), per concurrent call.
 ALLOWANCE_PER_THREAD = 2
+
+
+def _fd_table() -> dict[int, str]:
+    """Open descriptors and what each points at, for failure messages:
+    the C worker job under ASan on Linux once ended two descriptors *below*
+    its baseline, and the count alone cannot say which."""
+    out = {}
+    for path in ("/proc/self/fd", "/dev/fd"):
+        if os.path.isdir(path):
+            for name in os.listdir(path):
+                try:
+                    out[int(name)] = os.readlink(os.path.join(path, name))
+                except OSError:
+                    out[int(name)] = "?"
+            break
+    return out
+
+
+def _fd_diff(before: dict[int, str]) -> str:
+    after = _fd_table()
+    gone = {fd: t for fd, t in before.items() if after.get(fd) != t}
+    new = {fd: t for fd, t in after.items() if before.get(fd) != t}
+    return f"closed since baseline: {gone}; opened since baseline: {new}"
 
 
 async def _prime(make_backend, n):
@@ -62,6 +86,7 @@ async def test_cap_bounds_descriptors_under_load(make_backend):
         await dbs[0].execute("select 1")
         await dbs[0].sleep()
         baseline = count_open_fds()
+        table = _fd_table()
         # Descriptors one awake database with one connection holds: 1 for
         # SQLite, more where the backend keeps files of its own (a DuckDB
         # instance holds the file and its WAL). The cap counts an awake
@@ -69,7 +94,7 @@ async def test_cap_bounds_descriptors_under_load(make_backend):
         await dbs[0].execute("select 1")
         per_place = count_open_fds() - baseline
         await dbs[0].sleep()
-        assert count_open_fds() == baseline
+        assert count_open_fds() == baseline, _fd_diff(table)
         # A backend may declare more per running statement (ClickHouse: an
         # INSERT writes a new part, several files at once).
         allowance = max(ALLOWANCE_PER_THREAD, getattr(backends[0], "fds_per_statement", 0))
@@ -89,7 +114,7 @@ async def test_cap_bounds_descriptors_under_load(make_backend):
         assert registry.stats().cap_evictions > 0
         for d in dbs:
             await d.sleep()
-        assert count_open_fds() == baseline
+        assert count_open_fds() == baseline, _fd_diff(table)
 
 
 async def test_close_and_registry_close_release_everything(make_backend):
