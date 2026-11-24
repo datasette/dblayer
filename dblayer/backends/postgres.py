@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Mapping, Sequence
@@ -205,6 +206,8 @@ _TX_CONTROL = frozenset(
     {"BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT", "SAVEPOINT", "RELEASE", "PREPARE"}
 )
 _STRING_TYPES = frozenset({"text", "varchar", "bpchar", "name", "unknown"})
+# Types whose asyncpg codec takes a str as it is.
+_ACCEPTS_STR = _STRING_TYPES | {"json", "jsonb", "xml", "uuid", "citext", "char"}
 _INT8_MIN, _INT8_MAX = -(2**63), 2**63 - 1
 _SAVEPOINT = "dblayer_stmt"
 
@@ -234,15 +237,26 @@ def _cast_for(value: Any) -> str | None:
 
 
 def _with_casts(sql: str, casts: Mapping[int, str]) -> str:
+    """Replace each ``$n`` in ``casts`` by ``casts[n].format(p="$n")``."""
     parts = []
     pos = 0
-    for _start, end, n in dollar_parameters(sql, POSTGRES_FLAVOR):
+    for start, end, n in dollar_parameters(sql, POSTGRES_FLAVOR):
         if n in casts:
-            parts.append(sql[pos:end])
-            parts.append(f"::{casts[n]}")
+            parts.append(sql[pos:start])
+            parts.append(casts[n].format(p=sql[start:end]))
             pos = end
     parts.append(sql[pos:])
     return "".join(parts)
+
+
+def _as_text(value: Any) -> Any:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float, Decimal)):
+        return str(value)
+    if isinstance(value, (datetime.date, datetime.time, uuid.UUID)):
+        return value.isoformat() if not isinstance(value, uuid.UUID) else str(value)
+    return value
 
 
 def _has_top_level_returning(sql: str) -> bool:
@@ -351,6 +365,7 @@ class Postgres:
             sleep_releases_everything=True,
             returning=True,
             snapshot_reads=True,
+            replace_keeps_views=False,
         )
         self._schema_ready = False
         self._hint_generation = 0
@@ -371,11 +386,15 @@ class Postgres:
             "default_transaction_read_only": "off" if write else "on",
             **self.server_settings,
         }
-        raw = await asyncpg.connect(
-            self.dsn,
-            server_settings=settings,
-            timeout=self.connect_timeout,
+        kwargs: dict[str, Any] = {
+            # asyncpg expires cached statements with one loop timer per
+            # entry; 0 turns that off (the cache is still bounded by size),
+            # so an idle connection schedules nothing on the loop.
+            "max_cached_statement_lifetime": 0,
             **self.connect_kwargs,
+        }
+        raw = await asyncpg.connect(
+            self.dsn, server_settings=settings, timeout=self.connect_timeout, **kwargs
         )
         try:
             if self.create_schema and not self._schema_ready:
@@ -554,32 +573,40 @@ class PostgresConnection:
         ``PreparedStatement``), adapted to the parameter values in ``rows``
         (one list per execution).
 
-        PostgreSQL types a parameter it cannot infer as ``text``, and asyncpg
-        then refuses anything but ``str`` for it. For such a parameter:
-        if every non-null value is of one non-string kind, the statement is
-        re-prepared with a cast (``$1::int8``), so ``select :a`` returns the
-        value as SQLite would; if strings and numbers are mixed, the numbers
-        are sent as their text (what SQLite's TEXT affinity stores). ``rows``
-        is changed in place in that case."""
+        asyncpg's codecs are strict about Python types, where SQLite takes
+        any value anywhere. Two adaptations, both per parameter:
+
+        * PostgreSQL types a parameter it cannot infer as ``text`` and asyncpg
+          then refuses a non-``str``. If every non-null value is of one
+          non-string kind, the statement is re-prepared with a cast
+          (``$1::int8``), so ``select :a`` returns the value as SQLite
+          would; if strings and other values are mixed, the others are sent
+          as their text (what SQLite's TEXT affinity stores).
+        * A ``str`` for a parameter of another type (``cast(:x as
+          integer)`` with ``"42"``) is sent as text and converted by the
+          server, ``($1::text)::int4``, as an untyped literal would be.
+
+        ``rows`` is changed in place where values are sent as text."""
         stmt = await _prepare(self._raw, sql)
         if not rows or not rows[0]:
             return stmt
         casts: dict[int, str] = {}
         for n, ptype in enumerate(stmt.get_parameters(), start=1):
-            if ptype.name not in _STRING_TYPES:
+            i = n - 1
+            if ptype.name in _STRING_TYPES:
+                kinds = {_cast_for(r[i]) for r in rows if r[i] is not None}
+                if not kinds or kinds == {None}:
+                    continue
+                if len(kinds) == 1:
+                    casts[n] = "{p}::" + kinds.pop()  # type: ignore[operator]
+                    continue
+            elif ptype.name in _ACCEPTS_STR or not any(isinstance(r[i], str) for r in rows):
                 continue
-            kinds = {_cast_for(r[n - 1]) for r in rows if r[n - 1] is not None}
-            if not kinds or kinds == {None}:
-                continue
-            if len(kinds) == 1:
-                casts[n] = kinds.pop()  # type: ignore[assignment]
-                continue
+            else:
+                q = _DIALECT.quote_identifier
+                casts[n] = "({p}::text)::" + f"{q(ptype.schema)}.{q(ptype.name)}"
             for r in rows:
-                v = r[n - 1]
-                if isinstance(v, (int, float, Decimal)) and not isinstance(v, bool):
-                    r[n - 1] = str(v)
-                elif isinstance(v, bool):
-                    r[n - 1] = "1" if v else "0"
+                r[i] = _as_text(r[i])
         if casts:
             stmt = await _prepare(self._raw, _with_casts(sql, casts))
         return stmt
@@ -816,11 +843,34 @@ class PostgresConnection:
         if self._closed:
             return
         self._closed = True
+        raw = self._raw
         try:
-            await asyncio.wait_for(self._raw.close(), 5)
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if getattr(raw, "_loop", running) is not running:
+            # Left behind on another (usually closed) event loop: neither a
+            # graceful close nor terminate() can run there, so close the
+            # socket directly. The server sees end-of-file and rolls back.
+            _close_socket(raw)
+            return
+        try:
+            await asyncio.wait_for(raw.close(), 5)
         except BaseException:
-            self._raw.terminate()
+            raw.terminate()
             raise
+
+
+def _close_socket(raw: "asyncpg.Connection") -> None:
+    transport = getattr(raw, "_transport", None)
+    sock = getattr(transport, "_sock", None)  # private asyncio attribute
+    if sock is not None:
+        sock.close()
+    else:  # pragma: no cover - other transport implementations
+        try:
+            raw.terminate()
+        except Exception:
+            pass
 
 
 class _PostgresStream:
@@ -960,7 +1010,7 @@ select c.oid, c.relname, c.relkind::text
 """
 
 _COLUMNS_SQL = """
-select a.attrelid, a.attname, upper(format_type(a.atttypid, a.atttypmod)), a.attnotnull,
+select a.attrelid, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
        case when a.attgenerated = '' then pg_get_expr(d.adbin, d.adrelid) end,
        a.attgenerated <> '' as generated
   from pg_attribute a
@@ -1012,6 +1062,26 @@ select t.tgname, c.relname, pg_get_triggerdef(t.oid)
  where n.nspname = $1 and not t.tgisinternal
  order by t.oid
 """
+
+
+_LONG_TYPES = (
+    (re.compile(r"^character varying\b"), "varchar"),
+    (re.compile(r"^character\b"), "char"),
+    (re.compile(r"^bit varying\b"), "varbit"),
+    (re.compile(r"^timestamp(\(\d+\))? with time zone"), r"timestamptz\1"),
+    (re.compile(r"^timestamp(\(\d+\))? without time zone"), r"timestamp\1"),
+    (re.compile(r"^time(\(\d+\))? with time zone"), r"timetz\1"),
+    (re.compile(r"^time(\(\d+\))? without time zone"), r"time\1"),
+)
+
+
+def _short_type(formatted: str) -> str:
+    """``format_type`` output in the short spelling people write
+    (``varchar(20)``, ``timestamptz``), upper-cased like the dialect's type
+    names (``BIGINT``, ``DOUBLE PRECISION``)."""
+    for pattern, repl in _LONG_TYPES:
+        formatted = pattern.sub(repl, formatted, count=1)
+    return formatted.upper()
 
 
 async def _read_schema(raw: "asyncpg.Connection", schema: str) -> Schema:
@@ -1066,7 +1136,7 @@ async def _read_schema(raw: "asyncpg.Connection", schema: str) -> Schema:
         cols = tuple(
             ColumnInfo(
                 name=c,
-                type=t,
+                type=_short_type(t),
                 not_null=nn,
                 default=dflt,
                 primary_key=pk.index(c) + 1 if c in pk else 0,
