@@ -55,7 +55,7 @@ import datetime
 import re
 import time
 import uuid
-from collections.abc import Awaitable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -204,6 +204,10 @@ _DML = frozenset({"INSERT", "UPDATE", "DELETE", "MERGE"})
 # statement savepoint.
 _TX_CONTROL = frozenset(
     {"BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT", "SAVEPOINT", "RELEASE", "PREPARE"}
+)
+_NO_SCHEMA_CHANGE = frozenset(
+    {"SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "VALUES", "TABLE", "SHOW", "SET",
+     "EXPLAIN", "COPY", "SAVEPOINT", "RELEASE", "ROLLBACK", "COMMIT", "BEGIN", "START"}
 )
 _STRING_TYPES = frozenset({"text", "varchar", "bpchar", "name", "unknown"})
 # Types whose asyncpg codec takes a str as it is.
@@ -533,42 +537,60 @@ class PostgresConnection:
         return sql is None or leading_keyword(sql, POSTGRES_FLAVOR) not in _TX_CONTROL
 
     async def _guarded[T](
-        self, sql: str | None, time_limit_ms: int | None, body: Awaitable[T]
+        self, sql: str | None, time_limit_ms: int | None, body: Callable[[], Awaitable[T]]
     ) -> T:
-        """Run ``body`` after the prelude. Inside a transaction a failure is
-        rolled back to the statement savepoint, so the transaction stays
+        """Run ``body()`` after the prelude. Inside a transaction a failure
+        is rolled back to the statement savepoint, so the transaction stays
         usable, as it does on SQLite. ``sql=None`` means a whole named
-        operation."""
-        try:
-            savepoint = self._use_savepoint(sql)
-            if sql is not None and not savepoint and self._in_tx() and self._sp_pending_release:
-                # A transaction-control statement: settle our savepoint
-                # first so it cannot swallow the caller's.
-                await self._raw.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
-                self._sp_pending_release = False
-            prelude = self._prelude(time_limit_ms, savepoint)
-            if prelude:
-                await self._raw.execute(prelude)
-        except BaseException:
-            _close_awaitable(body)
-            raise
-        if not savepoint:
-            return await body
-        try:
-            result = await body
-        except asyncio.CancelledError:
-            raise
-        except BaseException:
-            if not self._raw.is_closed() and self._in_tx():
+        operation.
+
+        A cached prepared statement that another connection's DDL made
+        stale fails with ``InvalidCachedStatementError``; asyncpg retries
+        that itself outside a transaction, and the savepoint lets it be
+        retried (once, after dropping the statement cache) inside one."""
+        import asyncpg
+
+        savepoint = self._use_savepoint(sql)
+        if sql is not None and not savepoint and self._in_tx() and self._sp_pending_release:
+            # A transaction-control statement: settle our savepoint first so
+            # it cannot swallow the caller's.
+            await self._raw.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
+            self._sp_pending_release = False
+        prelude = self._prelude(time_limit_ms, savepoint)
+        if prelude:
+            await self._raw.execute(prelude)
+        for attempt in (1, 2):
+            try:
+                result = await body()
+            except asyncio.CancelledError:
+                raise
+            except BaseException as e:
+                retry = attempt == 1 and isinstance(e, asyncpg.InvalidCachedStatementError)
+                if not savepoint:
+                    if retry and not self._in_tx():
+                        # An autocommit statement: nothing ran. (asyncpg
+                        # retries this itself, but not for statements taken
+                        # from its cache as PreparedStatement objects.)
+                        await self._raw.reload_schema_state()
+                        continue
+                    raise
+                if self._raw.is_closed() or not self._in_tx():
+                    raise
                 try:
+                    if retry:
+                        await self._raw.execute(f"ROLLBACK TO SAVEPOINT {_SAVEPOINT}")
+                        await self._raw.reload_schema_state()
+                        continue
                     await self._raw.execute(
                         f"ROLLBACK TO SAVEPOINT {_SAVEPOINT}; RELEASE SAVEPOINT {_SAVEPOINT}"
                     )
                 except Exception:
                     pass
-            raise
-        self._sp_pending_release = True
-        return result
+                raise
+            if savepoint:
+                self._sp_pending_release = True
+            return result
+        raise AssertionError("unreachable")  # pragma: no cover
 
     async def _statement(self, sql: str, rows: list[list[Any]]) -> Any:
         """A cached prepared statement for ``sql`` (an asyncpg
@@ -629,7 +651,7 @@ class PostgresConnection:
             self._guarded(
                 sql,
                 time_limit_ms,
-                self._execute(sql, args, time_limit_ms, max_rows, max_result_bytes),
+                lambda: self._execute(sql, args, time_limit_ms, max_rows, max_result_bytes),
             )
         )
 
@@ -672,6 +694,11 @@ class PostgresConnection:
                     raise ResourceLimitExceeded(
                         f"result exceeded max_result_bytes={max_result_bytes}"
                     )
+        if verb not in _NO_SCHEMA_CHANGE:
+            # Our own DDL makes cached statements on this connection stale
+            # ("cached plan must not change result type"); drop them now
+            # rather than fail and retry later.
+            await raw.reload_schema_state()
         columns = tuple(Column(a.name, a.type.name) for a in attrs)
         return Results.from_tuples(
             columns,
@@ -710,7 +737,7 @@ class PostgresConnection:
         seq = [list(p) if p else [] for p in params_seq]
         if not seq:
             return WriteResult(rowcount=0)
-        return await self._call(self._guarded(sql, None, self._execute_many(sql, seq)))
+        return await self._call(self._guarded(sql, None, lambda: self._execute_many(sql, seq)))
 
     async def _execute_many(self, sql: str, seq: list[list[Any]]) -> WriteResult:
         verb = leading_keyword(sql, POSTGRES_FLAVOR)
