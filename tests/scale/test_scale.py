@@ -90,6 +90,15 @@ async def test_ten_thousand_databases(scale_backend, tmp_path):
         )
         for d in dbs[: THREADS * 2]:
             await d.sleep()
+        # Queries alone do not guarantee the pool reached full size: on a
+        # loaded machine a thread can finish before the next submit and be
+        # reused, and the missing thread then starts during the load.
+        # THREADS jobs that wait for one another force every thread up.
+        barrier = threading.Barrier(THREADS)
+        loop = asyncio.get_running_loop()
+        await asyncio.gather(
+            *(loop.run_in_executor(registry.executor, barrier.wait, 30) for _ in range(THREADS))
+        )
         threads = threading.active_count()
         fd_baseline = count_open_fds()
         # Descriptors per place under the cap: 1 for SQLite (one per
@@ -184,7 +193,10 @@ async def test_ten_thousand_databases(scale_backend, tmp_path):
 
     assert sampler.samples > 100
     assert not sampler.over_limit, f"fd count over {fd_limit}: max {max(sampler.over_limit)}"
-    assert sampler.min_threads == sampler.max_threads == threads
+    # No thread started during the load. (A thread left by an earlier test
+    # may exit meanwhile, so the minimum is not asserted.)
+    assert sampler.max_threads <= threads, (sampler, threads)
+    assert len(registry.executor._threads) == THREADS  # type: ignore[attr-defined]
     assert per_full <= 3 * per_small, "registration is not linear in the count"
     assert reg.traced_bytes_per_db < TARGET_BYTES_PER_ASLEEP_DB
     if spec.growth_limit is not None:
