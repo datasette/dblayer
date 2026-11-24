@@ -293,3 +293,11 @@ async def test_capabilities():
     assert not caps.concurrent_writers and not caps.hard_kill and not caps.memory_limit
     mem = SqliteInProcess.memory().capabilities
     assert not mem.sleep_releases_everything and not mem.cheap_change_hint
+
+
+async def test_last_pk_none_for_without_rowid_tables(file_db):
+    await file_db.execute_write("create table r (id integer primary key, v)")
+    await file_db.execute_write("insert into r (v) values ('x')")
+    await file_db.execute_write("create table w (k text primary key, v) without rowid")
+    r = await file_db.execute_write("insert into w values ('a', 1)")
+    assert r.rowcount == 1 and r.last_pk is None

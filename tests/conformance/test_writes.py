@@ -139,3 +139,40 @@ async def test_failed_write_leaves_write_slot_free(items):
         items.execute_write("insert into items (id, name) values (1, 'a')"), timeout=2
     )
     assert r.rowcount == 1
+
+
+@pytest.mark.requires("implicit_rowid")
+async def test_last_pk_none_after_upsert_that_updates(items):
+    await items.execute_write("insert into items (id, name) values (5, 'a')")
+    # Make the connection's last_insert_rowid point somewhere else.
+    await items.execute_write("insert into items (id, name) values (9, 'z')")
+    upsert = (
+        "insert into items (id, name, n) values (:id, :name, 1) "
+        "on conflict (id) do update set n = excluded.n"
+    )
+    r = await items.execute_write(upsert, {"id": 5, "name": "a"})
+    assert r.rowcount == 1
+    assert r.last_pk is None  # updated, did not insert
+    r = await items.execute_write(upsert, {"id": 6, "name": "b"})
+    assert r.last_pk == 6
+
+
+@pytest.mark.requires("implicit_rowid")
+async def test_last_pk_none_when_conflict_skipped(items):
+    await items.execute_write("insert into items (id, name) values (1, 'a')")
+    r = await items.execute_write(
+        "insert into items (id, name) values (1, 'a') on conflict do nothing"
+    )
+    assert r.rowcount == 0 and r.last_pk is None
+
+
+async def test_last_pk_none_for_non_inserts(items):
+    await items.execute_write("insert into items (id, name) values (1, 'a')")
+    assert (await items.execute_write("update items set n = 2")).last_pk is None
+    assert (await items.execute_write("delete from items")).last_pk is None
+
+
+@pytest.mark.requires_not("implicit_rowid")
+async def test_last_pk_none_without_rowids(items):
+    r = await items.execute_write("insert into items (id, name) values (1, 'a')")
+    assert r.last_pk is None
