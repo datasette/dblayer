@@ -78,3 +78,46 @@ Simon agreed to raise the floor from the spec's 3.11 to 3.12. The SQLite backend
 - **Cancellation waits for the thread.** A cancelled call interrupts the statement and waits for the worker thread before re-raising, so a connection is never used by two threads. A query that ignores the interrupt therefore delays cancellation. This is the in-process case the worker backend exists to fix.
 - **Creating a missing file on first read.** With the default `create=True`, reading a database whose file does not exist creates an empty file. Datasette would probably prefer an error for reads.
 - **No type checker has been run** over the code yet.
+
+## 2026-11-23: milestone 2 done (transactions and named operations)
+
+### Built
+
+- Eleven commits, `8c75c5e` to `bba6973`. I re-ran the suite: 828 passed, 10 skipped, on Python 3.12 and 3.15. The timing-sensitive transaction and deadline tests passed three runs in a row.
+- `db.transaction(mode, deadline_ms)`, `db.batch()`, every named operation on both `db` and `tx`, `db.staged_import()` and `db.sweep_staged()`.
+- Default operations are plain `async def op(tx, **args)` functions in `core/operations.py`, written against a five-member `TxLike` interface. Arguments are normalised to plain data first, so the same call can cross a process boundary.
+- Override dispatch: a connection that implements `run_operation` is tried first; it may return `NotImplemented` to fall back. `Database(native_operations=False)` forces the default path, and the `ops_db` test fixture runs every operation test both ways.
+- `alter_table` on SQLite: native `RENAME COLUMN`, otherwise a rebuild that replays indexes and triggers.
+
+### Found
+
+- **A view naming the target breaks drop-and-rename on SQLite** ("error in view v: no such table"). `PRAGMA legacy_alter_table=ON` around the rename fixes it.
+- **sqlite-utils `transform` has gaps we should not copy:** it does not recreate triggers, silently loses CHECK constraints, STRICT and WITHOUT ROWID, and its `defer_foreign_keys` approach misbehaves inside a transaction with `foreign_keys=ON` (silent cascade deletes on DROP, or a COMMIT failure with an empty `foreign_key_check`). Worth reporting upstream after confirming with a minimal script.
+- **Shared-cache in-memory databases cannot give snapshot reads**, since their readers run `read_uncommitted`.
+- **In rollback-journal mode an open read transaction blocks a writer's COMMIT** for up to `busy_timeout`.
+- **`sqlite3_interrupt` on an idle connection does nothing**, so a deadline that fires while a statement is still queued for a thread would be missed. The expiry task re-interrupts every 20 ms until the call returns.
+
+### Decision: departures from the spec in milestone 2
+
+- **`last_pk` is `None` unless this statement inserted a row** (found by comparing `last_insert_rowid()` before and after). It is the rowid, so it equals the primary key only for rowid tables.
+- **`db.stream()` returns a `RowStream`** usable with `async for` or `async with`, so the connection is released deterministically.
+- **`ignore` and `replace` use portable `ON CONFLICT`**, not SQLite's `OR IGNORE` / `OR REPLACE`. `replace` needs a primary key and updates in place, keeping the rowid; SQLite's native form deletes and reinserts.
+- **Nesting is stricter than the spec:** any `db.transaction()` inside an open transaction on the same database raises `NestedWriteError`, including a read inside a read.
+- **Read transactions take their snapshot at the first statement**, as PostgreSQL's REPEATABLE READ does.
+- **Deadline:** counted from BEGIN, not from the wait for the write slot. Commit is never interrupted. A clean exit after expiry raises `TransactionExpired`.
+- **Rebuilds refuse rather than lose data:** tables with CHECK, generated columns, STRICT or WITHOUT ROWID raise `NotSupported`.
+- **Staging table name carries its creation time** (`_dblayer_import_<unix-seconds>_<hex8>`), so the orphan sweep needs only a table listing.
+- **`replace` rebuilds indexes after the rename, inside the swap transaction.** The spec says to build them on staging first, but index names are global in SQLite and cannot be renamed. The cost is that the swap holds the write slot for the index build.
+- **New capability flag `snapshot_reads`**, new exception `TransactionClosed` (parent of `TransactionExpired`), and an optional `execute_batch` backend method so `batch()` is one hop.
+- **`staged_import` takes `pk`, `alter` and `columns`** as well as `mode`.
+
+### Idea: to discuss
+
+- **Rename `last_pk` to `last_rowid`** and have operations return real primary keys through `RETURNING`.
+- **Use the `memdb` VFS for in-memory databases** (`file:/name?vfs=memdb`) in place of shared cache. It should give real locking and isolation and could remove the `snapshot_reads` flag. Untested.
+- **WAL by default** for writable SQLite files, which removes readers blocking a writer's COMMIT.
+- **Savepoints are more important than "stretch goal".** PostgreSQL aborts the whole transaction when any statement fails, where SQLite carries on. Wrapping each `tx` call in a savepoint on PostgreSQL would make `tx` behave the same on every backend.
+- **A read inside a read transaction can exhaust the read pool and hang** when `max_read_connections=1`. Routing `db.execute()` through the task's open read transaction would fix it, and is close to open question 8 (a request's reads sharing one snapshot).
+- **Operations on a `tx` shared between tasks are not atomic**; a per-operation lock would fix it.
+- **The orphan sweep can delete a live import owned by another process** if it is older than `max_age`. A heartbeat row or an advisory lock would close this.
+- **Process note:** vague "commit when a chunk passes" briefs produced one commit per milestone. A named list of commit points plus a 10-minute ceiling produced eleven.
