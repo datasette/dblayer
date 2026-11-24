@@ -43,7 +43,7 @@ async def test_commit_on_clean_exit(t):
 async def test_uncommitted_writes_invisible_to_other_connections(t):
     async with t.transaction() as tx:
         await tx.execute("insert into t (id, v) values (1, 'a')")
-        if t.capabilities.snapshot_reads:
+        if t.capabilities.snapshot_reads and t.capabilities.concurrent_sessions:
             assert await count(t) == 0
     assert await count(t) == 1
 
@@ -242,6 +242,7 @@ async def test_child_task_inherits_nesting_check(t):
             await asyncio.wait_for(task, EVENTUALLY_S)
 
 
+@pytest.mark.requires("concurrent_sessions")
 async def test_reads_on_db_inside_write_transaction(t):
     await t.execute_write("insert into t (id, v) values (1, 'a')")
     async with t.transaction() as tx:
@@ -294,6 +295,7 @@ async def test_read_transaction_rejects_writes(t):
     assert await count(t) == 0
 
 
+@pytest.mark.requires("concurrent_sessions")
 async def test_read_transaction_never_takes_write_slot(t):
     go = asyncio.Event()
     inserted = asyncio.Event()

@@ -123,6 +123,8 @@ from .sqlite_worker import (
     WorkerProcess,
     WorkerStream,
     _intern,
+    _unwrap,
+    _Waiter,
 )
 
 __all__ = [
@@ -213,6 +215,7 @@ CAPABILITIES = Capabilities(
     snapshot_reads=True,
     statement_errors_abort_transaction=False,
     replace_keeps_views=False,
+    concurrent_sessions=False,
 )
 
 
@@ -386,9 +389,51 @@ class PGliteProcess(WorkerProcess):
         expect_frames: int | None = None,
         on_sent: Callable[[int], None] | None = None,
     ) -> Any:
-        if msg.get("type") not in ("open", "more", "cancel", "close", "rollback"):
-            limit_ms = await self._wait_turn(owner, limit_ms)
-        return await super().call(msg, owner=owner, limit_ms=limit_ms, expect_frames=expect_frames, on_sent=on_sent)
+        """``WorkerProcess.call`` with the gate checked again once the send
+        lock is held: two waiters released together must not both go (the
+        first may take the session with a stream or a ``begin``)."""
+        gated = owner is not None and msg.get("type") not in ("open", "more", "cancel", "close", "rollback")
+        while True:
+            if gated:
+                limit_ms = await self._wait_turn(owner, limit_ms)
+            await self.lock.acquire()
+            if gated and self.dead is None and self.holder is not None and self.holder is not owner:
+                self.lock.release()
+                continue
+            break
+        try:
+            self._check()
+            mid = msg["id"] = msg.get("id") or next(self._ids)
+            if expect_frames is not None and msg.get("type") == "more":
+                del msg["id"]  # a ``more`` has no id of its own: frames carry the stream's
+                mid = msg["stream"]
+            fut: asyncio.Future[Any] = self.loop.create_future()
+            self._waiters[mid] = _Waiter(fut, owner, expect_frames)
+            try:
+                self.send(msg)
+            except BaseException:
+                self._waiters.pop(mid, None)
+                raise
+            if on_sent is not None:
+                on_sent(mid)
+            timer = None
+            if limit_ms is not None:
+                timer = self.loop.call_later(
+                    max(limit_ms, 0) / 1000 + self.config.kill_grace_ms / 1000,
+                    self._kill_for_time, mid, limit_ms,
+                )
+            self.inflight = (mid, owner)
+            try:
+                reply = await self._wait(fut, mid)
+            finally:
+                self.inflight = None
+                if timer is not None:
+                    timer.cancel()
+        finally:
+            self.lock.release()
+        if expect_frames is None:
+            return _unwrap(reply, self)
+        return reply
 
     def _dispatch(self, msg: dict[str, Any]) -> None:
         mid = msg.get("id")

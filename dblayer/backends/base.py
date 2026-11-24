@@ -135,6 +135,12 @@ class Capabilities:
     """A result may have two columns of the same name (``select 1 as a, 2
     as a``). False on ClickHouse, which refuses the query."""
 
+    concurrent_sessions: bool = True
+    """Each connection is a session of its own: while a transaction is open
+    on one, statements on the others run (and do not see its uncommitted
+    changes). False on PGlite, one session per database: they wait until
+    it ends. Not in the spec's table."""
+
     def has(self, flag: str) -> bool:
         if flag not in self.names():
             raise AttributeError(f"unknown capability flag {flag!r}")
