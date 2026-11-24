@@ -169,11 +169,28 @@ def _duckdb(config: DemoConfig) -> Backend:
     return DuckDB(config.data_dir / "duckdb.duckdb")
 
 
+def _duckdb_worker(config: DemoConfig) -> Backend:
+    return duckdb_worker_backend(config.data_dir / "duckdb-worker.duckdb")
+
+
+def duckdb_worker_backend(path: Path, **options: object) -> Backend:
+    """Shared by the featured DuckDB worker database and the fleet's: one
+    worker process per awake database, exiting when it sleeps."""
+    try:
+        import duckdb  # noqa: F401  (the worker imports it; fail here if it cannot)
+
+        from dblayer.backends.duckdb_worker import DuckDBWorker
+    except ImportError as e:
+        raise Unavailable(f"the DuckDBWorker backend is not available here ({e})") from e
+    return DuckDBWorker(path, **options)  # type: ignore[arg-type]
+
+
 DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite", "SQLite, in process", "SqliteInProcess", _sqlite),
     DemoSpec("sqlite-worker", "SQLite, in a worker process", "SqliteWorker", _sqlite_worker),
     DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),
     DemoSpec("duckdb", "DuckDB", "DuckDB", _duckdb),
+    DemoSpec("duckdb-worker", "DuckDB, in a worker process", "DuckDBWorker", _duckdb_worker),
     DemoSpec(
         "postgres-psycopg",
         "PostgreSQL (psycopg 3)",

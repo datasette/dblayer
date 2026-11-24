@@ -39,6 +39,7 @@ SLOW_SQL = {
     "duckdb": "select sum(a.range * b.range) from range(1000000) a, range(1000000) b",
 }
 SLOW_SQL["sqlite-worker"] = SLOW_SQL["sqlite"]
+SLOW_SQL["duckdb-worker"] = SLOW_SQL["duckdb"]
 SLOW_SQL["postgres-psycopg"] = SLOW_SQL["postgres"]
 
 
@@ -94,6 +95,7 @@ async def test_homepage_lists_all_four_databases(all_client: tuple[Any, httpx.As
         "SQLite, in a worker process",
         "PostgreSQL",
         "DuckDB",
+        "DuckDB, in a worker process",
     ]:
         assert title in r.text
     for slug, demo in app.state.demos.items():
