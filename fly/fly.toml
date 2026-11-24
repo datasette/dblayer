@@ -1,0 +1,9 @@
+# Used only to build and push the benchmark image: fly/build-image.sh runs
+# `fly deploy --build-only --push` from this directory. The machine itself
+# is created by fly/launch.sh with `fly machine run`, not `fly deploy`: no
+# services, no ports, no public IP.
+app = "dblayer-bench"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
