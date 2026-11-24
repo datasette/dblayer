@@ -1230,3 +1230,33 @@ Subagent-reported. Timings at load 13 to 83; provisional. Linux CI unverified fo
 
 - None for sqlite-utils or Datasette.
 - **DuckDB (not sqlite-utils or Datasette):** the C API's streaming execute waits for half of `streaming_buffer_size` where the Python client does not, and that setting can be neither a database default nor changed after the configuration is locked. Well verified by the subagent on one binary at two settings.
+
+## 2026-11-24: three worker bugs fixed, and what they turned out to be
+
+Subagent-reported. Full suite after the fixes: 6,295 passed, 3,339 skipped, 4 expected failures (load 60 at the start). No CI result covers these commits. Five commits, `b0ff1ac` to `549084e`.
+
+### Found
+
+- **Cancelling an in-process stream never interrupted it at all.** This was worse than the "lost interrupt window" reported earlier: on SQLite and DuckDB each stream fetch ran outside the block that handles cancels, so a cancelled stream over an unbounded query hung for good. Before the fix the stress test hung at the first cancel on SQLite and the fifth on DuckDB. Fixed; apsw was already safe because its progress handler checks a cancel flag.
+- **Worker streams leaked when a cancel landed as their frames arrived.** The parent marked the stream done but the worker kept the cursor open. On the C worker that open statement left SQLite's interrupt flag set, so every later statement on the connection failed as interrupted (188 of 200 iterations after the first leak). Fixed on both sides.
+- **The DuckDB worker's CI failure is explained, and my earlier note was wrong.** Neither a lost interrupt nor slow first rows: after a result is abandoned (rows beyond `max_rows`, or a stream closed early), DuckDB keeps producing it in the background, and the next statement on that cursor, here the read wrapper's ROLLBACK, waits for it. Raw DuckDB: 14 of 60 trials took 3.2 to 9.1 s. Fixed by interrupting the abandoned result first; after the fix the worst case was 195 ms in-process.
+- **Correction to "the Python backends do not need the streaming buffer fix":** that measurement covered first rows, not abandonment. The buffer does matter for the Python package, but it cannot be set there (per connection only, not inherited by cursors, and locked by `lock_configuration`), hence the interrupt.
+- **The `LIMIT max_rows+1` wrap is not safe as a general answer:** DuckDB renames duplicate column names inside a subquery (`a, a` becomes `a, a_1`). The C++ worker still uses that wrap as an optimisation; worth checking whether it changes column names there.
+- **On the multi-tenant C worker, one cancelled first open cancelled every other concurrent open.** They shared one process start through a future and inherited its cancellation. The likeliest cause of the reported "later tests hang". Fixed.
+- **Two release paths were skipped on cancel,** leaking pool handles and, in dedicated placement, a child process: a cancelled `close()`, and a cancelled reconnect.
+- **Python 3.14 and later log an ERROR for a future that fails behind a cancelled `asyncio.shield`.** This is the "WorkerCrashed exception in shielded future" line. Fixed in the workers; other uses of `shield` in the core may still do it.
+- **`last_pk` with a reused rowid is fixed** on `SqliteInProcess` and on the C worker, which had the same bug. Both set `last_insert_rowid()` to a sentinel before an insert. The standard module has no binding for `sqlite3_set_last_insert_rowid`, so the in-process backend writes the sentinel through a one-row temp table.
+- **Not reproduced:** an actual hang of the Python SQLite worker. **Not resolved:** the descriptor count ending below baseline under ASan on Linux; the test now lists which descriptors changed.
+
+### Idea: to discuss
+
+- **"Interrupt before abandoning a result" should be part of the backend contract,** alongside the interrupt rule in the API revision proposal.
+- **The DuckDB export path probably has the same multi-second wait** when a result is closed early.
+- Run the cancel stress test in CI under deliberate load.
+- Audit remaining `asyncio.shield` uses in the core.
+
+### Upstream suggestions
+
+- **Datasette: on Python 3.14 and later, cancelling `await asyncio.shield(fut)` whose future later fails logs an ERROR.** Observed in CPython 3.15's asyncio; Datasette's own uses of `shield` not checked.
+- **Datasette and sqlite-utils:** comparing `last_insert_rowid()` before and after an insert gets a reused rowid and an upsert that updates wrong. Verified in dblayer; not checked against their code. (Restates an earlier entry with a second confirmation.)
+- **DuckDB (not sqlite-utils or Datasette):** closing a streaming result early makes the next statement on the connection wait for the background producer to fill the streaming buffer. Verified with minimal scripts on 2.0.1 on macOS.
