@@ -326,3 +326,35 @@ async def test_wal_is_not_available(tmp_path):
         print(f"\n[wasm] WAL-mode file: {e.value.code}: {e.value}")
     finally:
         await db.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="open file description locks are Linux-only")
+async def test_linux_ofd_locks_exclude_sqlite3_in_this_same_process(tmp_path):
+    """With F_OFD_SETLK the instances' locks conflict with the classic
+    POSIX locks of ordinary SQLite even in this process, and a ``sqlite3``
+    connection closing its descriptor does not drop them."""
+    from dblayer.backends.sqlite_wasm import OFD_LOCKS
+
+    assert OFD_LOCKS
+    path = tmp_path / "ofd.db"
+    _setup(path)
+    db = Database(_wasm(path, busy_timeout=0.2), name="ofd")
+    try:
+        async with db.transaction() as tx:
+            await tx.execute("update counter set n = n + 1")
+            native = sqlite3.connect(path, timeout=0, isolation_level=None)
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                native.execute("begin immediate")
+            native.close()  # closes a descriptor of the file in this process
+            p = _spawn(TRY_WRITE, str(path))
+            assert p.communicate(timeout=30)[0].strip() == "database is locked"
+        native = sqlite3.connect(path, isolation_level=None)
+        native.execute("begin exclusive")
+        with pytest.raises(QueryError) as e:
+            await db.execute("select n from counter")
+        assert e.value.code == "SQLITE_BUSY"
+        native.execute("commit")
+        native.close()
+        assert (await db.execute("select n from counter")).rows == [(1,)]
+    finally:
+        await db.close()

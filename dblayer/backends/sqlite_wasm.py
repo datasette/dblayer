@@ -192,13 +192,29 @@ class _Busy(Exception):
     pass
 
 
+OFD_LOCKS = (
+    sys.platform.startswith("linux")
+    and hasattr(fcntl, "F_OFD_SETLK")
+    and os.environ.get("DBLAYER_WASM_POSIX_LOCKS") != "1"
+)
+"""Linux: open file description locks (``F_OFD_SETLK``). They conflict with
+the classic POSIX locks ordinary SQLite takes, even within this process,
+and closing some other descriptor of the file does not drop them, so the
+in-process backend (or ``sqlite3``) in this same process is excluded too.
+Elsewhere classic ``F_SETLK`` locks, which exclude other processes only."""
+
+
 def _setlk(fd: int, kind: str, start: int, length: int) -> None:
-    """A non-blocking POSIX record lock (``F_SETLK``) on ``[start,
-    start+length)``; ``length`` 0 means to the end of the file. Raises
-    ``_Busy`` when another process holds a conflicting lock."""
-    cmd = {"r": fcntl.LOCK_SH | fcntl.LOCK_NB, "w": fcntl.LOCK_EX | fcntl.LOCK_NB, "u": fcntl.LOCK_UN}[kind]
+    """A non-blocking record lock on ``[start, start+length)``; ``length``
+    0 means to the end of the file. Raises ``_Busy`` when someone else
+    holds a conflicting lock."""
     try:
-        fcntl.lockf(fd, cmd, length, start, os.SEEK_SET)
+        if OFD_LOCKS:
+            t = {"r": fcntl.F_RDLCK, "w": fcntl.F_WRLCK, "u": fcntl.F_UNLCK}[kind]
+            fcntl.fcntl(fd, fcntl.F_OFD_SETLK, _flock(t, start, length))
+        else:
+            cmd = {"r": fcntl.LOCK_SH | fcntl.LOCK_NB, "w": fcntl.LOCK_EX | fcntl.LOCK_NB, "u": fcntl.LOCK_UN}[kind]
+            fcntl.lockf(fd, cmd, length, start, os.SEEK_SET)
     except OSError as e:
         if e.errno in (errno.EAGAIN, errno.EACCES):
             raise _Busy() from None
@@ -224,7 +240,8 @@ else:
 
 
 def _write_locked_by_other_process(fd: int, start: int, length: int) -> bool:
-    raw = fcntl.fcntl(fd, fcntl.F_GETLK, _flock(fcntl.F_WRLCK, start, length))
+    cmd = fcntl.F_OFD_GETLK if OFD_LOCKS else fcntl.F_GETLK
+    raw = fcntl.fcntl(fd, cmd, _flock(fcntl.F_WRLCK, start, length))
     return _flock_type(raw) != fcntl.F_UNLCK
 
 
