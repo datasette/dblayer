@@ -193,7 +193,35 @@ which the six host calls are about 9.
 
 ## Costs
 
-`benchmarks/wasm_overhead.py`; see the notes for measured figures. Broadly:
+`benchmarks/wasm_overhead.py --quick`, macOS arm64, 2026-11-24, load
+average 17-22 (seven other agents running full test suites): provisional,
+compare columns of one run only.
+
+| Measure | in-process | apsw | apsw inline | Python worker | C worker | C pool | wasm |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| New database to first result (ms) | 0.50 | 0.46 | 3.57 | 97.9 | 11.9 | 10.7 | 5.2 (0.6 in a quieter run) |
+| One-row read, median (us) | 90 | 95 | 10 | 343 | 184 | 130 | 185 (inline: 25 at load 47) |
+| One-row update (us) | 481 | 557 | 561 | 746 | 613 | 584 | 679 |
+| Per row, 1,000-row read (us) | 0.46 | 0.50 | 0.55 | 1.19 | 0.60 | 0.47 | 0.63 |
+| Per row, 100,000-row read (us) | 0.54 | 0.42 | 0.40 | 0.98 | 0.58 | 0.54 | 0.75 |
+| execute_many, 100,000 rows (ms) | 115 | 138 | 120 | 169 | 127 | 124 | 139 |
+| Memory per open connection (KB) | 165 | 183 | 181 | 77 + 24,891 in the worker | 78 + 1,652 | 11 + 6,816 | 900 |
+
+Module: 1.5 MB; compiling it takes 130-190 ms, loading the cached
+compilation about 10 ms. A page read through the host VFS costs about
+1.5-1.7 us (a 4,010-page scan: 7 ms through the host, 0.6 ms from a warm
+page cache, 2.3 ms for native sqlite3 with a 10-page cache). CPU-bound SQL,
+15 runs, load 29-34: a 1M-row recursive CTE 70 ms native, 124 ms in wasm
+with no interruption, 150 ms with epochs, 165 ms with fuel; a 200k-row sort
+36 / 55 / 84 / 73 ms; `instr` on long strings 146 / 101 / 115 / 122 ms
+(faster than native, thanks to the SIMD `memcmp`). The scale test at 1,000
+databases: 1,435 requests/s over 96 workers at load 42, 1,003 B per asleep
+database, descriptors peak at 67. wasmtime's pooling allocator made no
+difference to instantiation (about 40 us either way, 140 us to a first
+result at the instance level), so neither it nor a pool of pre-made
+instances is worth having.
+
+Broadly:
 a new database answers its first query in about 1 ms (instantiation is
 about 50 us); a one-row read costs about 13 us inside the instance (the
 rest is the same dblayer and executor-hop cost as in-process); CPU-bound
