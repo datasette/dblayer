@@ -125,14 +125,39 @@ def app_name(schema: str) -> str:
     return f"dblayer-test:{schema}"
 
 
-def make(**kwargs: Any) -> Any:
-    """A ``Postgres`` backend on a new, empty schema (created lazily on the
-    first connection)."""
-    from dblayer.backends.postgres import Postgres
+DRIVERS = ("asyncpg", "psycopg")
 
+
+def make(driver: str = "asyncpg", **kwargs: Any) -> Any:
+    """A PostgreSQL backend (``Postgres`` on asyncpg, or ``PostgresPsycopg``)
+    on a new, empty schema (created lazily on the first connection)."""
+    if driver == "asyncpg":
+        from dblayer.backends.postgres import Postgres as cls
+    elif driver == "psycopg":
+        from dblayer.backends.postgres_psycopg import PostgresPsycopg as cls
+    else:
+        raise ValueError(f"unknown driver {driver!r}")
+    if _dsn_database(DSN) != TEST_DATABASE:  # never build one for another database
+        raise RuntimeError(f"refusing DSN {DSN!r}: it must name {TEST_DATABASE!r}")
     schema = kwargs.pop("schema", None) or new_schema()
     kwargs.setdefault("application_name", app_name(schema))
-    return Postgres(DSN, schema=schema, **kwargs)
+    return cls(DSN, schema=schema, **kwargs)
+
+
+@functools.cache
+def unavailable_psycopg() -> str | None:
+    """``None`` when the psycopg backend can run here, else a skip reason.
+    The admin helpers here (probe, cleanup, session counts) use asyncpg, so
+    both drivers are needed."""
+    try:
+        import psycopg  # noqa: F401
+    except ImportError:
+        return "psycopg is not installed (uv run --extra psycopg pytest)"
+    return unavailable()
+
+
+def driver_unavailable(driver: str) -> str | None:
+    return unavailable_psycopg() if driver == "psycopg" else unavailable()
 
 
 async def drop_schema(schema: str) -> None:

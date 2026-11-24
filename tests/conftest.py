@@ -122,6 +122,10 @@ def _postgres(tmp_path: Path) -> Backend:
     return pg.make()
 
 
+def _postgres_psycopg(tmp_path: Path) -> Backend:
+    return pg.make("psycopg")
+
+
 async def _postgres_cleanup(backend: Backend) -> None:
     await pg.drop_schema(backend.schema)  # type: ignore[attr-defined]
 
@@ -144,6 +148,13 @@ BACKENDS: list[BackendSpec] = [
         "postgres",
         _postgres,
         available=pg.unavailable,
+        native_operations=True,
+        cleanup=_postgres_cleanup,
+    ),
+    BackendSpec(
+        "postgres-psycopg",
+        _postgres_psycopg,
+        available=pg.unavailable_psycopg,
         native_operations=True,
         cleanup=_postgres_cleanup,
     ),
