@@ -100,6 +100,23 @@ def _cpool_backend(path: Path) -> Backend:
     return SqliteCPool(path, pool=_cpools[0])  # type: ignore[return-value]
 
 
+_rspools: list = []
+
+
+def _rspool_backend(path: Path) -> Backend:
+    from dblayer.backends.sqlite_rspool import RustPool, SqliteRustPool
+
+    if not _rspools:  # the same, on the Rust port of the worker
+        _rspools.append(RustPool(2, linger=0))
+    return SqliteRustPool(path, pool=_rspools[0])  # type: ignore[return-value]
+
+
+def _rsworker_available() -> str | None:
+    from dblayer.backends.sqlite_rspool import binary_unavailable
+
+    return binary_unavailable()
+
+
 def _nodeworker_backend(path: Path) -> Backend:
     from dblayer.backends.sqlite_nodeworker import SqliteNodeWorker
 
@@ -178,6 +195,10 @@ SCALE_BACKENDS: list[ScaleBackend] = [
     ScaleBackend(
         "sqlite-cpool", sqlite_files, _cpool_backend, 1_000, requests=50_000, growth_limit=None,
         available=_cworker_available,
+    ),
+    ScaleBackend(
+        "sqlite-rspool", sqlite_files, _rspool_backend, 1_000, requests=50_000, growth_limit=None,
+        available=_rsworker_available,
     ),
 ]
 
