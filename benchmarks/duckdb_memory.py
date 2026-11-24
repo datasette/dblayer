@@ -562,14 +562,19 @@ async def native(template: Path, root: Path) -> dict[str, Any]:
 
     have_cpp = cpp.binary_unavailable() is None
     out: dict[str, Any] = {"floor": {}, "concurrent": {}, "insert_rows_10k": {}}
-    for kind in ("worker", "rust-worker") + (("cpp-worker",) if have_cpp else ()):
+    from dblayer.backends.duckdb_rsworker import binary_unavailable as rust_unavailable
+
+    have_rust = rust_unavailable() is None
+    kinds = ("worker",) + (("rust-worker",) if have_rust else ()) + (("cpp-worker",) if have_cpp else ())
+    for kind in kinds:
         runs = [await _floor(kind, template, root) for _ in range(5)]
         summary = dict(runs[-1])  # memory: the last run
         for k in ("spawn_to_hello_ms", "open_ms", "first_query_ms", "spawn_to_first_result_ms"):
             summary[k] = round(statistics.median(r[k] for r in runs), 1)  # times: the median
         out["floor"][kind] = summary
-    makers = {"in-process": lambda p: DuckDB(p), "worker": lambda p: DuckDBWorker(p),
-              "rust-worker": lambda p: DuckDBRustWorker(p)}
+    makers = {"in-process": lambda p: DuckDB(p), "worker": lambda p: DuckDBWorker(p)}
+    if have_rust:
+        makers["rust-worker"] = lambda p: DuckDBRustWorker(p)
     if have_cpp:
         makers["cpp-worker"] = lambda p: cpp.DuckDBCppWorker(p)
     for name, make in makers.items():
