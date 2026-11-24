@@ -42,10 +42,12 @@ COUNT_TIME_LIMIT_MS = 200
 QUERY_TIME_LIMIT_MS = 1000
 QUERY_MAX_ROWS = 1000
 PAGE_SIZE = 100
-READ_KEYWORDS = frozenset(
-    {"SELECT", "WITH", "VALUES", "EXPLAIN", "PRAGMA", "SHOW", "DESCRIBE", "SUMMARIZE", "TABLE", "FROM"}
+WRITE_KEYWORDS = frozenset(
+    "INSERT UPDATE DELETE REPLACE UPSERT MERGE CREATE DROP ALTER TRUNCATE ATTACH DETACH "
+    "VACUUM REINDEX ANALYZE GRANT REVOKE COPY COMMENT CHECKPOINT INSTALL LOAD".split()
 )
-"""Statements that read; an error from anything else gets a read-only hint."""
+"""Statements that write: an error from one of these gets a read-only hint.
+(``WITH ... DELETE`` is not spotted; the error itself still says why.)"""
 
 
 def _limits() -> dict[str, int]:
@@ -214,9 +216,9 @@ async def query_page(request: Request) -> Response:
             except DblayerError as e:
                 error = describe_error(e, time_limit_ms=QUERY_TIME_LIMIT_MS)
                 keyword = (leading_keyword(sql, db.dialect.flavor) or "").upper()
-                if isinstance(e, QueryError) and keyword not in READ_KEYWORDS:
+                if isinstance(e, QueryError) and keyword in WRITE_KEYWORDS:
                     error += (
-                        f"\n\n{keyword or 'This'} statements cannot run here: this page"
+                        f"\n\n{keyword} statements cannot run here: this page"
                         " uses the read path, Database.execute(), on read-only connections."
                     )
     return TEMPLATES.TemplateResponse(
