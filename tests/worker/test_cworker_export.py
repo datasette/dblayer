@@ -12,9 +12,8 @@ import pytest
 
 from dblayer import Database, QueryInterrupted, ResourceLimitExceeded
 
-from ..conftest import _cworker_available  # type: ignore[attr-defined]
-
-pytestmark = pytest.mark.skipif(bool(_cworker_available()), reason=str(_cworker_available()))
+# On the C worker and on its Rust port, each skipped when not built.
+from ..native_impl import autouse_native_impl, native_impl  # noqa: F401
 
 INFINITE = "with recursive c(x) as (select 1 union all select x + 1 from c) select x, 'row ' || x as t from c"
 
@@ -57,7 +56,9 @@ async def _call(db: Database, msg: dict[str, Any]) -> Any:
         ({"tx": "t99"}, "not open"),
     ],
 )
-async def test_bad_export_messages(db, extra, error):
+async def test_bad_export_messages(db, extra, error, native_impl):
+    if native_impl == "rust" and extra.get("transport") == "socket":
+        error = "no socket handoff"  # the Rust worker has no socket transport
     msg = {"type": "export", "sql": "select 1 as a", "encoding": "csv", "credit": 2, **extra}
     frames = await _call(db, msg)
     err = frames[-1].get("error")
