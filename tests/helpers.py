@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import re
 import time
 from collections.abc import Callable
 
@@ -98,16 +99,34 @@ def is_text_type(declared: str) -> bool:
     return "text" in t or "char" in t or "string" in t
 
 
+# A thread's own procfs statistics files. ClickHouse (chDB) opens these
+# three for every thread of its global pool on Linux (its ProcfsMetrics
+# provider) and keeps them for the thread's life; the pool grows to the
+# highest concurrency seen in the process and is not per database. No
+# backend opens them for a database, so they are not counted.
+_THREAD_STATS = re.compile(r"^/proc/\d+/task/\d+/(stat|schedstat|io)$")
+
+
 def count_open_fds() -> int:
-    """Number of open file descriptors in this process.
+    """Number of open file descriptors in this process, less engine threads'
+    procfs statistics files (``_THREAD_STATS``).
 
     Counts entries in ``/proc/self/fd`` where it exists (Linux) and otherwise
     ``/dev/fd`` (macOS). Listing the directory itself opens one descriptor;
     that is the same on every call, so differences between calls are exact.
     """
-    for path in ("/proc/self/fd", "/dev/fd"):
-        if os.path.isdir(path):
-            return len(os.listdir(path))
+    if os.path.isdir("/proc/self/fd"):
+        n = 0
+        for name in os.listdir("/proc/self/fd"):
+            try:
+                target = os.readlink(f"/proc/self/fd/{name}")
+            except OSError:
+                target = ""
+            if not _THREAD_STATS.match(target):
+                n += 1
+        return n
+    if os.path.isdir("/dev/fd"):
+        return len(os.listdir("/dev/fd"))
     raise RuntimeError("no /proc/self/fd or /dev/fd on this platform")
 
 

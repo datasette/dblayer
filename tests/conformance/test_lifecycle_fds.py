@@ -10,7 +10,7 @@ import pytest
 
 from dblayer import Database, Registry
 
-from ..helpers import IdleClock, count_open_fds, wait_until
+from ..helpers import _THREAD_STATS, IdleClock, count_open_fds, wait_until
 
 pytestmark = pytest.mark.requires("sleep_releases_everything")
 
@@ -32,7 +32,7 @@ def _fd_table() -> dict[int, str]:
                 except OSError:
                     out[int(name)] = "?"
             break
-    return out
+    return {fd: t for fd, t in out.items() if not _THREAD_STATS.match(t)}  # as count_open_fds
 
 
 def _fd_diff(before: dict[int, str]) -> str:
