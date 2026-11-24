@@ -42,6 +42,25 @@ DBLAYER_STRICT_TIMING=1 uv run --all-extras pytest
 Use strict mode on a quiet machine when measuring; expect it to fail under
 load.
 
+### The C worker (experimental)
+
+`cworker/` is a SQLite worker process written in C that speaks the worker
+protocol ([docs/worker-protocol.md](docs/worker-protocol.md)) and starts in a
+few milliseconds instead of ~85. Build it once (needs a C compiler, `curl`
+and `unzip`; it downloads a pinned, checksummed SQLite amalgamation into the
+git-ignored `cworker/vendor/`):
+
+```bash
+make -C cworker
+```
+
+Its tests (`sqlite-cworker` in the conformance suite, `tests/worker/test_cworker.py`,
+the `c-worker` fault tests) skip with that command as the reason until the
+binary exists. `DBLAYER_CWORKER=/path/to/dblayer-cworker` points the tests
+and `SqliteCWorker` at another build; `make -C cworker SANITIZE=1` builds one
+with AddressSanitizer and UBSan in `cworker/build-asan/`, and `make -C cworker
+SQLITE=system BUILD=build-system` links the system `libsqlite3` instead.
+
 ## Demo app
 
 `dblayer_demo/` is a small Datasette-like Starlette app built only on

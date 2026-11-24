@@ -8,6 +8,12 @@ worker process (`python -m dblayer.worker`). The code is the reference:
 message type in the code appears in the table below, and the recorded session
 at the end is regenerated from a real worker and compared.
 
+A second implementation, the C worker in `cworker/`
+(`dblayer.backends.sqlite_cworker.SqliteCWorker`), speaks this protocol for
+the SQLite engine only; `tests/worker/test_cworker.py` and the conformance
+suite (`sqlite-cworker`) check it against the Python worker and in-process
+SQLite. Where it differs is listed under "Implementations" below.
+
 ## Transport and framing
 
 - The parent starts the worker with `subprocess.Popen` and three pipes: the
@@ -78,7 +84,7 @@ so a statement can never silently run outside its transaction.
 
 | Request | Fields | Reply |
 | --- | --- | --- |
-| `hello` | `protocol`, `codecs`, `max_frame_bytes` | `hello` with `codec`, `protocol`, `sqlite_version`, `python`, `pid`, `rlimit_as` |
+| `hello` | `protocol`, `codecs`, `max_frame_bytes` | `hello` with `codec`, `protocol`, `sqlite_version`, `python`, `pid`, `rlimit_as`; optionally `implementation` (`"c"`) and `ops` (`false`: `op` is not supported, the parent runs named operations itself) |
 | `open` | `path`, `mode` (`read`/`write`), `engine` (`module:callable`, default `dblayer.worker.engines:sqlite`), `config` (engine keyword arguments: for SQLite `init`, `sql_limits`, `memory_limit_mb`, `immutable`, `create`, `busy_timeout`) | `ok` with `conn` |
 | `close` | `conn` | `ok`; the connection is rolled back and closed (shared placement) |
 | `execute` | `sql`, `params`, `time_limit_ms`, `max_rows`, `max_result_bytes`, `tx` | `result`: `columns`, `rows`, `truncated`, `rowcount`, `last_pk` (defaults left out) |
@@ -120,6 +126,29 @@ the engine raises unmapped (`OverflowError` for an integer SQLite cannot
 store, `ValueError`, `TypeError`) are sent with `"builtin": true` and raised
 as themselves. `"fatal": true` means the worker exits after this reply (a
 `MemoryError` under `RLIMIT_AS`).
+
+JSON escaping covers dict-valued `params` and `op` arguments only: a dict
+nested in a list `params`, in `params_seq` or in `batch` statements is not
+escaped, so a one-key `{"$b": ...}` value there arrives as bytes rather than
+as an (unbindable) dict, in either worker. MessagePack has no such case.
+
+## Implementations
+
+| | Python worker (`python -m dblayer.worker`) | C worker (`cworker/build/dblayer-cworker`) |
+| --- | --- | --- |
+| Engines | any `module:callable` | SQLite only; another `engine` is `NotSupported` |
+| `op` | runs the core's default implementation | `hello` says `"ops": false`; `op` gets `NotSupported` |
+| `init` hooks | `module:function`, called per connection | refused (`NotSupported` at construction); `config.extensions` loads SQLite extensions by path |
+| Codecs | JSON, MessagePack if installed | both, in C |
+| SQLite | the interpreter's `sqlite3` module | compiled in (pinned amalgamation) or the system library |
+| `SQLITE_NOMEM` (heap limit) | `MemoryError`: `ResourceLimitExceeded` with `fatal: true`, the worker exits | `ResourceLimitExceeded`, the worker carries on |
+| Value-type params | decoded, then bound by `sqlite3` (default adapters for `datetime` and `date`) | the same results: `datetime`/`date` bound as ISO text, others a binding error |
+| Start-up to `hello` | ~55 ms (interpreter and imports) | ~3 ms |
+
+Errors are reproduced as Python's `sqlite3` raises them: the same exception
+class in `cause.type`, the same `sqlite_errorname` as `code`, and the
+module's own `ProgrammingError` texts (binding counts, one statement at a
+time, `Could not decode to UTF-8 ...`).
 
 ## Limits, kills and deadlines
 
