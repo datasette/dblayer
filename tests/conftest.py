@@ -36,7 +36,7 @@ from dblayer import Database
 from dblayer.backends.base import Backend, Capabilities
 from dblayer.backends.sqlite import SqliteInProcess
 
-from . import pg
+from . import pg, pglite_spec
 from .override_backend import OverrideBackend
 
 
@@ -317,6 +317,10 @@ BACKENDS: list[BackendSpec] = [
     # DuckDB in a Rust worker process (duckdb-rs-worker/, experimental).
     BackendSpec("duckdb-rsworker", _duckdb_rsworker, available=_duckdb_rsworker_available,
                 native_operations=True, cleanup=_reap_workers),
+    # PostgreSQL in WebAssembly (PGlite) in a Node.js process, one data
+    # directory per database (experimental; `npm ci --prefix pglite-worker`).
+    BackendSpec("pglite", pglite_spec.make, available=pglite_spec.available, native_operations=True,
+                cleanup=_reap_workers),
     BackendSpec(
         "postgres",
         _postgres,
