@@ -313,11 +313,15 @@ async def test_one_data_directory_per_process(tmp_path, db):
 async def test_server_stops_when_the_last_connection_closes(db):
     from dblayer.backends.clickhouse import ClickHouse
 
+    from dblayer.backends import clickhouse as chmod
+
     await db.execute("select 1")
     assert ClickHouse.server_running()
     starts = ClickHouse.server_starts()
     await db.sleep()
-    assert not ClickHouse.server_running()
+    # Failed once on macOS CI with the server still up: the count says
+    # whether another connection (left open by an earlier test) held it.
+    assert not ClickHouse.server_running(), f"{chmod._server.open} chDB connections still open"
     await db.execute("select 1")
     assert ClickHouse.server_starts() == starts + 1
 
