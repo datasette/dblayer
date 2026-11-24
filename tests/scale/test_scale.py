@@ -154,7 +154,8 @@ async def test_ten_thousand_databases(scale_backend, tmp_path):
 
         # Memory of an asleep database after it has been used: wake and
         # sleep a sample of databases under tracemalloc.
-        sample_dbs = [dbs[i] for i in range(0, n, max(n // 1000, 1))][:1000]
+        k = min(spec.memory_sample, n)
+        sample_dbs = [dbs[i] for i in range(0, n, max(n // k, 1))][:k]
         gc.collect()
         tracemalloc.start()
         before = tracemalloc.get_traced_memory()[0]
