@@ -397,6 +397,7 @@ async def test_two_write_transactions_progress_at_the_same_time(db):
     # caught by the timeout.
     await db.execute_write("create table t (id integer primary key, who text)")
     barrier = asyncio.Barrier(2)
+    done = asyncio.Barrier(2)
     pids = []
 
     async def writer(who: str, id: int) -> None:
@@ -405,7 +406,11 @@ async def test_two_write_transactions_progress_at_the_same_time(db):
             pids.append((await tx.execute("select pg_backend_pid()")).rows[0][0])
             await asyncio.wait_for(barrier.wait(), 5)
             # Both are open and have written; neither sees the other's row.
-            assert (await tx.execute("select who from t")).rows == [(who,)]
+            seen = (await tx.execute("select who from t")).rows
+            # Neither commits until both have looked (READ COMMITTED would
+            # otherwise show the first commit to the slower one).
+            await asyncio.wait_for(done.wait(), 5)
+            assert seen == [(who,)]
 
     await asyncio.wait_for(asyncio.gather(writer("a", 1), writer("b", 2)), 10)
     assert len(set(pids)) == 2
