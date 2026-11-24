@@ -1417,3 +1417,12 @@ With Simon's go-ahead I deleted the 33 pytest temp folders that nothing had touc
 Subagent-reported, from the log of the cancelled run. The Linux jobs stopped in `tests/scale/test_threads.py`, at the standalone thread test on the Python SQLite worker, and one job's log ends with "The runner has received a shutdown signal". The test held 1,000 databases open with no registry cap, which is 1,000 worker processes: about 38 GB of memory for the Python worker and 62 to 69 GB for the Node.js worker, on a 16 GB runner. The runner thrashed until it was killed or wedged. A test bug, not a library hang. Those two backends now hold 100 open. No run on the new workflow has completed yet to confirm it.
 
 Worth keeping as a finding about the backends themselves: 1,000 awake databases cost 38 GB on the Python worker and over 60 GB on the Node.js worker, against 188 KB each (under 200 MB in total) on the multi-tenant C worker.
+
+### Found: first trial of the benchmark rig on Fly.io (2026-11-24)
+
+Interim report from the subagent. Quick mode at commit `6e409fa` on a `performance-8x` machine: AMD EPYC, 8 dedicated CPUs, 15.6 GB, kernel 6.12, ext4 volume. Load was 1.0 to 1.4 before each topic, against 10 to 80 on the Mac. A trial of the mechanism, not final numbers.
+
+- **The mechanism works.** Every backend built on Linux from a fresh clone of the public repo (C worker 70 s, WebAssembly module 66 s, Rust SQLite worker 69 s, Rust DuckDB worker 16 s, C++ DuckDB worker 29 s). Eleven of twelve benchmark topics ran; the twelfth failed on a quick-mode argument in the new runner, since fixed. The scale tests passed.
+- **Wake cost, reported separately from query cost as asked:** in-process SQLite 0.31 ms; WebAssembly 1.4 ms; multi-tenant C 1.67 ms; multi-tenant Rust 1.64 ms; single-tenant C worker 2.3 ms; DuckDB 21 ms (6.7 ms on the Mac); Node.js worker 162 ms.
+- **Linux commits are cheap next to macOS.** A one-row update is about 1 ms in-process and 1.6 to 2 ms on the Node.js worker, which took 19 to 20 ms on the Mac. The Node worker's slow writes were a macOS `F_FULLFSYNC` effect, as suspected.
+- **A measurement artifact to remember:** the Python worker took 660 ms to start, because the uv-managed standard library had no compiled `.pyc` files and the unprivileged user could not write them (`python -c pass` took 138 ms). Fixed in the Dockerfile for the next run. Any deployment with a read-only Python install would hit the same cost for real.
