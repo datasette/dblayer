@@ -223,7 +223,7 @@ pub fn json_str(o: &mut Vec<u8>, p: &[u8]) {
     o.push(b'"');
 }
 
-fn text<'a>(st: &'a Stmt, i: i32) -> Result<&'a [u8], E> {
+fn text(st: &Stmt, i: i32) -> Result<&[u8], E> {
     let p = st.column_text(i);
     if std::str::from_utf8(p).is_err() {
         return Err(worker::decode_error(st, i, p));
@@ -406,7 +406,7 @@ fn export_chunk(cx: &Ctx, msg: &Value, db: &Db, s: &mut Stream) -> Result<bool, 
                 x.truncated = true;
                 s.has_row = false;
             }
-            Ok(x.out.len() > 0)
+            Ok(!x.out.is_empty())
         })();
         cx.leave();
         r

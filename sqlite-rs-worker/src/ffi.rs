@@ -438,6 +438,8 @@ unsafe extern "C" fn progress_cb(p: *mut c_void) -> c_int {
 
 pub struct ProgressGuard<'a> {
     db: &'a Db,
+    // Boxed so that C gets a thin pointer to the (fat) closure reference.
+    #[allow(clippy::redundant_allocation)]
     _ctx: Box<&'a dyn Fn() -> bool>,
 }
 

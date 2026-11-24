@@ -295,7 +295,7 @@ impl<'a> Dec<'a> {
                 let s = self.take(n)?.to_vec();
                 if b >= 0xd9 { Value::Str(s) } else { Value::Bin(s) }
             }
-            0xc7 | 0xc8 | 0xc9 => {
+            0xc7..=0xc9 => {
                 let w = match b {
                     0xc7 => 1,
                     0xc8 => 2,
@@ -319,7 +319,7 @@ impl<'a> Dec<'a> {
             0xd1 => Value::Int(self.be(2)? as u16 as i16 as i64),
             0xd2 => Value::Int(self.be(4)? as u32 as i32 as i64),
             0xd3 => Value::Int(self.be(8)? as i64),
-            0xdc | 0xdd | 0xde | 0xdf => {
+            0xdc..=0xdf => {
                 let w = if b == 0xdc || b == 0xde { 2 } else { 4 };
                 let n = self.be(w)? as usize;
                 return self.mp_container(n, b >= 0xde);
@@ -710,11 +710,8 @@ impl W {
         let n = l.n;
         l.n += 1;
         if json {
-            if !l.map {
-                if n > 0 {
-                    self.put1(b',');
-                }
-            } else if n % 2 == 0 {
+            // a separator before every array item and every map key
+            if !l.map || n % 2 == 0 {
                 if n > 0 {
                     self.put1(b',');
                 }

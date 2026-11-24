@@ -111,6 +111,20 @@ fn main() {
     let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
     let mut cmd = Command::new(&cc);
     cmd.args(opt.split_whitespace()).args(defs.split_whitespace());
+    // A sanitizer build of the Rust code (RUSTFLAGS=-Zsanitizer=thread or
+    // =address, nightly) instruments SQLite too, as `make -C cworker
+    // SANITIZE=...` does: otherwise TSan cannot see SQLite's own memory
+    // accesses and a clean run would mean nothing. The sanitizer runtime is
+    // the one rustc links.
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    let rustflags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    let sanitize = env::var("CARGO_CFG_SANITIZE").unwrap_or_default();
+    for (name, flag) in [("thread", "-fsanitize=thread"), ("address", "-fsanitize=address")] {
+        if sanitize.split(',').any(|s| s == name) || rustflags.contains(&format!("-Zsanitizer={name}")) {
+            cmd.arg(flag).arg("-fno-omit-frame-pointer");
+            println!("cargo:warning=SQLite compiled with {flag}");
+        }
+    }
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         cmd.arg("-fPIC");
     }

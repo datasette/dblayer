@@ -149,25 +149,33 @@ fn not_echoed(v: &Value) -> bool {
     }
 }
 
-/// No decoder is quadratic: 100,000-key maps, 1,000,000-item arrays, a
-/// 10 MB string with escapes, both codecs, each well under a second.
+/// No decoder is quadratic: maps of distinct and of repeated keys, long
+/// arrays and long strings with escapes, both codecs. Each shape is decoded
+/// at size n and 10n; linear decoding takes about 10 times as long,
+/// quadratic about 100 times. The ratio is asserted (below 40), not a time,
+/// so sanitizer and Miri builds pass too. `DBLAYER_RS_FUZZ_SCALE` sets n.
 #[test]
 fn decoders_are_linear() {
-    let n = 100_000;
-    let big_map = Value::Map((0..n).map(|i| (Value::Str(format!("k{i}").into_bytes()), Value::Int(i as i64))).collect());
-    let dup_map = Value::Map((0..n).map(|_| (s("k"), Value::Int(1))).collect());
-    let big_arr = Value::Arr((0..1_000_000).map(|i| Value::Int(i as i64)).collect());
-    let big_str = Value::Str("a\\\"é\n".repeat(2_000_000).into_bytes());
+    let n: usize = std::env::var("DBLAYER_RS_FUZZ_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
+    let shapes: Vec<(&str, fn(usize) -> Value)> = vec![
+        ("map", |n| Value::Map((0..n).map(|i| (Value::Str(format!("k{i}").into_bytes()), Value::Int(i as i64))).collect())),
+        ("dup keys", |n| Value::Map((0..n).map(|_| (s("k"), Value::Int(1))).collect())),
+        ("array", |n| Value::Arr((0..n * 10).map(|i| Value::Int(i as i64)).collect())),
+        ("string", |n| Value::Str("a\\\"é\n".repeat(n * 20).into_bytes())),
+    ];
     for codec in [Codec::Json, Codec::Msgpack] {
-        for (name, v) in [("map", &big_map), ("dup keys", &dup_map), ("array", &big_arr), ("string", &big_str)] {
-            let msg = obj(vec![("x", v.clone())]);
-            let b = encode(codec, &msg);
-            let t0 = Instant::now();
-            let d = decode_msg(codec, &b[4..]).unwrap();
-            let el = t0.elapsed();
-            eprintln!("decode {name} ({codec:?}, {} bytes): {el:?}", b.len());
-            assert!(el.as_secs_f64() < 2.0, "{name} {codec:?} took {el:?}");
-            assert!(matches!(d, Value::Map(_)));
+        for (name, make) in &shapes {
+            let mut times = Vec::new();
+            for size in [n, n * 10] {
+                let b = encode(codec, &obj(vec![("x", make(size))]));
+                let t0 = Instant::now();
+                let d = decode_msg(codec, &b[4..]).unwrap();
+                times.push(t0.elapsed().as_secs_f64().max(1e-6));
+                assert!(matches!(d, Value::Map(_)));
+            }
+            let ratio = times[1] / times[0];
+            eprintln!("decode {name} ({codec:?}): {:.2} ms at n, {:.2} ms at 10n, ratio {ratio:.1}", times[0] * 1e3, times[1] * 1e3);
+            assert!(ratio < 40.0 || times[1] < 0.05, "{name} {codec:?} looks quadratic: ratio {ratio:.1}");
         }
     }
 }

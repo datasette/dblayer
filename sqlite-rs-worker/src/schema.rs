@@ -204,8 +204,7 @@ fn write_indexes(db: &Db, w: &mut W, table: &[u8], master: &[Master]) -> Result<
         w.bool(r.partial);
         let def = master
             .iter()
-            .filter(|m| m.ty == b"index" && r.name.as_deref() == Some(&m.name[..]))
-            .next_back()
+            .rfind(|m| m.ty == b"index" && r.name.as_deref() == Some(&m.name[..]))
             .and_then(|m| m.sql.as_deref());
         text_or_nil(w, def);
         w.end();
@@ -240,7 +239,7 @@ fn write_table(db: &Db, w: &mut W, m: &Master, is_view: bool, kinds: &[(Vec<u8>,
         write_foreign_keys(db, w, &m.name)?;
         write_indexes(db, w, &m.name, master)?;
     }
-    let kind: &[u8] = kinds.iter().filter(|(n, _)| *n == m.name).next_back().map(|(_, t)| &t[..]).unwrap_or(b"table");
+    let kind: &[u8] = kinds.iter().rfind(|(n, _)| *n == m.name).map(|(_, t)| &t[..]).unwrap_or(b"table");
     w.cstr("definition");
     text_or_nil(w, m.sql.as_deref());
     w.cstr("virtual");
