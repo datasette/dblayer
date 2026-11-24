@@ -288,6 +288,9 @@ class DuckDB:
 
     dialect: Dialect
 
+    export_formats = frozenset({"csv", "tsv", "json"})
+    """Serialised by DuckDB itself in ``db.export()`` (``_duckdb_export``)."""
+
     def __init__(
         self,
         path: str | os.PathLike[str],
@@ -678,6 +681,16 @@ class DuckDBConnection:
         max_result_bytes: int | None = None,
     ) -> "_DuckDBStream":
         return _DuckDBStream(self, sql, params, chunk_rows, time_limit_ms, max_result_bytes)
+
+    export_formats = frozenset({"csv", "tsv", "json"})
+
+    def export(self, sql: str, params: NativeParams, *, encoding: str, max_rows: int | None,
+               time_limit_ms: int | None, chunk_bytes: int) -> Any:
+        """``SupportsExport``: DuckDB builds each line (``_duckdb_export``)."""
+        from ._duckdb_export import DuckDBExport
+
+        return DuckDBExport(self, sql, params, encoding=encoding, max_rows=max_rows,
+                            time_limit_ms=time_limit_ms, chunk_bytes=chunk_bytes)
 
     # -- transactions ------------------------------------------------------------
 

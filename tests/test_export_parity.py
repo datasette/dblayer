@@ -142,3 +142,104 @@ async def test_cworker_csv_parses_back(cdb):
     csv.field_size_limit(1 << 30)
     parsed = list(csv.reader(io.StringIO(data.decode(), newline="")))
     assert len(parsed) == 401
+
+
+# -- DuckDB ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def ddb(tmp_path: Path) -> AsyncIterator[Database]:
+    pytest.importorskip("duckdb")
+    from dblayer.backends.duckdb import DuckDB
+
+    db = Database(DuckDB(tmp_path / "p.duckdb"))
+    await db.execute_write(
+        "create table t (id bigint primary key, i bigint, f double, s varchar, b blob, ok boolean, h hugeint)"
+    )
+    data = [(r[0], r[1], r[2], r[3], r[4], [None, True, False][r[0] % 3], (r[1] or 0) * 1000) for r in rows(2)]
+    async with db.transaction() as tx:
+        await tx.execute_many("insert into t values (?, ?, ?, ?, ?, ?, ?)", data)
+    await db.execute_write(
+        "create table x (id bigint, d date, ts timestamp, tz timestamptz, dec decimal(12, 3), u uuid, "
+        "fl float, l bigint[], st struct(a int, b varchar))"
+    )
+    await db.execute_write(
+        "insert into x values "
+        "(1, date '2024-01-02', timestamp '2024-01-02 03:04:05', timestamptz '2024-01-02 03:04:05+00', 1.5, "
+        "'12345678-1234-1234-1234-123456789abc', 1.1, [1, 2], {'a': 1, 'b': 'x'}), "
+        "(2, date '1999-12-31', timestamp '2024-01-02 03:04:05.5', timestamptz '2024-06-02 03:04:05.123456+02', "
+        "-0.001, null, -0.0, [], null), "
+        "(3, null, null, null, null, null, null, null, null)"
+    )
+    yield db
+    await db.close()
+
+
+DSQL = "select id, i, f, s, b, ok, h, s as s, i as i2 from t order by id"
+
+
+@pytest.mark.parametrize("fmt,shape", FORMATS)
+async def test_duckdb_identical_core_types(ddb, fmt, shape):
+    a = ddb.export(DSQL, format=fmt, json_shape=shape, chunk_bytes=3000)
+    na = await a.read_all()
+    assert a.native is True
+    nb = await ddb.export(DSQL, format=fmt, json_shape=shape, native=False).read_all()
+    assert na == nb
+
+
+@pytest.mark.parametrize("max_rows", [0, 1, 399, 400, 401])
+async def test_duckdb_max_rows_identical(ddb, max_rows):
+    for fmt in ("csv", "json"):
+        n = ddb.export(DSQL, format=fmt, max_rows=max_rows)
+        f = ddb.export(DSQL, format=fmt, max_rows=max_rows, native=False)
+        assert await n.read_all() == await f.read_all()
+        assert (n.row_count, n.truncated) == (f.row_count, f.truncated)
+
+
+def _cells_equal(a: str, b: str) -> bool:
+    """Type-aware comparison of two text forms."""
+    import datetime as dt
+    from decimal import Decimal, InvalidOperation
+
+    if a == b:
+        return True
+    for parse in (float, Decimal):
+        try:
+            return parse(a) == parse(b)
+        except (ValueError, InvalidOperation):
+            pass
+    try:
+        return dt.datetime.fromisoformat(a) == dt.datetime.fromisoformat(b)
+    except ValueError:
+        return False
+
+
+XSQL = "select id, d, ts, tz, dec, u, fl from x order by id"
+
+
+@pytest.mark.parametrize("fmt", ["csv", "tsv"])
+async def test_duckdb_other_types_parse_equal(ddb, fmt):
+    delim = "," if fmt == "csv" else "\t"
+    na = await ddb.export(XSQL, format=fmt).read_all()
+    nb = await ddb.export(XSQL, format=fmt, native=False).read_all()
+    ra = list(csv.reader(io.StringIO(na.decode(), newline=""), delimiter=delim))
+    rb = list(csv.reader(io.StringIO(nb.decode(), newline=""), delimiter=delim))
+    assert len(ra) == len(rb) == 4
+    for x, y in zip(ra, rb):
+        assert all(_cells_equal(p, q) for p, q in zip(x, y)), (x, y)
+
+
+async def test_duckdb_other_types_json_parse_equal(ddb):
+    na = json.loads(await ddb.export(XSQL, format="json").read_all())
+    nb = json.loads(await ddb.export(XSQL, format="json", native=False).read_all())
+    for x, y in zip(na["rows"], nb["rows"]):
+        for k in x:
+            p, q = x[k], y[k]
+            assert p == q or _cells_equal(str(p), str(q)), (k, p, q)
+
+
+async def test_duckdb_nested_types_are_valid_json(ddb):
+    for native in (True, False):
+        doc = json.loads(await ddb.export("select l, st from x order by id", format="json", native=native).read_all())
+        assert doc["rows"][0]["l"] == [1, 2]
+        assert doc["rows"][0]["st"] == {"a": 1, "b": "x"}
