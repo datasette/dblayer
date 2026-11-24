@@ -220,6 +220,86 @@ async def test_upsert_rows_is_one_statement_per_group(db, spy):
     assert (await db.execute("select a from t where id = 3")).rows == [("y",)]
 
 
+# -- time limits ---------------------------------------------------------------------
+
+
+async def test_time_limits_use_statement_timeout_and_do_not_leak(db):
+    import time
+
+    from dblayer import QueryInterrupted
+
+    start = time.monotonic()
+    with pytest.raises(QueryInterrupted):
+        await db.execute("select pg_sleep(2)", time_limit_ms=100)
+    assert time.monotonic() - start < 1
+    assert (await db.execute("show statement_timeout")).rows == [("0",)]
+    async with db.transaction() as tx:
+        with pytest.raises(QueryInterrupted):
+            await tx.execute("select pg_sleep(2)", time_limit_ms=100)
+        # The transaction survives (statement savepoint), and the limit was
+        # for that call only.
+        assert (await tx.execute("show statement_timeout")).rows == [("0",)]
+        await tx.execute("select pg_sleep(0.2)")
+        # Each statement runs under its own call's limit.
+        assert (await tx.execute("show statement_timeout", time_limit_ms=5000)).rows == [("5s",)]
+    # SET LOCAL ended with the transaction.
+    async with db.transaction() as tx:
+        assert (await tx.execute("show statement_timeout")).rows == [("0",)]
+
+
+async def test_write_time_limit(db):
+    from dblayer import QueryInterrupted
+
+    await db.execute_write("create table t (x integer)")
+    with pytest.raises(QueryInterrupted):
+        await db.execute_write(
+            "insert into t select g from generate_series(1, 100000000) g", time_limit_ms=100
+        )
+    assert (await db.execute("select count(*) from t")).rows == [(0,)]
+
+
+# -- statement savepoints --------------------------------------------------------------
+
+
+async def test_failed_statement_keeps_transaction_usable(db):
+    await db.execute_write("create table t (id integer primary key)")
+    async with db.transaction() as tx:
+        await tx.execute("insert into t values (1)")
+        for _ in range(3):
+            with pytest.raises(IntegrityError):
+                await tx.execute("insert into t values (1)")
+        with pytest.raises(QueryError):
+            await tx.execute("selec 1")
+        await tx.execute("insert into t values (2)")
+    assert (await db.execute("select id from t order by id")).rows == [(1,), (2,)]
+
+
+async def test_callers_own_savepoints_work_alongside(db):
+    await db.execute_write("create table t (id integer primary key)")
+    async with db.transaction() as tx:
+        await tx.execute("insert into t values (1)")
+        await tx.execute("savepoint mine")
+        await tx.execute("insert into t values (2)")
+        await tx.execute("insert into t values (3)")
+        await tx.execute("rollback to savepoint mine")
+        await tx.execute("insert into t values (4)")
+        await tx.execute("release savepoint mine")
+    assert (await db.execute("select id from t order by id")).rows == [(1,), (4,)]
+
+
+async def test_failed_native_operation_is_atomic_inside_a_transaction(db):
+    await db.create_table("t", {"id": "integer", "v": "text"}, pk="id")
+    async with db.transaction() as tx:
+        await tx.insert_rows("t", [{"id": 1, "v": "a"}])
+        with pytest.raises(IntegrityError):
+            # alter adds column w, then the COPY hits the duplicate key: the
+            # whole operation is undone, column included.
+            await tx.insert_rows("t", [{"id": 2, "w": "x"}, {"id": 1, "w": "y"}], alter=True)
+        assert [c.name for c in await tx.table_columns("t")] == ["id", "v"]
+        await tx.insert_rows("t", [{"id": 3, "v": "c"}])
+    assert (await db.execute("select id from t order by id")).rows == [(1,), (3,)]
+
+
 # -- alter_table and staged import -------------------------------------------------
 
 

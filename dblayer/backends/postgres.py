@@ -32,8 +32,15 @@
   statement fails; SQLite keeps it usable. With ``statement_savepoints=True``
   (default) each call on a transaction runs inside a savepoint and a failed
   call is rolled back to it, so ``try: await tx.execute(...) except
-  IntegrityError: ...`` works the same on both. Costs one extra round trip
-  per call inside a transaction.
+  IntegrityError: ...`` works the same on both. It costs one extra round
+  trip per call inside a transaction (``RELEASE`` of the previous
+  savepoint and the new ``SAVEPOINT`` go together in one simple query):
+  measured at about 30-40 us on a local Unix socket, roughly +45% for a
+  one-row statement; on a remote server, one network round trip per call.
+  Calls outside transactions are unaffected. ``statement_savepoints=False``
+  removes it, and ``capabilities.statement_errors_abort_transaction`` then
+  says so. A named operation runs inside one savepoint, so a failed
+  ``tx.insert_rows(..., alter=True)`` is undone whole, columns included.
 * **Introspection** reads ``pg_catalog`` restricted to the schema.
   ``schema_version()`` is an md5 of a catalog listing; ``change_hint()`` is
   a time bucket of ``schema_ttl`` seconds plus a counter bumped by
