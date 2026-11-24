@@ -20,6 +20,9 @@ measured when apsw is installed: ``apsw`` (executor) and ``apsw-inline``
 (``inline_reads=True``), with an extra table against in-process ``sqlite3``
 and the C worker (connection open, ``execute_many`` of 100,000 rows,
 memory per open connection). ``--variants a,b`` limits the run.
+The multi-tenant C pool (``SqliteCPool``) is measured as ``cpool-json`` and
+``cpool-msgpack``, plus its own section from ``cpool_bench.py`` (warm open,
+throughput at 1 to 64 concurrent clients, memory per open database).
 
 Prints one table. Every figure is a median over repeats; machine load moves
 them a lot, so compare figures from one run. Later benchmark work can import
@@ -40,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dblayer import Database  # noqa: E402
 from dblayer.backends.sqlite import SqliteInProcess  # noqa: E402
@@ -48,6 +52,7 @@ from dblayer.worker.protocol import FrameDecoder, available_codecs, frame, get_c
 
 VARIANTS = [
     "in-process", "apsw", "apsw-inline", "worker-json", "worker-msgpack", "cworker-json", "cworker-msgpack",
+    "cpool-json", "cpool-msgpack",  # the multi-tenant C pool (benchmarks/cpool_bench.py)
 ]
 
 
@@ -71,6 +76,10 @@ def make_backend(variant: str, path: Path, **kw: Any) -> Any:
 
         return SqliteApsw(path, inline_reads=variant == "apsw-inline")
     kind, codec = variant.split("-", 1)
+    if kind == "cpool":
+        from cpool_bench import make_cpool
+
+        return make_cpool(codec, path)
     if kind == "cworker":
         from dblayer.backends.sqlite_cworker import SqliteCWorker
 
@@ -383,7 +392,7 @@ async def run_all(quick: bool = False, only: list[str] | None = None) -> dict[st
     variants = [
         v for v in VARIANTS
         if (not v.endswith("-msgpack") or "msgpack" in available_codecs())
-        and (not v.startswith("cworker") or cworker_available())
+        and (not v.startswith(("cworker", "cpool")) or cworker_available())
         and (not v.startswith("apsw") or apsw_available())
         and (only is None or v in only)
     ]
@@ -402,6 +411,11 @@ async def run_all(quick: bool = False, only: list[str] | None = None) -> dict[st
         if only is None:
             out["start"] = await bench_start(d, rep)
             out["startup_breakdown"] = await bench_startup_breakdown(d, rep * 3)
+    import cpool_bench
+
+    cpool_bench.close_pools()
+    if only is None and cworker_available():
+        out["cpool"] = await cpool_bench.run(quick)
     reap_workers(5)
     return out
 
@@ -445,6 +459,10 @@ def print_table(r: dict[str, Any]) -> None:
                 if "sqlite_bytes_per_conn" in e:
                     mem += f" (db_status {e['sqlite_bytes_per_conn'] / 1024:.1f} KB)"
             print(f"  {v:<{w}} open {e['open_us']:8.1f}   execute_many {e['execute_many_100k_ms']:8.1f} ms{mem}")
+    if "cpool" in r:
+        import cpool_bench
+
+        cpool_bench.print_section(r["cpool"])
     if "start" not in r:
         return
     s = r["start"]
