@@ -104,9 +104,16 @@ async def _postgres_check(db: Database) -> None:
                            f"{POSTGRES_DATABASE}.{POSTGRES_SCHEMA}; refusing to seed")
 
 
+def _duckdb(data_dir: Path) -> Backend:
+    from dblayer.backends.duckdb import DuckDB  # ImportError without the duckdb extra
+
+    return DuckDB(data_dir / "duckdb.duckdb")
+
+
 DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite", "SQLite, in process", "SqliteInProcess", _sqlite),
     DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),
+    DemoSpec("duckdb", "DuckDB", "DuckDB", _duckdb),
 ]
 
 
