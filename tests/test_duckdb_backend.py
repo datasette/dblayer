@@ -17,6 +17,8 @@ pytest.importorskip("duckdb")
 
 from dblayer.backends.duckdb import DuckDB  # noqa: E402
 
+from .helpers import check_latency, wait_until  # noqa: E402
+
 
 @pytest.fixture
 async def ddb(tmp_path):
@@ -87,8 +89,9 @@ async def test_long_analytical_query_interrupted_within_100ms(ddb, limit_ms):
     start = time.perf_counter()
     with pytest.raises(QueryInterrupted):
         await ddb.execute(ANALYTICAL, time_limit_ms=limit_ms)
-    overshoot_ms = (time.perf_counter() - start) * 1000 - limit_ms
-    assert overshoot_ms < 100, overshoot_ms
+    # Spec: interrupted within 100 ms of its time limit (strict timing).
+    overshoot = time.perf_counter() - start - limit_ms / 1000
+    check_latency("DuckDB time limit -> interrupted (overshoot)", overshoot, 0.1)
     assert (await ddb.execute("select 42")).rows == [(42,)]
 
 
@@ -111,7 +114,7 @@ async def test_cancelling_a_query_interrupts_it(ddb):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert time.perf_counter() - start < 0.1
+    check_latency("DuckDB cancel -> query interrupted", time.perf_counter() - start, 0.1)
     assert (await ddb.execute("select 1")).rows == [(1,)]
 
 
@@ -157,11 +160,7 @@ async def test_sleep_with_a_reader_in_flight_releases_after_it_returns(ddb):
     await asyncio.sleep(0.02)
     await ddb.sleep()
     assert (await task).rows[0][0] > 0
-    for _ in range(100):
-        if not ddb._backend.is_open:
-            break
-        await asyncio.sleep(0.01)
-    assert not ddb._backend.is_open
+    await wait_until(lambda: not ddb._backend.is_open)
     child = await asyncio.to_thread(_child_write, str(ddb._backend.path))
     assert child.stdout.strip() == "ok", child.stderr
 
