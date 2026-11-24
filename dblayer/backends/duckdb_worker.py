@@ -159,6 +159,9 @@ class DatabaseWorker(SharedWorkers):
     process being started instead of starting a second, and a new process
     is started only once the previous one has exited."""
 
+    process_class: type[WorkerProcess] = WorkerProcess
+    """The process class started (a subclass may multiplex requests)."""
+
     def __init__(
         self,
         *,
@@ -224,7 +227,7 @@ class DatabaseWorker(SharedWorkers):
                 if spare is not None:
                     proc = spare
                 else:
-                    proc = WorkerProcess(self.config)
+                    proc = self.process_class(self.config)
                     await proc.start()
                 self.last_start_ms = (time.perf_counter() - t0) * 1000
             except BaseException:
