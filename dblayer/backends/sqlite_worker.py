@@ -353,6 +353,11 @@ class WorkerProcess:
 
     # -- start / stop ----------------------------------------------------------
 
+    def popen_options(self) -> dict[str, Any]:
+        """Extra ``subprocess.Popen`` arguments (the PGlite worker passes its
+        locked lock file with ``pass_fds``)."""
+        return {}
+
     async def start(self) -> None:
         cfg = self.config
         env = dict(os.environ)
@@ -367,6 +372,7 @@ class WorkerProcess:
             stderr=subprocess.PIPE,
             env=env,
             close_fds=True,
+            **self.popen_options(),
         )
         _unreaped.add(p)
         self.popen = p
