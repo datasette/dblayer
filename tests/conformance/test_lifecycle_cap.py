@@ -131,7 +131,11 @@ async def test_cap_holds_under_concurrent_load(make_backend, seed):
 
         plan = [(rng.choice(dbs), rng.random() < 0.3) for _ in range(300)]
         ops = [op(d, w) for d, w in plan]
-        await asyncio.wait_for(asyncio.gather(*ops), 30)
+        # A hang guard, not a timing check. With cap 5 over 12 databases most
+        # operations wake a database; on the worker backend every wake
+        # starts a process, so on a loaded machine 300 operations can take
+        # 40 s or more.
+        await asyncio.wait_for(asyncio.gather(*ops), 180)
         assert peak <= cap
         assert registry._hub.open <= cap
         total = 0
