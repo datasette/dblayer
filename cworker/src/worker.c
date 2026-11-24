@@ -2410,6 +2410,13 @@ static void *reader_main(void *arg) {
 static uint8_t *g_in;
 static size_t g_in_cap;
 
+/* Where the buffers are, for the host to read without a call: it writes a
+ * request straight into `in` when it fits in `in_cap` (else it calls
+ * dbl_input first) and reads the reply at `out` after dbl_call(). */
+static struct {
+    uint32_t in, in_cap, out;
+} g_io;
+
 /* Multi-tenant lanes need threads; the WebAssembly build has one. */
 static void *lane_main(void *arg) {
     (void)arg;
@@ -2430,9 +2437,13 @@ __attribute__((export_name("dbl_input"))) uint8_t *dbl_input(uint32_t n) {
         g_in = malloc(g_in_cap);
         if (g_in == NULL)
             g_in_cap = 0;
+        g_io.in = (uint32_t)(uintptr_t)g_in;
+        g_io.in_cap = (uint32_t)g_in_cap;
     }
     return g_in;
 }
+
+__attribute__((export_name("dbl_io"))) void *dbl_io(void) { return &g_io; }
 
 __attribute__((export_name("dbl_output"))) uint8_t *dbl_output(void) { return g_out; }
 
@@ -2486,6 +2497,7 @@ __attribute__((export_name("dbl_call"))) int32_t dbl_call(uint32_t n) {
         dispatch(j);
         drain();
     }
+    g_io.out = (uint32_t)(uintptr_t)g_out;
     if (g_out_failed)
         return -1;
     return (int32_t)g_out_len;

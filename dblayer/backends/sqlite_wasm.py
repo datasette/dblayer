@@ -641,24 +641,176 @@ class _HostFiles:
 # -- the runtime: one engine and compiled module per process ---------------------
 
 
-class _Runtime:
-    """The wasmtime engine (epoch interruption on), the compiled module and
-    the epoch ticker thread, shared by every instance in the process."""
+class _Raw:
+    """The few wasmtime C API calls on the hot path, as ctypes prototypes of
+    our own (wasmtime-py's ``Func`` wrappers allocate type objects on every
+    call and every host call, all under the GIL, which made a wasm backend
+    with eight busy threads slower than one). Built once per process."""
 
-    def __init__(self, module_path: str) -> None:
+    def __init__(self) -> None:
+        from wasmtime import _ffi as ffi  # type: ignore[attr-defined]
+
+        self.ffi = ffi
+        dll = ffi.dll
+
+        def proto(name: str, restype: Any, *argtypes: Any) -> Any:
+            addr = ctypes.cast(getattr(dll, name), ctypes.c_void_p).value
+            return ctypes.CFUNCTYPE(restype, *argtypes)(addr)
+
+        vp, sz = ctypes.c_void_p, ctypes.c_size_t
+        self.func_call = proto("wasmtime_func_call_unchecked", vp, vp, vp, vp, sz, vp)
+        self.memory_size = proto("wasmtime_memory_data_size", sz, vp, vp)
+        self.memory_data = proto("wasmtime_memory_data", vp, vp, vp)
+        self.error_new = proto("wasmtime_error_new", vp, ctypes.c_char_p)
+        self.epoch_cb_type = ctypes.CFUNCTYPE(
+            sz, vp, vp, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint8)
+        )
+        self.set_epoch_cb = proto(
+            "wasmtime_store_epoch_deadline_callback", None, vp, self.epoch_cb_type, vp, vp
+        )
+        self.set_deadline = proto("wasmtime_context_set_epoch_deadline", None, vp, ctypes.c_uint64)
+        self.set_fuel = proto("wasmtime_context_set_fuel", vp, vp, ctypes.c_uint64)
+        # Host imports: (env, caller, args_and_results, n) -> error pointer.
+        self.host_cb_type = ctypes.CFUNCTYPE(sz, vp, vp, vp, sz)
+
+    def raise_for(self, err: int | None, trap: int | None) -> None:
+        """Turn an error or trap pointer from a call into wasmtime-py's
+        exception (``ExitTrap`` for ``proc_exit``)."""
         import wasmtime
 
+        ffi = self.ffi
+        if err:
+            raise wasmtime.WasmtimeError._from_ptr(ctypes.cast(err, ctypes.POINTER(ffi.wasmtime_error_t)))
+        if trap:
+            raise wasmtime.Trap._from_ptr(ctypes.cast(trap, ctypes.POINTER(ffi.wasm_trap_t)))
+
+
+_raw: _Raw | None = None
+_tls = threading.local()
+"""``files``: the ``_HostFiles`` of the instance this thread is running
+(host imports run on the thread that called into the instance)."""
+
+_I32 = struct.Struct("<i")
+_I64 = struct.Struct("<q")
+# Each argument is a 16-byte wasmtime_val_raw_t: an i32 or i64 in its low bytes.
+_HOST_IMPORTS: dict[str, tuple[str, str, int]] = {
+    # name: (params, result, error code returned when the host function fails)
+    "open": ("iiii", "i", -SQLITE_CANTOPEN),
+    "close": ("i", "i", -SQLITE_IOERR_CLOSE),
+    "read": ("iiiq", "i", -SQLITE_IOERR_READ),
+    "write": ("iiiq", "i", -SQLITE_IOERR_WRITE),
+    "truncate": ("iq", "i", -SQLITE_IOERR_TRUNCATE),
+    "sync": ("ii", "i", -SQLITE_IOERR_FSYNC),
+    "size": ("i", "q", -SQLITE_IOERR_FSTAT),
+    "lock": ("ii", "i", SQLITE_IOERR_LOCK),
+    "unlock": ("ii", "i", SQLITE_IOERR_UNLOCK),
+    "check_reserved": ("i", "i", -SQLITE_IOERR_CHECKRESERVEDLOCK),
+    "delete": ("iii", "i", -SQLITE_IOERR_DELETE),
+    "access": ("iii", "i", -SQLITE_IOERR_ACCESS),
+    "touch": ("ii", "i", -SQLITE_CANTOPEN),
+    "sleep": ("i", "i", 0),
+}
+_METHOD = {"size": "file_size"}
+
+
+def _host_callback(raw: _Raw, name: str) -> Any:
+    params, result, failed = _HOST_IMPORTS[name]
+    unpack = struct.Struct("<" + "".join(p + ("12x" if p == "i" else "8x") for p in params)).unpack_from
+    nbytes = 16 * max(len(params), 1)
+    method = _METHOD.get(name, name)
+    out = _I64 if result == "q" else _I32
+    buf_t = ctypes.c_char * nbytes
+
+    def cb(_env: Any, _caller: Any, args: int, _n: int) -> int:
+        try:
+            files = _tls.files
+            r = getattr(files, method)(*unpack(buf_t.from_address(args)))
+        except BaseException:
+            r = failed
+        out.pack_into(buf_t.from_address(args), 0, r)
+        return 0
+
+    return raw.host_cb_type(cb)
+
+
+_by_key: dict[int, "_Instance"] = {}
+_keys = itertools.count(1)
+
+
+def _on_epoch(_ctx: Any, env: int | None, delta: Any, kind: Any) -> int:
+    """Every epoch tick while an instance runs: stop it (an error is a
+    trap) if it is past its hard deadline or was killed; else carry on."""
+    try:
+        inst = _by_key.get(env or 0)
+        if inst is not None:
+            now = time.monotonic()
+            if inst.kill_reason is None:
+                hard = inst.hard_deadline
+                if hard is not None and now >= hard:
+                    inst.kill_reason = "time"
+                else:
+                    soft = inst.soft_deadline
+                    if soft is not None and now >= soft:
+                        inst.write_cancel(2)  # backstop for the progress handler
+            if inst.kill_reason is not None:
+                assert _raw is not None
+                return _raw.error_new(b"dblayer: execution stopped") or 0
+    except BaseException:
+        pass
+    delta[0] = 1
+    kind[0] = 0  # WASMTIME_UPDATE_DEADLINE_CONTINUE
+    return 0
+
+
+class _Runtime:
+    """The wasmtime engine (epoch interruption on), the compiled module, a
+    linker with the host imports, a pre-linked ``InstancePre`` and the epoch
+    ticker thread, shared by every instance in the process.
+
+    ``interruption`` is ``"epoch"`` (the backend's), or ``"fuel"`` / ``"none"``
+    for the benchmark that compares their costs."""
+
+    def __init__(self, module_path: str, interruption: str = "epoch") -> None:
+        import wasmtime
+
+        global _raw
+        if _raw is None:
+            _raw = _Raw()
+        self.raw = _raw
         self.wasmtime = wasmtime
+        self.interruption = interruption
         cfg = wasmtime.Config()
-        cfg.epoch_interruption = True
+        cfg.epoch_interruption = interruption == "epoch"
+        cfg.consume_fuel = interruption == "fuel"
         # Linear memory never moves (the default 4 GB reservation on 64-bit
         # hosts), so host functions can keep its base address.
         cfg.memory_may_move = False
         self.engine = wasmtime.Engine(cfg)
         t0 = time.perf_counter()
-        self.module, self.module_source = _load_module(wasmtime, self.engine, module_path)
+        self.module, self.module_source = _load_module(wasmtime, self.engine, module_path, interruption)
         self.compile_s = time.perf_counter() - t0
         self.module_path = module_path
+        linker = wasmtime.Linker(self.engine)
+        linker.define_wasi()
+        ffi = _raw.ffi
+        self._callbacks = []
+        for name, (params, result, _failed) in _HOST_IMPORTS.items():
+            vt = {"i": wasmtime.ValType.i32(), "q": wasmtime.ValType.i64()}
+            ty = wasmtime.FuncType([vt[p] for p in params], [vt[result]])
+            cb = _host_callback(_raw, name)
+            self._callbacks.append(cb)  # kept alive for the process
+            module_b, name_b = b"dblayer", name.encode()
+            err = ffi.wasmtime_linker_define_func_unchecked(
+                linker.ptr(), ctypes.create_string_buffer(module_b), len(module_b),
+                ctypes.create_string_buffer(name_b), len(name_b), ty.ptr(),
+                ctypes.cast(cb, ffi.wasmtime_func_unchecked_callback_t), None,
+                ctypes.cast(0, ctypes.CFUNCTYPE(None, ctypes.c_void_p)),
+            )
+            if err:
+                raise wasmtime.WasmtimeError._from_ptr(err)
+        self.linker = linker
+        self.pre = linker.instantiate_pre(self.module)
+        self.epoch_cb = _raw.epoch_cb_type(_on_epoch)
         self._active = 0
         self._cond = threading.Condition()
         self._ticker: threading.Thread | None = None
@@ -666,6 +818,8 @@ class _Runtime:
         self.traps = 0
 
     def enter(self) -> None:
+        if self.interruption != "epoch":
+            return
         with self._cond:
             self._active += 1
             if self._ticker is None or not self._ticker.is_alive():
@@ -675,6 +829,8 @@ class _Runtime:
                 self._cond.notify()
 
     def leave(self) -> None:
+        if self.interruption != "epoch":
+            return
         with self._cond:
             self._active -= 1
 
@@ -691,7 +847,7 @@ class _Runtime:
             engine.increment_epoch()
 
 
-def _load_module(wasmtime: Any, engine: Any, path: str) -> tuple[Any, str]:
+def _load_module(wasmtime: Any, engine: Any, path: str, flavour: str) -> tuple[Any, str]:
     """Compile the module, or load a copy compiled earlier by this version
     of wasmtime (``<path>.<version>.cwasm`` next to it, written when the
     directory is writable)."""
@@ -702,7 +858,7 @@ def _load_module(wasmtime: Any, engine: Any, path: str) -> tuple[Any, str]:
     except Exception:
         wt = "unknown"
     st = os.stat(path)
-    cached = f"{path}.{wt}.{st.st_size}.{st.st_mtime_ns}.cwasm"
+    cached = f"{path}.{wt}.{flavour}.{st.st_size}.{st.st_mtime_ns}.cwasm"
     if os.path.exists(cached):
         try:
             return wasmtime.Module.deserialize_file(engine, cached), "cache"
@@ -719,17 +875,18 @@ def _load_module(wasmtime: Any, engine: Any, path: str) -> tuple[Any, str]:
     return module, "compiled"
 
 
-_runtimes: dict[str, _Runtime] = {}
+_runtimes: dict[tuple[str, str], _Runtime] = {}
 _runtime_lock = threading.Lock()
 
 
-def _runtime(module_path: str) -> _Runtime:
-    rt = _runtimes.get(module_path)
+def _runtime(module_path: str, interruption: str = "epoch") -> _Runtime:
+    key = (module_path, interruption)
+    rt = _runtimes.get(key)
     if rt is None:
         with _runtime_lock:
-            rt = _runtimes.get(module_path)
+            rt = _runtimes.get(key)
             if rt is None:
-                rt = _runtimes[module_path] = _Runtime(module_path)
+                rt = _runtimes[key] = _Runtime(module_path, interruption)
     return rt
 
 
@@ -757,105 +914,75 @@ class _Trapped(Exception):
         self.detail = detail
 
 
-_ERROR_NEW = None
-
-
 class _Instance:
     """One store, one instance of the module, its host files. Used by one
-    thread at a time."""
+    thread at a time. Guest calls go through ``wasmtime_func_call_unchecked``
+    with a preallocated argument array; the GIL is released while the guest
+    runs (ctypes releases it for every foreign call)."""
 
     def __init__(self, rt: _Runtime, db_path: str, memory_limit_bytes: int | None) -> None:
         w = rt.wasmtime
+        raw = rt.raw
         self.rt = rt
+        self.raw = raw
         self.files = files = _HostFiles(db_path)
         store = self.store = w.Store(rt.engine)
         if memory_limit_bytes is not None:
             store.set_limits(memory_size=memory_limit_bytes)
         self.memory_limit_bytes = memory_limit_bytes
         store.set_wasi(w.WasiConfig())  # no files, no environment, no arguments
-        linker = w.Linker(rt.engine)
-        linker.define_wasi()
-        i32, i64 = w.ValType.i32(), w.ValType.i64()
-        sigs: dict[str, tuple[list[Any], list[Any], Callable[..., int]]] = {
-            "open": ([i32, i32, i32, i32], [i32], files.open),
-            "close": ([i32], [i32], files.close),
-            "read": ([i32, i32, i32, i64], [i32], files.read),
-            "write": ([i32, i32, i32, i64], [i32], files.write),
-            "truncate": ([i32, i64], [i32], files.truncate),
-            "sync": ([i32, i32], [i32], files.sync),
-            "size": ([i32], [i64], files.file_size),
-            "lock": ([i32, i32], [i32], files.lock),
-            "unlock": ([i32, i32], [i32], files.unlock),
-            "check_reserved": ([i32], [i32], files.check_reserved),
-            "delete": ([i32, i32, i32], [i32], files.delete),
-            "access": ([i32, i32, i32], [i32], files.access),
-            "touch": ([i32, i32], [i32], files.touch),
-            "sleep": ([i32], [i32], files.sleep),
-        }
-        for name, (params, results, fn) in sigs.items():
-            linker.define(store, "dblayer", name, w.Func(store, w.FuncType(params, results), fn))
+        self.ctx = ctypes.cast(store._context(), ctypes.c_void_p).value
         self.kill_reason: str | None = None
         self.hard_deadline: float | None = None
         self.soft_deadline: float | None = None
-        self._install_epoch_callback()
-        store.set_epoch_deadline(1 << 62)
-        instance = linker.instantiate(store, rt.module)
-        ex = instance.exports(store)
-        self.memory = ex["memory"]
-        files.base = ctypes.addressof(self.memory.data_ptr(store).contents)
-        files.size_of = lambda: self.memory.data_len(store)
-        files.size = self.memory.data_len(store)
-        self._call = ex["dbl_call"]
-        self._input = ex["dbl_input"]
-        self._output = ex["dbl_output"]
-        ex["_initialize"](store)
-        rc = ex["dbl_init"](store, 1 if os.environ.get("DBLAYER_WASM_DEBUG") else 0)
-        if rc != 0:
-            raise WorkerCrashed(f"SQLite did not initialise in the WebAssembly instance ({rc})")
-        self.cancel_addr = files.base + ex["dbl_cancel_flag"](store)
+        self.key = next(_keys)
+        _by_key[self.key] = self
+        if rt.interruption == "epoch":
+            raw.set_epoch_cb(ctypes.cast(store.ptr(), ctypes.c_void_p), rt.epoch_cb, self.key, None)
+            raw.set_deadline(self.ctx, 1 << 62)
+        elif rt.interruption == "fuel":
+            raw.set_fuel(self.ctx, 1 << 62)
+        self._args = (ctypes.c_char * 32)()
+        self._args_addr = ctypes.addressof(self._args)
+        self._trap = ctypes.c_void_p()
+        self._trap_addr = ctypes.addressof(self._trap)
+        _tls.files = files
+        try:
+            instance = rt.pre.instantiate(store)
+            ex = instance.exports(store)
+            self._exports = ex  # keeps the Func objects (and their handles) alive
+            self.memory = ex["memory"]
+            self._mem_addr = ctypes.addressof(self.memory._memory)
+            files.base = raw.memory_data(self.ctx, self._mem_addr)
+            files.size_of = self.memory_bytes
+            files.size = self.memory_bytes()
+            self._f = {name: ctypes.addressof(ex[name]._func) for name in
+                       ("_initialize", "dbl_init", "dbl_input", "dbl_io", "dbl_call", "dbl_cancel_flag")}
+            self._invoke("_initialize")
+            rc = self._invoke("dbl_init", 1 if os.environ.get("DBLAYER_WASM_DEBUG") else 0)
+            if rc != 0:
+                raise WorkerCrashed(f"SQLite did not initialise in the WebAssembly instance ({rc})")
+            self.cancel_addr = files.base + self._invoke("dbl_cancel_flag")
+            self._io = files._check(self._invoke("dbl_io") & 0xFFFFFFFF, 12)
+            self._invoke("dbl_input", 4096)
+        except BaseException:
+            _by_key.pop(self.key, None)
+            raise
         rt.instances_created += 1
 
-    def _install_epoch_callback(self) -> None:
-        from wasmtime import _ffi as ffi  # type: ignore[attr-defined]
+    def _invoke(self, name: str, arg: int | None = None) -> int:
+        """Call an export taking at most one i32 and returning at most one."""
+        args = self._args
+        if arg is not None:
+            _I32.pack_into(args, 0, arg)
+        self._trap.value = None
+        err = self.raw.func_call(self.ctx, self._f[name], self._args_addr, 2, self._trap_addr)
+        if err or self._trap.value:
+            self.raw.raise_for(err, self._trap.value)
+        return _I32.unpack_from(args, 0)[0]
 
-        global _ERROR_NEW
-        if _ERROR_NEW is None:
-            _ERROR_NEW = ffi.wasmtime_error_new
-        cb_type = ctypes.CFUNCTYPE(
-            ctypes.c_size_t,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_uint64),
-            ctypes.POINTER(ctypes.c_uint8),
-        )
-
-        def on_epoch(_ctx: Any, _env: Any, delta: Any, kind: Any) -> int:
-            try:
-                now = time.monotonic()
-                if self.kill_reason is None:
-                    hard = self.hard_deadline
-                    if hard is not None and now >= hard:
-                        self.kill_reason = "time"
-                    else:
-                        soft = self.soft_deadline
-                        if soft is not None and now >= soft:
-                            self.write_cancel(2)  # backstop for the progress handler
-                if self.kill_reason is not None:
-                    err = _ERROR_NEW(ctypes.create_string_buffer(b"dblayer: execution stopped"))
-                    return ctypes.cast(err, ctypes.c_void_p).value or 0
-                delta[0] = 1
-                kind[0] = 0  # WASMTIME_UPDATE_DEADLINE_CONTINUE
-                return 0
-            except BaseException:
-                delta[0] = 1
-                kind[0] = 0
-                return 0
-
-        self._epoch_cb = cb_type(on_epoch)  # kept alive with the instance
-        fn = ffi.dll.wasmtime_store_epoch_deadline_callback
-        fn.restype = None
-        fn.argtypes = [ctypes.c_void_p, cb_type, ctypes.c_void_p, ctypes.c_void_p]
-        fn(ctypes.cast(self.store.ptr(), ctypes.c_void_p), self._epoch_cb, None, None)
+    def memory_bytes(self) -> int:
+        return self.raw.memory_size(self.ctx, self._mem_addr)
 
     def write_cancel(self, value: int) -> None:
         ctypes.c_int32.from_address(self.cancel_addr).value = value
@@ -864,23 +991,26 @@ class _Instance:
         """Run one request (``b""``: only check transaction deadlines) and
         return the frames it produced. Raises ``_Trapped``."""
         w = self.rt.wasmtime
-        store = self.store
+        _tls.files = self.files
         try:
-            store.set_epoch_deadline(1)
+            if self.rt.interruption == "epoch":
+                self.raw.set_deadline(self.ctx, 1)
             n = len(payload)
             if n:
-                ptr = self._input(store, n)
-                if not ptr:
-                    raise _Trapped("memory", "no memory for the request")
-                ctypes.memmove(self.files._check(ptr, n), payload, n)
-            out_len = self._call(store, n)
+                io = (ctypes.c_uint32 * 3).from_address(self._io)
+                if n > io[1]:  # the input buffer is too small: grow it
+                    self._invoke("dbl_input", n)
+                    if io[1] < n:
+                        raise _Trapped("memory", "no memory for the request")
+                ctypes.memmove(self.files._check(io[0], n), payload, n)
+            out_len = self._invoke("dbl_call", n)
             if out_len < 0:
                 if out_len == -2:
                     raise _Trapped("crash", "the instance could not decode the request")
                 raise _Trapped("memory", "no memory for the reply")
             if out_len == 0:
                 return b""
-            out_ptr = self._output(store)
+            out_ptr = (ctypes.c_uint32 * 3).from_address(self._io)[2]
             return ctypes.string_at(self.files._check(out_ptr, out_len), out_len)
         except _Trapped:
             raise
@@ -891,14 +1021,11 @@ class _Instance:
             reason = self.kill_reason or ("memory" if self._near_limit() else "crash")
             raise _Trapped(reason, str(e).splitlines()[0] if str(e) else type(e).__name__) from None
 
-    def memory_bytes(self) -> int:
-        return self.memory.data_len(self.store)
-
     def _near_limit(self) -> bool:
         if self.memory_limit_bytes is None:
             return False
         try:
-            return self.memory.data_len(self.store) + (1 << 20) > self.memory_limit_bytes
+            return self.memory_bytes() + (1 << 20) > self.memory_limit_bytes
         except Exception:
             return False
 
@@ -908,12 +1035,13 @@ class _Instance:
         self.close()
 
     def close(self) -> None:
-        """Release the files and free the store (its linear memory goes back
-        to the OS now, not when a garbage collection gets to the cycle
-        through the epoch callback)."""
+        """Release the files and free the store now (its linear memory goes
+        back to the OS at once)."""
+        _by_key.pop(self.key, None)
         self.files.release_all()
         self.files.size_of = lambda: 0
         self.files.size = 0
+        self._exports = {}
         try:
             self.store.close()
         except Exception:
@@ -1005,19 +1133,27 @@ class WasmProcess:
             await self._new_instance()
 
     async def _new_instance(self) -> None:
-        """[self.lock held] Instantiate and say hello."""
+        """[self.lock held] Instantiate and say hello, in one executor hop."""
+        self._inst, self.hello = await run_blocking(self._executor(), self._instantiate)
+        self.codec = get_codec(self.hello.get("codec", "json"))
+
+    def _instantiate(self) -> tuple[_Instance, dict[str, Any]]:
+        """Executor thread."""
         cfg = self.config
         limit = None if cfg.memory_limit_mb is None else int(cfg.memory_limit_mb) * 1024 * 1024
-        rt = await run_blocking(self._executor(), _runtime, cfg.module)
-        self._inst = await run_blocking(self._executor(), _Instance, rt, self.db_path, limit)
-        self.codec = get_codec("json")
+        inst = _Instance(_runtime(cfg.module), self.db_path, limit)
         codecs = [cfg.codec] if cfg.codec == "json" else [cfg.codec, "json"]
-        reply = await self._exchange(
-            {"type": "hello", "protocol": PROTOCOL_VERSION, "codecs": codecs, "max_frame_bytes": cfg.max_frame_bytes},
-            owner=None, limit_ms=None, expect_frames=None, on_sent=None,
-        )
-        self.hello = reply
-        self.codec = get_codec(reply.get("codec", "json"))
+        json = get_codec("json")
+        msg = {"type": "hello", "protocol": PROTOCOL_VERSION, "codecs": codecs,
+               "max_frame_bytes": cfg.max_frame_bytes, "id": next(self._ids)}
+        try:
+            out = inst.call(json.encode(msg))
+            size = int.from_bytes(out[:4], "big")
+            reply = json.decode(out[4:4 + size])
+        except BaseException:
+            inst.close()
+            raise
+        return inst, reply
 
     async def _recycle(self) -> None:
         """[self.lock held] Replace an idle instance whose memory has grown:

@@ -100,6 +100,18 @@ def _cpool_backend(path: Path) -> Backend:
     return SqliteCPool(path, pool=_cpools[0])  # type: ignore[return-value]
 
 
+def _wasm_backend(path: Path) -> Backend:
+    from dblayer.backends.sqlite_wasm import SqliteWasm
+
+    return SqliteWasm(path)  # type: ignore[return-value]
+
+
+def _wasm_available() -> str | None:
+    from dblayer.backends.sqlite_wasm import module_unavailable
+
+    return module_unavailable()
+
+
 def _cworker_available() -> str | None:
     from dblayer.backends.sqlite_cworker import binary_unavailable
 
@@ -116,6 +128,11 @@ def _duckdb_available() -> str | None:
 
 SCALE_BACKENDS: list[ScaleBackend] = [
     ScaleBackend("sqlite", sqlite_files, lambda p: SqliteInProcess(p), 10_000),
+    # SQLite in WebAssembly: a wake instantiates (about 1 ms), no process.
+    ScaleBackend(
+        "sqlite-wasm", sqlite_files, _wasm_backend, 1_000, requests=20_000, growth_limit=None,
+        available=_wasm_available,
+    ),
     # Waking DuckDB opens an instance (a few ms), so a shorter load. Its
     # backend object keeps per-database caches after a wake (55-550 B per
     # cycle measured), so that figure is reported, not asserted.
