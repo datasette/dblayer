@@ -105,3 +105,33 @@ async def test_concurrent_streams_and_reads(make_db):
     results = await asyncio.gather(*(consume() for _ in range(5)))
     assert results == [5050] * 5
     assert db.stats().open_read <= 2
+
+
+async def test_stream_context_manager_releases_on_break(db):
+    async with db.stream(INFINITE, chunk_rows=10) as chunks:
+        async for chunk in chunks:
+            assert db.stats().in_use_read == 1
+            break
+    # Released when the block ends, not when the iterator is collected.
+    assert db.stats().in_use_read == 0
+
+
+async def test_stream_context_manager_releases_on_error(db):
+    with pytest.raises(KeyError):
+        async with db.stream(INFINITE, chunk_rows=10) as chunks:
+            async for _ in chunks:
+                raise KeyError
+    assert db.stats().in_use_read == 0
+
+
+async def test_stream_context_manager_unstarted(db):
+    async with db.stream(series(5)):
+        pass
+    assert db.stats().in_use_read == 0
+
+
+async def test_stream_aclose(db):
+    s = db.stream(INFINITE, chunk_rows=10)
+    await s.__anext__()
+    await s.aclose()
+    assert db.stats().in_use_read == 0

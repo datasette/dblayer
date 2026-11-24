@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import itertools
 from datetime import timedelta
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping, Sequence
 from typing import Any
 
 from ..backends.base import Backend, Capabilities
@@ -19,13 +19,39 @@ from .schema import Schema, SchemaCache
 from .staged import StagedImport, sweep_staged
 from .transactions import Transaction, active_transaction
 
-__all__ = ["Database", "DEFAULT", "map_errors"]
+__all__ = ["Database", "RowStream", "DEFAULT", "map_errors"]
 
 DEFAULT_DEADLINE_MS = 5000
 
 # Old private names, kept for modules that imported them.
 _Opt = Opt
 _pick = pick
+
+
+class RowStream:
+    """What ``db.stream()`` returns: an async iterator of row chunks that is
+    also an async context manager (``__aexit__`` closes it, returning the
+    connection) and has ``aclose()``."""
+
+    __slots__ = ("_gen",)
+
+    def __init__(self, gen: AsyncGenerator[list[Row], None]) -> None:
+        self._gen = gen
+
+    def __aiter__(self) -> "RowStream":
+        return self
+
+    async def __anext__(self) -> list[Row]:
+        return await self._gen.__anext__()
+
+    async def aclose(self) -> None:
+        await self._gen.aclose()
+
+    async def __aenter__(self) -> "RowStream":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
 
 class Database(IntrospectionMixin, OperationsMixin):
@@ -119,7 +145,7 @@ class Database(IntrospectionMixin, OperationsMixin):
                     max_result_bytes=pick(max_result_bytes, self.max_result_bytes),
                 )
 
-    async def stream(
+    def stream(
         self,
         sql: str,
         params: Params = None,
@@ -127,16 +153,39 @@ class Database(IntrospectionMixin, OperationsMixin):
         time_limit_ms: Opt[int] = DEFAULT,
         chunk_rows: int | None = None,
         max_result_bytes: Opt[int] = DEFAULT,
-    ) -> AsyncIterator[list[Row]]:
+    ) -> "RowStream":
         """Async iterator of row chunks. Each chunk is fetched only when the
         consumer asks for it, and one read connection is held until the
-        iterator is exhausted or closed. Use ``contextlib.aclosing`` (or
-        exhaust it) to release the connection promptly when breaking out
-        early.
+        iterator is exhausted or closed.
+
+        Use it as ``async with db.stream(sql) as chunks: async for chunk in
+        chunks: ...`` to return the connection deterministically when the
+        block ends, even after ``break`` or an exception. Plain ``async for``
+        also works but, if abandoned early, releases the connection only
+        when the iterator is garbage collected.
 
         ``time_limit_ms`` is a budget of time spent inside the database across
         all chunks; time the consumer spends between chunks does not count.
         """
+        return RowStream(
+            self._stream(
+                sql,
+                params,
+                time_limit_ms=time_limit_ms,
+                chunk_rows=chunk_rows,
+                max_result_bytes=max_result_bytes,
+            )
+        )
+
+    async def _stream(
+        self,
+        sql: str,
+        params: Params,
+        *,
+        time_limit_ms: Opt[int],
+        chunk_rows: int | None,
+        max_result_bytes: Opt[int],
+    ) -> AsyncIterator[list[Row]]:
         self._check_open()
         native_sql, native_params = self._native(sql, params)
         with map_errors(self._backend):
