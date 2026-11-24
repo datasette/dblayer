@@ -675,3 +675,16 @@ Asked by Simon: more backend types worth exploring for maximum performance and m
 8. **DuckDB worker in C or C++ against libduckdb.** The Python DuckDB worker's 45 MB floor is 9 MB of interpreter, 14 MB of dblayer imports and 23 MB of the duckdb module. A native worker should cut most of the first two.
 9. **Columnar wire format for large results** (Arrow IPC over the pipe, or a shared-memory segment). Per-row cost is now mostly encoding and decoding (0.3 to 0.5 µs per row for MessagePack; about 3 µs for dates and decimals). Matters most for the DuckDB worker.
 10. **apsw-based in-process SQLite.** Finer control than the standard module: real statement-level interrupt, VFS access, no implicit transaction handling, and the ability to pin the SQLite version, which removes the "which SQLite is this" differences found with Apple's library.
+
+### Decision: build six of the proposed backends (2026-11-24)
+
+Simon chose these from the proposals above, each built by its own subagent in its own worktree, in parallel:
+
+1. SQLite in WebAssembly, in-process, under wasmtime (`sqlite-wasm`).
+2. SQLite in WebAssembly inside a separate Node.js process speaking the worker protocol (`sqlite-nodeworker`).
+3. Multi-tenant C worker: one C process, a thread per connection, many databases (`sqlite-cpool`).
+4. DuckDB worker in C++ against libduckdb (`duckdb-cppworker`).
+5. DuckDB worker in Rust (`duckdb-rsworker`), built separately from the C++ one for comparison.
+6. In-process SQLite on apsw (`sqlite-apsw`), including an experiment in removing the executor thread hop.
+
+Known risks set out in the briefs: WASI has no file locks or shared memory, so both WebAssembly backends must show how concurrent access to one file is made safe; a multi-tenant worker shares its blast radius on a kill; native DuckDB workers must reproduce the Python backend's read-only enforcement and aborted-COMMIT guard. With seven subagents running at once, every benchmark from this round is provisional until re-run alone.
