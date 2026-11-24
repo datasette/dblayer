@@ -7,6 +7,34 @@ use crate::value::{EXT_BIGINT, Value, tag_for};
 
 const MAX_DEPTH: usize = 200;
 
+/// Where each key of a map being decoded is, so a repeated key (which keeps
+/// its first position and its last value, as in a Python dict) is found in
+/// constant time: a linear search made a 100,000-key map take seconds.
+/// Small maps (every message) search linearly and never build the index.
+#[derive(Default)]
+pub struct KeyIndex(Option<std::collections::HashMap<Vec<u8>, usize>>);
+
+const INDEX_FROM: usize = 16;
+
+pub fn put(items: &mut Vec<(Value, Value)>, index: &mut KeyIndex, k: Value, v: Value) {
+    if items.len() < INDEX_FROM {
+        if let Some(slot) = items.iter_mut().find(|(ek, _)| *ek == k) {
+            slot.1 = v;
+        } else {
+            items.push((k, v));
+        }
+        return;
+    }
+    let idx = index.0.get_or_insert_with(|| items.iter().enumerate().map(|(i, (ek, _))| (encode(ek), i)).collect());
+    match idx.entry(encode(&k)) {
+        std::collections::hash_map::Entry::Occupied(e) => items[*e.get()].1 = v,
+        std::collections::hash_map::Entry::Vacant(e) => {
+            e.insert(items.len());
+            items.push((k, v));
+        }
+    }
+}
+
 pub fn decode(data: &[u8]) -> Result<Value, String> {
     let mut r = Reader { s: data, i: 0, depth: 0 };
     let v = r.value()?;
@@ -163,17 +191,14 @@ impl<'a> Reader<'a> {
     fn map(&mut self, n: usize) -> Result<Value, String> {
         self.enter()?;
         let mut items: Vec<(Value, Value)> = Vec::with_capacity(n.min(4096));
+        let mut index = KeyIndex::default();
         for _ in 0..n {
             let k = self.value()?;
             if matches!(k, Value::List(_) | Value::Map(_)) {
                 return Err("unhashable map key".into());
             }
             let v = self.value()?;
-            if let Some(slot) = items.iter_mut().find(|(ek, _)| *ek == k) {
-                slot.1 = v;
-            } else {
-                items.push((k, v));
-            }
+            put(&mut items, &mut index, k, v);
         }
         self.depth -= 1;
         Ok(Value::Map(items))

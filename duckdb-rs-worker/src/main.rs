@@ -5,9 +5,15 @@
 //! the Python worker does with the DuckDB engine (`DuckDBWorker`). The
 //! parent side is `dblayer.backends.duckdb_rsworker.DuckDBRustWorker`.
 
+// `unsafe` is confined to the FFI layer (ffi.rs); everything else is safe Rust.
+#![deny(unsafe_code)]
+
 mod convert;
 mod errors;
+#[allow(unsafe_code)]
 mod ffi;
+#[cfg(test)]
+mod fuzz;
 mod json;
 mod msgpack;
 mod schema;

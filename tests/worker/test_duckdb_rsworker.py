@@ -570,6 +570,29 @@ async def test_insert_rows_uses_the_appender_and_matches_the_default_path(tmp_pa
     assert results[0] == results[1]
 
 
+async def test_insert_rows_into_an_existing_table_is_one_round_trip_per_batch(tmp_path):
+    db = Database(DuckDBRustWorker(tmp_path / "rt.duckdb"), native_operations=True)
+    try:
+        WorkerProcess.record_new = rec = []  # messages of processes started from now on
+        try:
+            await db.execute_write("create table t (id bigint, name varchar)")
+            mark = len(rec)
+            r = await db.insert_rows("t", [{"id": i, "name": f"n{i}"} for i in range(250)], batch_size=100)
+        finally:
+            WorkerProcess.record_new = None
+        skip = ("hello", "open", "begin", "commit", "rollback", "close")
+        sent = [m for d, m in rec[mark:] if d == "->" and m.get("type") not in skip]
+        assert [m.get("type") for m in sent] == ["op", "op", "op"], sent
+        assert all(m["args"].get("check") for m in sent)
+        assert r.rowcount == 250 and not r.table_created
+        # A missing column: the worker declines and the default path adds it.
+        r = await db.insert_rows("t", [{"id": 1, "name": "x", "extra": 2.5}], alter=True)
+        assert r.columns_added == ("extra",)
+        assert (await db.execute("select count(*), sum(extra) from t")).rows == [(251, 2.5)]
+    finally:
+        await db.close()
+
+
 async def test_append_errors_and_rollback(tmp_path):
     db = Database(DuckDBRustWorker(tmp_path / "e.duckdb"), native_operations=True)
     try:

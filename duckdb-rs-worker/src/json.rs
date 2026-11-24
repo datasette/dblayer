@@ -103,6 +103,7 @@ impl Parser<'_> {
         self.enter()?;
         self.i += 1;
         let mut items: Vec<(Value, Value)> = Vec::new();
+        let mut index = crate::msgpack::KeyIndex::default();
         self.ws();
         if self.s.get(self.i) == Some(&b'}') {
             self.i += 1;
@@ -122,11 +123,7 @@ impl Parser<'_> {
                 let v = self.value()?;
                 // Python dicts: a repeated key keeps its first position and
                 // its last value.
-                if let Some(slot) = items.iter_mut().find(|(ek, _)| matches!(ek, Value::Str(s) if *s == k)) {
-                    slot.1 = v;
-                } else {
-                    items.push((Value::Str(k), v));
-                }
+                crate::msgpack::put(&mut items, &mut index, Value::Str(k), v);
                 self.ws();
                 match self.s.get(self.i) {
                     Some(b',') => self.i += 1,

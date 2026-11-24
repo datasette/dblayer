@@ -282,10 +282,31 @@ class RustWorkerConnection(WorkerConnection):
         return await _insert_rows(self, args["table"], args["rows"], args.get("pk"), bool(args.get("alter")))
 
 
+async def _append(conn: RustWorkerConnection, table: str, cols: tuple[str, ...], group: list[Mapping[str, Any]],
+                  *, check: bool) -> int | None:
+    """One ``append`` round trip; ``None`` when the worker declined (with
+    ``check``: the table or one of the columns does not exist)."""
+    args: dict[str, Any] = {"table": table, "columns": list(cols), "rows": [[r[c] for c in cols] for r in group]}
+    if check:
+        args["check"] = True
+    reply = await conn._call(conn._tx_field({"type": "op", "name": "append", "args": args}))
+    result = reply["result"]
+    if result.get("declined"):
+        return None
+    return int(result["rowcount"])
+
+
 async def _insert_rows(conn: RustWorkerConnection, table: str, rows: list[dict[str, Any]], pk: Any, alter: bool) -> object:
     from ..core import operations as ops
     from .duckdb import _HERE, _ConnectionTx
 
+    groups = list(ops._groups(rows))
+    if len(groups) == 1:
+        # The common case, a table that has every column: the worker checks
+        # and appends in one round trip (the core calls this per batch).
+        n = await _append(conn, table, groups[0][0], groups[0][1], check=True)
+        if n is not None:
+            return ops.OperationResult(rowcount=n, table_created=False, columns_added=())
     existing = await conn.execute(
         "SELECT c.column_name FROM duckdb_columns() c JOIN duckdb_tables() t "
         "ON c.table_oid = t.table_oid "
@@ -312,14 +333,10 @@ async def _insert_rows(conn: RustWorkerConnection, table: str, rows: list[dict[s
                 await conn.execute(sql, [], time_limit_ms=None, max_rows=0)
             added = tuple(missing)
     total = 0
-    for cols, group in ops._groups(rows):
-        msg = {
-            "type": "op",
-            "name": "append",
-            "args": {"table": table, "columns": list(cols), "rows": [[r[c] for c in cols] for r in group]},
-        }
-        reply = await conn._call(conn._tx_field(msg))
-        total += int(reply["result"]["rowcount"])
+    for cols, group in groups:
+        n = await _append(conn, table, cols, group, check=False)
+        assert n is not None
+        total += n
     return ops.OperationResult(rowcount=total, table_created=created, columns_added=added)
 
 

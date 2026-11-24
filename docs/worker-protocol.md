@@ -259,8 +259,19 @@ placement) and every connection of it.
   whole, under one lock.
 - `op` supports one operation, `append` (`args`: `table`, `columns`,
   `rows` as lists in column order), which inserts through DuckDB's
-  appender; the parent's `insert_rows` uses it after creating or altering
-  the table with the default code. Any other `op` gets `NotSupported`.
+  appender. With `"check": true` the worker first looks the table's
+  columns up and replies `{"result": {"declined": true}}` if the table or
+  any of `columns` is missing; the parent's `insert_rows` sends that first
+  (one round trip per batch) and, on a decline, creates or alters the table
+  with the default code, then appends. Any other `op` gets `NotSupported`.
+- Every connection is configured with `streaming_buffer_size = '16KB'`
+  before the database's configuration is locked (the setting is
+  per-connection and cannot be a database default), so streamed results
+  arrive as soon as the first chunk exists; with DuckDB's default (10 MB)
+  the C API's streaming execute waits until the buffer is about half full,
+  which for an unbounded recursive CTE is seconds. Up to 8 such
+  connections are made per database and reused; a connection beyond those
+  has DuckDB's default.
 - `open` accepts any engine name containing `duckdb` (the parent sends
   `dblayer.backends.duckdb_rsworker:engine`); its `config` is
   `DuckDB.__init__`'s keyword arguments.

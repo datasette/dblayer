@@ -352,7 +352,7 @@ pub struct Server {
 pub struct ReadError;
 
 /// Read one frame: `Ok(None)` at a clean end of input.
-fn read_frame(input: &mut impl Read, cap: u64) -> Result<Option<Vec<u8>>, ReadError> {
+pub(crate) fn read_frame(input: &mut impl Read, cap: u64) -> Result<Option<Vec<u8>>, ReadError> {
     let mut header = [0u8; 4];
     let mut got = 0;
     while got < 4 {
@@ -1509,24 +1509,35 @@ impl ConnWorker {
         if name != "append" {
             return Err(dberr("NotSupported", format!("operation {} is not implemented by the Rust worker", py_repr_value(&Value::str(name)))));
         }
-        let args = msg.get("args").cloned().unwrap_or(Value::Map(vec![]));
+        let empty = Value::Map(vec![]);
+        let args = msg.get("args").unwrap_or(&empty);
         let table = args.get("table").and_then(Value::as_str).ok_or_else(|| qerr("append needs a table", "PROTOCOL"))?.to_string();
         let columns: Vec<String> = match args.get("columns") {
             Some(Value::List(l)) => l.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
             _ => vec![],
         };
-        let rows = match args.get("rows") {
-            Some(Value::List(l)) => l.clone(),
-            _ => vec![],
+        let rows: &[Value] = match args.get("rows") {
+            Some(Value::List(l)) => l,
+            _ => &[],
         };
         if !self.write {
             return Err(qerr("attempt to write a read-only connection (append)", "READ_ONLY"));
+        }
+        // "check": decline (the parent then creates the table or adds
+        // columns the default way) unless the table has every column, so
+        // the common case is one round trip, as on the C++ worker.
+        if args.get("check").is_some_and(Value::is_true) {
+            let have: Vec<String> = schema::table_columns(self.conn(), &table)?.iter().map(|c| c.to_lowercase()).collect();
+            if have.is_empty() || columns.iter().any(|c| !have.contains(&c.to_lowercase())) {
+                let declined = Value::obj(vec![("declined", Value::Bool(true))]);
+                return Ok(Some(self.with_tx(Value::obj(vec![("result", declined)]))));
+            }
         }
         let r = self.statement(ctl, None, |w| {
             let mut app = w.conn().appender(&table, &columns)?;
             let mut params: Vec<Param> = Vec::with_capacity(columns.len());
             let res = (|| -> Result<(), Fail> {
-                for row in &rows {
+                for row in rows {
                     let Value::List(cells) = row else {
                         return Err(Fail::Builtin { class: "ValueError", message: "append rows must be lists".into() });
                     };

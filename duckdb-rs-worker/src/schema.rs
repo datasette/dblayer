@@ -42,6 +42,33 @@ pub fn query_rows(conn: &Connection, sql: &str) -> Result<Vec<Vec<Value>>, DuckE
     Ok(out)
 }
 
+/// The columns of `table` in the current schema, in order (empty when it
+/// does not exist): what `_insert_rows` in `duckdb_rsworker.py` looks up.
+pub fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, DuckError> {
+    let sql = format!(
+        "SELECT c.column_name FROM duckdb_columns() c JOIN duckdb_tables() t ON c.table_oid = t.table_oid \
+         WHERE t.{} AND t.table_name = $1 ORDER BY c.column_index",
+        HERE.replace(" AND ", " AND t.")
+    );
+    let ex = conn.extract(&sql)?;
+    let mut p = ex.prepare(conn, 0)?;
+    p.bind(1, &crate::convert::Param::Str(table.to_string()))?;
+    let mut res = p.execute(false)?;
+    let columns = res.columns.clone();
+    let mut out = Vec::new();
+    while let Some(chunk) = res.fetch()? {
+        let rows = chunk
+            .rows(&columns, 0, chunk.len(), &Ctx { tz: "UTC" })
+            .map_err(|e| DuckError::from_message(format!("Conversion Error: {}", e.0)))?;
+        for r in rows {
+            if let Value::List(cells) = r {
+                out.extend(cells.first().and_then(Value::as_str).map(String::from));
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn version(conn: &Connection) -> Result<String, DuckError> {
     let rows = query_rows(conn, &version_sql())?;
     Ok(rows.first().and_then(|r| r.first()).and_then(Value::as_str).unwrap_or("").to_string())
