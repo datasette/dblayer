@@ -93,12 +93,16 @@ What it costs and gives up:
   Python (about 1 to 2 us each). A one-row read on a warm connection makes
   seven host calls: lock, two journal checks, the change counter, the file
   size, unlock.
-* **Not safe against ordinary SQLite in the same process** using the same
-  file at the same time (the in-process backend, `sqlite3`): POSIX locks do
-  not conflict within one process, and that library's own lock table cannot
-  see this one. It is the rule SQLite documents for two copies of the
-  library in one process. Other processes are fine. On Linux, open file
-  description locks (`F_OFD_SETLK`) would lift this; not done.
+* **On macOS, not safe against ordinary SQLite in the same process** using
+  the same file at the same time (the in-process backend, `sqlite3`):
+  classic POSIX locks do not conflict within one process, and that
+  library's own lock table cannot see this one (the rule SQLite documents
+  for two copies of the library in one process). Other processes are fine.
+  On Linux the host uses open file description locks (`F_OFD_SETLK`),
+  which conflict with ordinary SQLite's locks even in this process and are
+  not dropped when some other descriptor of the file closes
+  (`test_linux_ofd_locks_exclude_sqlite3_in_this_same_process`, CI only).
+  `DBLAYER_WASM_POSIX_LOCKS=1` forces classic locks.
 
 Alternatives considered: one instance per database serving all its
 connections (no locking problem inside the process, but every statement of
