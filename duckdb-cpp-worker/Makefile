@@ -48,7 +48,7 @@ endif
 
 # The protocol codec is the C worker's (cworker/src/codec.c), compiled in.
 CODEC_DIR := ../cworker/src
-SRC := src/worker.cpp src/server.cpp src/errors.cpp src/wire.cpp src/stubs.cpp
+SRC := src/worker.cpp src/server.cpp src/exec.cpp src/values.cpp src/types.cpp src/schema.cpp src/errors.cpp src/wire.cpp
 HDR := src/worker.hpp src/server.hpp src/wire.hpp $(CODEC_DIR)/codec.h
 OBJ := $(patsubst src/%.cpp,$(BUILD)/%.o,$(SRC)) $(BUILD)/codec.o
 BIN := $(BUILD)/dblayer-duckdb-worker

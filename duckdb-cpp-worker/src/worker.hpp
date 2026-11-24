@@ -64,6 +64,8 @@ std::string val_str(const val *v);
 
 // LogicalType::ToString, as `str(cursor.description[i][1])` shows it.
 std::string type_name(duckdb_logical_type t);
+// The keyword list type_name() quotes struct field names against.
+void load_keywords(duckdb_connection c);
 
 // How the columns of one result are written: built once per result from
 // the column types; the zone is the session's TimeZone (for TIMESTAMPTZ).

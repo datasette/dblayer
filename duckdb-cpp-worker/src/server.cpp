@@ -736,6 +736,10 @@ static void conn_thread(ConnPtr c, JobPtr open_job, std::string path, const val 
             std::lock_guard<std::mutex> lock(c->mu);
             c->c = dc;
         }
+        try {
+            load_keywords(dc);
+        } catch (const Error &) {
+        }
         opened = true;
         begin_reply(wr);
         w_cstr(wr.w(), "ok");
@@ -772,18 +776,13 @@ static void conn_thread(ConnPtr c, JobPtr open_job, std::string path, const val 
         }
         bool cancelled_before = job_cancelled(*c, job);
         try {
-            if (cancelled_before) {
-                Error e("QueryInterrupted", "query cancelled");
-                e.cause_type = "__main__._Interrupted";
-                e.cause_message = "request stopped by the worker (cancelled)";
-                send_error(wr, job->id, job->has_id, e, nullptr);
-            } else {
-                handle(*c, wr, job);
-            }
+            // A request cancelled while queued is not run.
+            if (cancelled_before) throw Error("QueryInterrupted", "query cancelled");
+            handle(*c, wr, job);
         } catch (const Error &raw) {
             if (raw.duckdb && c->duck_in_tx) c->tx_failed = true;
             Error e = translate(*c, job, raw);
-            send_error(wr, job->id, job->has_id, e, c.get());
+            send_error(wr, job->id, job->has_id, e, cancelled_before ? nullptr : c.get());
             if (job->type == "stream" || job->type == "_more") {
                 int64_t sid = job->type == "stream" ? job->id : job->stream;
                 if (c->streams.count(sid)) stream_close(*c, sid, false);
