@@ -28,6 +28,8 @@ Modes:
   knobs), plus gc and trim.
 * ``worker``: ``DuckDBWorker`` (one process per awake database, exiting on
   sleep), JSON codec.
+* ``cpp-worker``: ``DuckDBCppWorker``, the C++ worker (``make -C
+  duckdb-cpp-worker``), one process per awake database, MessagePack.
 * ``worker-pool``: ``DuckDBWorker`` with the experimental
   ``DuckDBWorkerPool(databases_per_process=8)``: up to 8 awake databases
   share a process, which exits when its last database sleeps.
@@ -72,7 +74,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-MODES = ["in-process", "in-process+gc", "in-process+trim", "in-process+settings", "worker", "worker-pool", "rust-worker"]
+MODES = ["in-process", "in-process+gc", "in-process+trim", "in-process+settings", "worker", "worker-pool", "rust-worker",
+         "cpp-worker"]
 
 ANALYTICAL = (
     "select grp, count(*) n, avg(val) a, max(s) m, sum(length(s)) l "
@@ -262,6 +265,11 @@ async def memory_child(mode: str, paths: list[Path], cap: int, cycles: int, conc
 
         def make(p: Path) -> Any:
             return DuckDBWorker(p, pool=pool)
+    elif mode == "cpp-worker":
+        from dblayer.backends.duckdb_cppworker import DuckDBCppWorker
+
+        def make(p: Path) -> Any:
+            return DuckDBCppWorker(p)
     elif mode == "rust-worker":
         from dblayer.backends.duckdb_rsworker import DuckDBRustWorker
 
@@ -368,6 +376,12 @@ async def overhead(template: Path, root: Path) -> dict[str, Any]:
         variants["rust-worker-json"] = lambda p: DuckDBRustWorker(p, codec="json")
         if "msgpack" in available_codecs():
             variants["rust-worker-msgpack"] = lambda p: DuckDBRustWorker(p, codec="msgpack")
+    from dblayer.backends import duckdb_cppworker as cpp
+
+    if cpp.binary_unavailable() is None:
+        variants["cpp-worker-json"] = lambda p: cpp.DuckDBCppWorker(p, codec="json")
+        if "msgpack" in available_codecs():
+            variants["cpp-worker-msgpack"] = lambda p: cpp.DuckDBCppWorker(p, codec="msgpack")
     out: dict[str, Any] = {}
     for name, make in variants.items():
         path = root / f"overhead-{name}.duckdb"
@@ -450,6 +464,12 @@ async def _floor(kind: str, template: Path, root: Path) -> dict[str, Any]:
         cfg = replace(WorkerConfig(codec="msgpack"), executable=find_binary())
         proc: WorkerProcess = ConcurrentWorkerProcess(cfg)
         engine = RUST_ENGINE
+    elif kind == "cpp-worker":
+        from dblayer.backends import duckdb_cppworker as cpp
+
+        cfg = replace(WorkerConfig(codec="msgpack"), executable=cpp.find_binary())
+        proc = cpp.ConcurrentWorkerProcess(cfg)
+        engine = cpp.LOCAL_ENGINE
     else:
         cfg = WorkerConfig(codec="json", preload=DUCKDB_PRELOAD)
         proc = WorkerProcess(cfg)
@@ -538,8 +558,11 @@ async def native(template: Path, root: Path) -> dict[str, Any]:
     from dblayer.backends.duckdb_rsworker import DuckDBRustWorker
     from dblayer.backends.duckdb_worker import DuckDBWorker
 
+    from dblayer.backends import duckdb_cppworker as cpp
+
+    have_cpp = cpp.binary_unavailable() is None
     out: dict[str, Any] = {"floor": {}, "concurrent": {}, "insert_rows_10k": {}}
-    for kind in ("worker", "rust-worker"):
+    for kind in ("worker", "rust-worker") + (("cpp-worker",) if have_cpp else ()):
         runs = [await _floor(kind, template, root) for _ in range(5)]
         summary = dict(runs[-1])  # memory: the last run
         for k in ("spawn_to_hello_ms", "open_ms", "first_query_ms", "spawn_to_first_result_ms"):
@@ -547,6 +570,8 @@ async def native(template: Path, root: Path) -> dict[str, Any]:
         out["floor"][kind] = summary
     makers = {"in-process": lambda p: DuckDB(p), "worker": lambda p: DuckDBWorker(p),
               "rust-worker": lambda p: DuckDBRustWorker(p)}
+    if have_cpp:
+        makers["cpp-worker"] = lambda p: cpp.DuckDBCppWorker(p)
     for name, make in makers.items():
         path = root / f"conc-{name}.duckdb"
         shutil.copyfile(template, path)
