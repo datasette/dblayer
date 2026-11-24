@@ -22,13 +22,25 @@ Contract notes for implementers (beyond the signatures):
   driver exceptions with ``dialect.map_exception`` and keeps the original as
   ``__cause__``.
 * ``Backend.close()`` releases backend-level resources. The backend must be
-  usable again afterwards (``open()`` works), because the core calls it on
-  ``sleep()`` when ``capabilities.sleep_releases_everything`` is true.
+  usable again afterwards (``open()`` works), because the core calls it
+  whenever the database goes to sleep (``db.sleep()``, idle timeout, global
+  cap eviction) when ``capabilities.sleep_releases_everything`` is true. It
+  is called only once every connection has been closed, and must be
+  idempotent.
+* ``BackendConnection.close()`` may be called from a different event loop
+  than the one that opened the connection (a ``Database`` moving loops, or
+  connections left behind by a closed loop). It should do its best and
+  must not hang.
+* Backends that run blocking code should implement ``UsesExecutor``: an
+  ``executor`` attribute, ``None`` meaning "the module default". A
+  ``Registry`` sets it to its shared thread pool when the database is
+  added, so thread count is fixed by the registry, not the database count.
 """
 
 from __future__ import annotations
 
 import re
+from concurrent.futures import Executor
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -53,6 +65,7 @@ __all__ = [
     "SupportsOperations",
     "SupportsBatch",
     "NativeParams",
+    "UsesExecutor",
 ]
 
 type NativeParams = Mapping[str, Any] | Sequence[Any]
@@ -464,3 +477,14 @@ class Backend(Protocol):
     async def open(self, *, write: bool) -> BackendConnection: ...
     def change_hint(self) -> object: ...  # must not open a connection
     async def close(self) -> None: ...
+
+
+@runtime_checkable
+class UsesExecutor(Protocol):
+    """Optional, on a ``Backend``: blocking work runs on ``executor``
+    (``None``: ``dblayer.core.executor.get_default_executor()``), read at
+    call time so it can be swapped while the backend is in use. A
+    ``Registry`` sets it to its shared thread pool when the database is
+    added, unless the backend was given an executor of its own."""
+
+    executor: Executor | None

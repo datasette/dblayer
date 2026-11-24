@@ -1,8 +1,9 @@
 """``Registry``: many databases, one set of shared resources.
 
 A registry holds databases by name and owns what they share: the hub that
-tracks idle connections (idle timeout), and in later sections of this file
-the thread pool, the global connection cap and the lifecycle hooks.
+tracks idle connections (idle timeout), the thread pool blocking drivers
+run on (``max_threads``, fixed: it does not grow with the number of
+databases), the global connection cap and the lifecycle hooks.
 
 Adding, removing and looking up a database are dict operations: nothing
 scans or copies the full set, and a registered database that is asleep
@@ -13,8 +14,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 
+from ..backends.base import UsesExecutor
 from ..errors import UnknownDatabase
+from .executor import DEFAULT_MAX_THREADS
 from .hub import DEFAULT_IDLE_TIMEOUT, Hub
 from .database import Database
 
@@ -35,9 +39,19 @@ class Registry:
     def __init__(
         self,
         *,
+        max_threads: int = DEFAULT_MAX_THREADS,
         idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT,
         resolver: Resolver | None = None,
     ) -> None:
+        if max_threads < 1:
+            raise ValueError("max_threads must be at least 1")
+        self.max_threads = max_threads
+        self.executor = ThreadPoolExecutor(
+            max_workers=max_threads, thread_name_prefix="dblayer-registry"
+        )
+        """The shared thread pool. Threads start on demand, up to
+        ``max_threads``, and are reused; databases added here run their
+        blocking calls on it (see ``UsesExecutor``)."""
         self._hub = Hub(idle_timeout=idle_timeout)
         self.resolver = resolver
         self._dbs: dict[str, Database] = {}
@@ -68,6 +82,9 @@ class Registry:
                 raise ValueError(f"{db!r} has open connections; sleep it before adding")
             db._pool = None
         db._hub = self._hub
+        backend = db._backend
+        if isinstance(backend, UsesExecutor) and backend.executor is None:
+            backend.executor = self.executor
         if db.name is None:
             db.name = name
         self._dbs[name] = db
@@ -87,6 +104,9 @@ class Registry:
             if not db.closed:
                 await db.sleep()
             db._hub = None
+        backend = db._backend
+        if isinstance(backend, UsesExecutor) and backend.executor is self.executor:
+            backend.executor = None
         return db
 
     def __contains__(self, name: object) -> bool:
@@ -164,6 +184,8 @@ class Registry:
         self._dbs.clear()
         for db in dbs:
             await db.close()
+        # Every call has finished, so the threads are idle: this only joins.
+        self.executor.shutdown(wait=True)
 
     async def __aenter__(self) -> "Registry":
         return self
