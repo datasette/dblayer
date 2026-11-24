@@ -475,8 +475,11 @@ async def test_bool_parameters(schema):
 
 
 def test_threads_not_used():
-    # Both are natively async: no executor threads for a query.
-    before = threading.active_count()
+    # Both are natively async: no executor threads for a query. Compared
+    # as sets: a thread left by an earlier test may exit meanwhile (on
+    # Linux CI the count went from 12 to 11), and that is not a thread
+    # this started.
+    before = set(threading.enumerate())
 
     async def run() -> None:
         for driver in pg.DRIVERS:
@@ -488,4 +491,5 @@ def test_threads_not_used():
                 await pg.drop_schema(db._backend.schema)  # type: ignore[attr-defined]
 
     asyncio.run(run())
-    assert threading.active_count() == before
+    new = set(threading.enumerate()) - before
+    assert not new, sorted(t.name for t in new)
