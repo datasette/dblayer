@@ -52,6 +52,16 @@ the docstrings below say why apsw does better.
   loop thread under a small opcode budget, and move to the executor when
   they exceed it. Off by default. See ``SqliteApswConnection.execute``.
 
+Not built, a note: apsw exposes SQLite's VFS layer to Python
+(``apsw.VFS``/``apsw.VFSFile``). A VFS whose ``xRead`` serves pages by
+HTTP range request from object storage, with a local page cache, would let
+a cold database be queried without downloading it (open read-only with
+``immutable=1``, so no locks or journal are needed); ``xFileControl`` and
+``SQLITE_FCNTL_PRAGMA`` give it a place for per-file settings. Python on
+the read path costs a GIL acquisition per page read, so it suits large,
+rarely read databases rather than hot ones; the C worker is the place for a
+fast one.
+
 The ``init(conn)`` hook receives an ``apsw.Connection``. The backend owns
 the connection's exec tracer and progress handler; a hook that replaces
 them breaks one-statement checks, column types, time limits and cancels.

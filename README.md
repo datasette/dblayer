@@ -61,6 +61,18 @@ and `SqliteCWorker` at another build; `make -C cworker SANITIZE=1` builds one
 with AddressSanitizer and UBSan in `cworker/build-asan/`, and `make -C cworker
 SQLITE=system BUILD=build-system` links the system `libsqlite3` instead.
 
+### In-process SQLite on apsw (experimental)
+
+`SqliteApsw` (`dblayer/backends/sqlite_apsw.py`, extra `apsw`) is the
+in-process backend on [apsw](https://rogerbinns.github.io/apsw/), which
+bundles its own current SQLite. It adds declared result column types, exact
+change counts, an opt-in `untrusted=True` lockdown for user SQL, a heap limit
+(process-wide), and opt-in `inline_reads=True`, which runs cheap reads on the
+event loop thread instead of hopping to the executor. Its tests are
+`sqlite-apsw` in the conformance suite and `tests/test_sqlite_apsw.py`; both
+skip without apsw. `DBLAYER_APSW_INLINE=1 uv run --all-extras pytest` runs the
+suite with inline reads on.
+
 ## Demo app
 
 `dblayer_demo/` is a small Datasette-like Starlette app built only on
