@@ -518,6 +518,11 @@ class WorkerProcess:
             self.kill(ResourceLimitExceeded(f"worker {self.pid}: {e}; worker killed"))
             return
         for payload in payloads:
+            if payload[:1] == b"\x00":
+                # A raw data frame (the C worker's export, transport "raw"):
+                # 0x00, the request id, then bytes for that request.
+                self._dispatch({"id": int.from_bytes(payload[1:9]), "rows": 1, "data": memoryview(payload)[9:]})
+                continue
             try:
                 msg = self.codec.decode(payload)
                 if not isinstance(msg, dict):

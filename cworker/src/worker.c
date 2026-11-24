@@ -358,7 +358,9 @@ struct stream {
     double remaining_ms;
     int has_max;
     int64_t max_bytes, bytes;
+    void *ex; /* an export (export.c), NULL for a row stream */
 };
+static void export_free(void *ex);
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_wcond;
@@ -476,6 +478,7 @@ static void stream_drop(stream *s) {
     pthread_mutex_unlock(&g_mu);
     if (s->st)
         sqlite3_finalize(s->st);
+    export_free(s->ex);
     free(s);
 }
 
@@ -1686,6 +1689,8 @@ static int h_stream(job *j, conn *wc, wbuf *w, err_t *e) {
     return pump(j, s, w, e);
 }
 
+static int export_pump(job *j, stream *s, wbuf *w, err_t *e);
+
 static int h_more(job *j, wbuf *w, err_t *e) {
     pthread_mutex_lock(&g_mu);
     stream *s = stream_find(j->id);
@@ -1695,7 +1700,7 @@ static int h_more(job *j, wbuf *w, err_t *e) {
     if (s == NULL)
         return 1; /* finished or closed meanwhile */
     s->credit += j->credit;
-    return pump(j, s, w, e);
+    return s->ex ? export_pump(j, s, w, e) : pump(j, s, w, e);
 }
 
 static int h_close_stream(job *j, wbuf *w, err_t *e) {
@@ -1956,9 +1961,11 @@ static void wbuf_error(wbuf *w, err_t *e) {
         err_set(e, "ResourceLimitExceeded", NULL, "worker ran out of memory (memory limit)");
 }
 
+#include "export.c"
+
 static int is_conn_type(const val *type) {
     static const char *const CONN_TYPES[] = {"close", "execute", "execute_many", "batch", "stream", "begin",
-                                             "commit", "rollback", "op", "schema", "schema_version"};
+                                             "commit", "rollback", "op", "schema", "schema_version", "export"};
     for (size_t i = 0; i < sizeof CONN_TYPES / sizeof CONN_TYPES[0]; i++)
         if (val_is_str(type, CONN_TYPES[i]))
             return 1;
@@ -2012,6 +2019,7 @@ static void run_job(job *j) {
     else if (val_is_str(type, "execute_many")) rc = h_execute_many(j, wc, w, &e);
     else if (val_is_str(type, "batch")) rc = h_batch(j, wc, w, &e);
     else if (val_is_str(type, "stream")) { streaming = 1; rc = h_stream(j, wc, w, &e); }
+    else if (val_is_str(type, "export")) { streaming = 1; rc = h_export(j, wc, w, &e); }
     else if (val_is_str(type, "begin")) rc = h_begin(j, wc, w, &e);
     else if (val_is_str(type, "commit")) rc = h_commit(j, wc, w, &e);
     else if (val_is_str(type, "rollback")) rc = h_rollback(j, wc, w, &e);
@@ -2174,6 +2182,7 @@ static void hello(const val *msg) {
 #endif
     w_cstr(&w, "rlimit_as"); w_bool(&w, g_rlimit_as);
     w_cstr(&w, "ops"); w_bool(&w, 0);
+    w_cstr(&w, "export"); export_hello(&w);
     if (g_multi) {
         /* Requests for different connections run concurrently, so the
          * parent may have many in flight (one per connection). */

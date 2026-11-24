@@ -47,6 +47,7 @@ from .sqlite_worker import (
     DEFAULT_MAX_FRAME_BYTES,
     SharedWorkers,
     SqliteWorker,
+    WorkerConnection,
     _intern,
 )
 
@@ -126,6 +127,32 @@ def c_shared_workers(
     return group
 
 
+class CWorkerConnection(WorkerConnection):
+    """A C worker connection: ``SupportsExport`` on top of the protocol,
+    when the worker's ``hello`` lists export formats."""
+
+    export_transport = "raw"
+
+    @property
+    def export_formats(self) -> frozenset[str]:
+        ex = self._proc.hello.get("export") or {}
+        return frozenset(ex.get("formats") or ())
+
+    def export(self, sql: str, params: Any, *, encoding: str, max_rows: int | None,
+               time_limit_ms: int | None, chunk_bytes: int) -> Any:
+        from ._cworker_export import CWorkerExport, FifoExport
+
+        transport = self.export_transport
+        if transport == "fifo":
+            return FifoExport(self, sql, params, encoding=encoding, max_rows=max_rows,
+                              time_limit_ms=time_limit_ms, chunk_bytes=chunk_bytes)
+        return CWorkerExport(self, sql, params, encoding=encoding, transport=transport, max_rows=max_rows,
+                             time_limit_ms=time_limit_ms, chunk_bytes=chunk_bytes)
+
+
+EXPORT_TRANSPORTS = ("frames", "raw", "fifo")
+
+
 class SqliteCWorker(SqliteWorker):
     """SQLite in C worker processes. Options as ``SqliteWorker``, plus:
 
@@ -137,13 +164,17 @@ class SqliteCWorker(SqliteWorker):
     to MessagePack when available.
     """
 
-    __slots__ = ()
+    __slots__ = ("export_transport",)
+
+    export_formats = frozenset({"csv", "tsv", "json"})
+    """Serialised in the worker (``db.export()``), if its ``hello`` agrees."""
 
     def __init__(
         self,
         path: str | os.PathLike[str],
         *,
         binary: str | os.PathLike[str] | None = None,
+        export_transport: str = "raw",
         init: Sequence[str] = (),
         extensions: Sequence[str | os.PathLike[str]] = (),
         sql_limits: Mapping[str, int] | None = None,
@@ -155,6 +186,9 @@ class SqliteCWorker(SqliteWorker):
                 "init hooks ('module:function') need the Python worker (SqliteWorker); "
                 "the C worker can load SQLite extensions by path instead (extensions=[...])"
             )
+        if export_transport not in EXPORT_TRANSPORTS:
+            raise ValueError(f"export_transport must be one of {EXPORT_TRANSPORTS}")
+        self.export_transport = export_transport
         executable = find_binary(binary)
         workers = options.get("workers")
         if workers is not None and workers.config.executable is None:
@@ -165,3 +199,23 @@ class SqliteCWorker(SqliteWorker):
             # Sent in ``open`` only: the local factory (which describes the
             # engine to the parent) knows nothing about extensions.
             self.engine_config["extensions"] = [os.fspath(Path(e).resolve()) for e in extensions]
+
+    async def open(self, *, write: bool) -> WorkerConnection:
+        if write and self.immutable:
+            raise NotSupported("database is immutable; writes are not allowed")
+        if self.workers is not None:
+            proc = await self.workers.acquire()
+            shared = True
+        else:
+            proc = self._new_process()
+            await proc.start()
+            self.processes_started += 1
+            shared = False
+        conn = CWorkerConnection(self, proc, write=write, shared=shared)
+        conn.export_transport = self.export_transport
+        try:
+            await conn._open()
+        except BaseException:
+            await conn.close()
+            raise
+        return conn

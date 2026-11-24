@@ -63,7 +63,7 @@ SQLITE_DEP := $(SQLITE_DIR)/sqlite3.h
 endif
 
 SRC := src/worker.c src/codec.c src/sqlutil.c src/schema.c
-HDR := src/codec.h src/sqlutil.h src/errnames.h
+HDR := src/codec.h src/sqlutil.h src/errnames.h src/export.c
 OBJ := $(patsubst src/%.c,$(BUILD)/%.o,$(SRC))
 BIN := $(BUILD)/dblayer-cworker
 
