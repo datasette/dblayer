@@ -1364,3 +1364,23 @@ At Simon's request I installed the missing Rust components with rustup: `clippy`
 ### Found: CI has not completed a run for about three hours (2026-11-24, 09:15)
 
 Checked myself. The three main Linux jobs hang: run 45434803275 was still running after 62 minutes against about 26 for a healthy run, and an earlier run did the same. I cancelled it. With no `timeout-minutes` on any job and the concurrency group not cancelling in-progress runs, one hung run blocks every later push. In that run: the stdlib-only job, the DuckDB C++ and Rust worker jobs and the system-SQLite job passed; macOS failed two tests (a thread count on the Python SQLite worker, and the ClickHouse embedded server not stopping); the sanitizer job failed four tests in its ASan step (two timing-related, two stream-cancel tests on the C workers); the PGlite Linux job failed. So nothing pushed today has a green CI result, including every "fixed" claim above. A subagent has been started to add job timeouts and hang diagnostics, find the Linux hang, fix the failures and split the workflow by backend family.
+
+### Found: what the machine noise actually is, and a correction (2026-11-24, 09:30)
+
+Checked myself, after repeatedly blaming "Spotlight indexing".
+
+- **Correction: Spotlight's file indexer was not the load.** `mds`, `mds_stores` and `mdworker` were at 0% CPU. The busy process is `corespotlightd`, a different daemon (the index apps donate content to). A 3-second sample showed it running index queries, not indexing files. It has been up 10 days and holds 9.6 GB of memory, which looks like a stuck or leaking daemon unrelated to this repository.
+- **Most of the load during the build was our own:** up to eight subagents running suites at once, and deliberate CPU burners for a while.
+- **Dropbox was doing real work on this folder.** The repository is inside Dropbox and had grown to 9.2 GB: 6.8 GB of subagent worktrees, plus virtual environments, demo data, downloaded toolchains and build outputs.
+- **Changed:** the generated folders are now marked with Dropbox's `com.dropbox.ignored` attribute (`.claude/worktrees`, `.venv`, `demo-data`, `.pytest_cache`, the `vendor`, `build*`, `target` and `node_modules` folders). A folder that is deleted and recreated loses the attribute. A `.metadata_never_index` marker was added to each as well, though Spotlight had indexed only the virtual environment (6,959 items) and the marker's effect is unverified.
+- The machine has 18 cores and 128 GB, so it is adequate for the final benchmark once the run is alone.
+
+### Found: Rust multi-tenant SQLite worker, interim (2026-11-24)
+
+Interim report from the subagent; load 7 to 10, still provisional.
+
+- `sqlite-rs-worker/` passes conformance as `sqlite-rspool` (435 passed, 10 skipped, the same as the C pool) and the fault and cancel-stress tests. The existing C worker tests are now parametrised over both binaries.
+- **Zero crate dependencies.** Its build script compiles the same pinned SQLite amalgamation with the options parsed from the C worker's Makefile, so the two are equal by construction. Hand-written FFI, with `unsafe` confined to one module. Native export is implemented; socket handoff is not.
+- **C and Rust are level.** Through Python, C then Rust: one-row read 61 / 59 µs; update 215 / 213 µs; per row at 100,000 rows 0.46 / 0.39 µs; 190 / 188 KB per open database; throughput at 64 clients 80,000 / 88,000 requests/s with the Python parent at about 0.98 of a CPU, so the parent hides any difference.
+- **With a Rust load generator and no Python:** about 84,000 to 85,000 requests/s on one connection at 9.5 µs of worker CPU per request for both. At 16 connections both reach about 95,000 requests/s but burn about 8 times more CPU per request (78 to 86 µs). That points to lock contention or spinning in a design the two share, and is being investigated. If real, it is a finding about the multi-tenant design, not about either language.
+- These throughput figures are higher than the earlier C pool figures (54,000 at 64 clients), which were taken at load 17 to 30. Another reminder not to compare across runs.
