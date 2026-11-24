@@ -883,3 +883,21 @@ Interim report from the relaunched subagent; measurements at load about 18, prov
 ### Upstream suggestions
 
 - **sqlite-utils and Datasette, general hazard worth a documentation note:** in one process, opening and closing a second file descriptor on a SQLite database file releases the POSIX locks SQLite itself holds on it. Any code that opens the database file directly (to hash it, copy it, check its header or size) while a connection is open in the same process can silently drop that connection's locks. SQLite's documentation describes this; the subagent reproduced it here. Worth checking Datasette's own code for direct opens of database files (for example hashing for `inspect`, or file copies in publish paths) while connections are live. Not checked against Datasette.
+
+### Found: PGlite in a Node worker, interim (2026-11-24)
+
+Interim report from the relaunched subagent; numbers at load 14 to 80, provisional.
+
+- PGlite 0.5.17 embeds PostgreSQL 18.7. Tests: 474 passed, 15 skipped for this backend.
+- **A real PostgreSQL per database works, but each awake one costs about 115 MB.** The WebAssembly module declares 128 MB of initial memory and that cannot be lowered. Twenty awake databases are about 2.3 GB. An empty database is 40 MB on disk, 16 MB of it one WAL segment. This also explains the 940 MB of worker memory seen in the demo after PGlite was added.
+- **Start-up:** a new database takes 700 to 960 ms from initdb, or about 200 ms by copying a template directory (38 MB in 971 files). Asleep to first result is about 143 ms: Node boot 31 ms, spawn to hello 47 ms, PGlite open 79 ms, first query 9 ms.
+- **Running cost is fine:** one-row read 0.17 ms, small transaction 0.55 ms, sleep 17 ms.
+- **Three bugs found and fixed** (`cdb12ba`), the first two in the core:
+  - With `concurrent_sessions=false`, a task holding a transaction that then read through `db` waited for itself forever. The core now raises `NestedWriteError` at once for that task; other tasks still wait.
+  - A time-limit kill failed every other connection's queued request with `WorkerCrashed`, though those requests had never reached the worker. They are now retried once on the new process.
+  - Python 3.15 logged "exception in shielded future" on each cancel-kill.
+- Nothing short of killing the process can stop a running query, and a kill takes every session on that database with it.
+
+### Idea
+
+- **PGlite suits a handful of databases, not a fleet.** At about 115 MB each awake, the registry's cap would have to count a PGlite database as dozens of places. This is the strongest case yet for weighted places in the cap.
