@@ -529,7 +529,9 @@ int64_t next_rows(Conn &c, Stream &s, Writer &wr, bool &rows_open, const char *k
         std::chrono::steady_clock::time_point t0;
         ~Spent() {
             if (s.remaining_ms >= 0)
-                s.remaining_ms -= std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                // Never below 0: a negative budget means "no limit".
+                s.remaining_ms = std::max(0.0, s.remaining_ms - std::chrono::duration<double, std::milli>(
+                                                                    std::chrono::steady_clock::now() - t0).count());
         }
     } spent{s, t0};
     if (s.remaining_ms >= 0 && s.remaining_ms <= 0) throw Error("QueryInterrupted", "query interrupted (time limit exceeded)");
@@ -661,7 +663,9 @@ void stream_start(Conn &c, const JobPtr &job) {
                 execute_streaming(p.p, st.res);
             }
             if (st.remaining_ms >= 0)
-                st.remaining_ms -= std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                // Never below 0: a negative budget means "no limit".
+                st.remaining_ms = std::max(0.0, st.remaining_ms - std::chrono::duration<double, std::milli>(
+                                                                      std::chrono::steady_clock::now() - t0).count());
             st.has_res = true;
             st.prep = p.p;
             p.p = nullptr;
