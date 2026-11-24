@@ -25,3 +25,6 @@ cworker/vendor/
 duckdb-cpp-worker/build/
 duckdb-cpp-worker/build-*/
 duckdb-cpp-worker/vendor/
+
+# Node worker (nodeworker/): `npm ci --prefix nodeworker` installs here
+nodeworker/node_modules/

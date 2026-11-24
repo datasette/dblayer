@@ -1,0 +1,17 @@
+{
+  "name": "dblayer-nodeworker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Experimental dblayer worker: SQLite compiled to WebAssembly in a Node.js process, speaking docs/worker-protocol.md",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "3.53.4-build2"
+  }
+}
