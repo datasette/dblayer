@@ -41,6 +41,7 @@ SLOW_SQL = {
 SLOW_SQL["sqlite-worker"] = SLOW_SQL["sqlite"]
 SLOW_SQL["sqlite-cworker"] = SLOW_SQL["sqlite"]
 SLOW_SQL["sqlite-cpool"] = SLOW_SQL["sqlite"]
+SLOW_SQL["sqlite-rspool"] = SLOW_SQL["sqlite"]
 SLOW_SQL["sqlite-wasm"] = SLOW_SQL["sqlite"]
 SLOW_SQL["sqlite-nodeworker"] = SLOW_SQL["sqlite"]
 SLOW_SQL["sqlite-apsw"] = SLOW_SQL["sqlite"]

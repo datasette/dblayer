@@ -202,6 +202,18 @@ def _sqlite_cpool(config: DemoConfig) -> Backend:
     return SqliteCPool(config.data_dir / "sqlite-cpool.db")
 
 
+def _sqlite_rspool(config: DemoConfig) -> Backend:
+    # Experimental: the multi-tenant worker's Rust port, on the same pool code.
+    try:
+        from dblayer.backends.sqlite_rspool import SqliteRustPool, binary_unavailable
+    except ImportError as e:
+        raise Unavailable(f"the SqliteRustPool backend is not available here ({e})") from e
+    reason = binary_unavailable()
+    if reason:
+        raise Unavailable(reason)
+    return SqliteRustPool(config.data_dir / "sqlite-rspool.db")
+
+
 def _sqlite_wasm(config: DemoConfig) -> Backend:
     # Experimental: SQLite compiled to WebAssembly, in process (extra
     # "wasm"; build with `make -C cworker wasm`). Capped at 256 MB.
@@ -319,6 +331,7 @@ DEMO_SPECS: list[DemoSpec] = [
     DemoSpec("sqlite-worker", "SQLite, in a worker process", "SqliteWorker", _sqlite_worker),
     DemoSpec("sqlite-cworker", "SQLite, in a C worker process", "SqliteCWorker", _sqlite_cworker),
     DemoSpec("sqlite-cpool", "SQLite, multi-tenant C worker", "SqliteCPool", _sqlite_cpool),
+    DemoSpec("sqlite-rspool", "SQLite, multi-tenant Rust worker", "SqliteRustPool", _sqlite_rspool),
     DemoSpec("sqlite-wasm", "SQLite, in WebAssembly (wasmtime)", "SqliteWasm", _sqlite_wasm),
     DemoSpec("sqlite-nodeworker", "SQLite, WebAssembly in a Node.js process", "SqliteNodeWorker", _sqlite_nodeworker),
     DemoSpec("postgres", "PostgreSQL", "Postgres", _postgres, check=_postgres_check),
@@ -396,3 +409,7 @@ async def close_all(demos: list[DemoDatabase]) -> None:
         from dblayer.backends.sqlite_cpool import close_default_pool
 
         close_default_pool()
+    if any(d.spec.backend == "SqliteRustPool" for d in demos):
+        from dblayer.backends.sqlite_rspool import close_default_pool as close_rust_pool
+
+        close_rust_pool()
