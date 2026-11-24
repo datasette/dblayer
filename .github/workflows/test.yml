@@ -70,6 +70,7 @@ jobs:
   cworker-sanitizers:
     name: C worker under ASan + UBSan
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.4.0
@@ -79,12 +80,17 @@ jobs:
       - name: Build the C worker with -fsanitize=address,undefined
         run: make -C cworker SANITIZE=1
       # Any sanitizer report makes the worker exit non-zero (UBSan does not
-      # recover), which fails the test that was using it.
+      # recover), which fails the test that was using it. Memory-limit tests
+      # are left out: on Linux they set RLIMIT_AS, which ASan's reserved
+      # shadow memory does not survive (the first run hung in its test step).
       - name: Run the C worker's tests against the sanitized binary
         env:
           DBLAYER_CWORKER: ${{ github.workspace }}/cworker/build-asan/dblayer-cworker
           ASAN_OPTIONS: detect_leaks=0
-        run: uv run --all-extras pytest -ra -k "cworker or c-worker" tests/worker tests/faults tests/conformance
+        run: >-
+          uv run --all-extras pytest -ra
+          -k "(cworker or c-worker) and not heap_limit and not rlimit and not memory_limit"
+          tests/worker tests/faults tests/conformance
 
   stdlib-only:
     name: Core with no optional dependencies
