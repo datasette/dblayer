@@ -36,7 +36,7 @@ from ..errors import (
     TransactionExpired,
 )
 from .api import IntrospectionMixin, OperationsMixin
-from .common import DEFAULT, Opt, map_errors, pick
+from .common import DEFAULT, Opt, map_errors, pick, spawn
 from .operations import OPERATIONS, OperationResult, normalise_args
 from .params import Params, leading_keyword
 from .pool import Pool, _should_discard
@@ -56,18 +56,7 @@ _active: contextvars.ContextVar[tuple["Transaction", ...]] = contextvars.Context
 # transaction invalidates the schema caches.
 _DML = frozenset({"SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "VALUES", "MERGE"})
 
-# Background tasks (deadline expiry, shielded cleanup) are referenced here so
-# they are not garbage collected while running.
-_background: set[asyncio.Task[Any]] = set()
-
 _INTERRUPT_EVERY = 0.02  # seconds between interrupts while a statement runs
-
-
-def _spawn(coro: Awaitable[Any]) -> asyncio.Task[Any]:
-    task = asyncio.ensure_future(coro)
-    _background.add(task)
-    task.add_done_callback(_background.discard)
-    return task
 
 
 def active_transaction(db: "Database") -> "Transaction | None":
@@ -184,7 +173,7 @@ class Transaction(IntrospectionMixin, OperationsMixin):
         self._forget_context()
         if self._state in (_State.OPEN, _State.EXPIRING):
             commit = exc_type is None
-            task = _spawn(self._end(commit))
+            task = spawn(self._end(commit))
             try:
                 # Shielded: a second cancellation must not abandon the
                 # rollback half-way; the task finishes in the background.
@@ -265,7 +254,7 @@ class Transaction(IntrospectionMixin, OperationsMixin):
         if self._state is not _State.OPEN:
             return
         self._state = _State.EXPIRING
-        _spawn(self._expire())
+        spawn(self._expire())
 
     async def _expire(self) -> None:
         conn = self._conn

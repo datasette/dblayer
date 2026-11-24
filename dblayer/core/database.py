@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from datetime import timedelta
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping, Sequence
@@ -10,7 +11,7 @@ from typing import Any
 from ..backends.base import Backend, Capabilities
 from ..errors import DatabaseClosed, NestedWriteError
 from .api import IntrospectionMixin, OperationsMixin
-from .common import DEFAULT, Opt, map_errors, pick
+from .common import DEFAULT, Opt, map_errors, pick, spawn
 from .operations import OperationResult
 from .params import Params, rewrite
 from .pool import DEFAULT_MAX_READ_CONNECTIONS, Pool, PoolStats
@@ -83,6 +84,8 @@ class Database(IntrospectionMixin, OperationsMixin):
         "_closed",
         "_opened_total",
         "_closed_total",
+        "_awake",
+        "_transition",
     )
 
     def __init__(
@@ -119,6 +122,9 @@ class Database(IntrospectionMixin, OperationsMixin):
         self._closed = False
         self._opened_total = 0
         self._closed_total = 0
+        self._awake = False
+        self._transition: tuple[str, asyncio.Future[Any]] | None = None
+        """A wake or sleep in progress: ``(kind, future)``."""
 
     def __repr__(self) -> str:
         return f"<Database {self.name!r} {self._backend!r}>"
@@ -133,6 +139,14 @@ class Database(IntrospectionMixin, OperationsMixin):
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def state(self) -> str:
+        """``"awake"`` (connections open or opening), ``"asleep"`` (none;
+        the next call wakes it) or ``"closed"`` (for good)."""
+        if self._closed:
+            return "closed"
+        return "awake" if self._awake else "asleep"
+
     def stats(self) -> PoolStats:
         """Connection counts for this database. Never opens anything."""
         pool = self._pool
@@ -145,8 +159,61 @@ class Database(IntrospectionMixin, OperationsMixin):
     def _get_pool(self) -> Pool:
         pool = self._pool
         if pool is None:
+            self._check_open()
             pool = self._pool = Pool(self)
         return pool
+
+    # -- lifecycle internals -----------------------------------------------------
+
+    async def _ensure_awake(self) -> None:
+        """Called by the pool before it opens a connection. Waits for a
+        sleep in progress to finish, then marks the database awake."""
+        while not self._awake:
+            t = self._transition
+            if t is not None:
+                try:
+                    await asyncio.shield(t[1])
+                except Exception:
+                    pass
+                continue
+            self._check_open()
+            self._awake = True
+
+    def _pool_empty(self, pool: Pool) -> None:
+        """The pool has no connections and no users: go to sleep."""
+        if pool is not self._pool or not self._awake:
+            return
+        self._awake = False
+        fut = asyncio.get_running_loop().create_future()
+        transition = ("sleep", fut)
+        self._transition = transition
+        spawn(self._sleep_job(transition))
+
+    async def _sleep_job(self, transition: tuple[str, asyncio.Future[Any]]) -> None:
+        """Release everything once the last connection has closed: the
+        backend (where it allows that, or for good on close) and the pool
+        object itself."""
+        try:
+            if self._closed or self.capabilities.sleep_releases_everything:
+                try:
+                    await self._backend.close()
+                except Exception:
+                    pass
+        finally:
+            if self._transition is transition:
+                self._transition = None
+            pool = self._pool
+            if pool is not None and pool.empty and not self._awake:
+                self._pool = None
+            transition[1].set_result(None)
+
+    async def _wait_transition(self) -> None:
+        t = self._transition
+        if t is not None:
+            try:
+                await asyncio.shield(t[1])
+            except Exception:
+                pass
 
     def _staging_names(self) -> set[str]:
         """Names of staging tables owned by imports running in this
@@ -492,13 +559,18 @@ class Database(IntrospectionMixin, OperationsMixin):
     async def sleep(self) -> None:
         """Release connections (and, where the backend allows, everything
         else). The next call wakes the database transparently. Connections in
-        use right now finish their call and are closed when returned."""
+        use right now finish their call and are closed when returned; once
+        the last one is back the backend itself is closed, as it is at once
+        when nothing is in use."""
         self._check_open()
         self._invalidate_schema()
         pool = self._pool
         if pool is not None:
+            # Closing the last idle connection starts the sleep; connections
+            # in use start it when they come back.
             await pool.close_idle()
-        if self.capabilities.sleep_releases_everything and (pool is None or pool.in_use == 0):
+            await self._wait_transition()
+        elif self.capabilities.sleep_releases_everything:
             await self._backend.close()
 
     async def close(self) -> None:
@@ -508,9 +580,14 @@ class Database(IntrospectionMixin, OperationsMixin):
             return
         self._closed = True
         self._invalidate_schema()
-        if self._pool is not None:
-            await self._pool.close()
-        await self._backend.close()
+        pool = self._pool
+        if pool is not None:
+            await pool.close()
+        await self._wait_transition()
+        if pool is None or pool.empty:
+            await self._backend.close()
+        # Otherwise connections are still in use: the backend is closed by
+        # the sleep that follows the last one coming back.
 
     async def __aenter__(self) -> "Database":
         return self

@@ -3,15 +3,28 @@ limit sentinel and error mapping."""
 
 from __future__ import annotations
 
+import asyncio
 import enum
-from collections.abc import Iterator
+from collections.abc import Awaitable, Iterator
 from contextlib import contextmanager
-from typing import Final
+from typing import Any, Final
 
 from ..backends.base import Backend
 from ..errors import DblayerError
 
-__all__ = ["DEFAULT", "Opt", "pick", "map_errors"]
+__all__ = ["DEFAULT", "Opt", "pick", "map_errors", "spawn"]
+
+# Background tasks (deadline expiry, shielded cleanup, sleep transitions,
+# idle reaping) are referenced here so they are not garbage collected while
+# running.
+_background: set[asyncio.Task[Any]] = set()
+
+
+def spawn(coro: Awaitable[Any]) -> asyncio.Task[Any]:
+    task = asyncio.ensure_future(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    return task
 
 
 class _Default(enum.Enum):

@@ -8,13 +8,19 @@
 * Reset on return: ``rollback()`` is called on every returned connection
   (backends make that a no-op when nothing is open). A connection whose reset
   fails, or that the caller marks ``discard``, is closed instead of reused.
-* Only checked-in connections are ever closed. ``sleep()`` closes idle
+* Only checked-in connections are ever closed. ``close_idle()`` closes idle
   connections and bumps a generation counter so that connections still in
   use at that moment are closed when they come back.
 
-Milestone 3 adds idle timeout, a global cap and registry integration; the
-``last_used`` timestamp on each entry and ``close_idle()`` are the hooks for
-that.
+The pool counts ``open`` connections (including ones being opened or
+closed) and ``users`` (callers between the start of ``acquire`` and the end
+of ``release``). When both reach zero the pool tells its database, which
+then goes to sleep: it closes the backend (where
+``capabilities.sleep_releases_everything``) and drops the pool, so an asleep
+database holds no pool at all.
+
+A pool belongs to the event loop it was created on; its database replaces it
+when used from another loop (see ``Database._use_pool``).
 """
 
 from __future__ import annotations
@@ -54,22 +60,27 @@ class PoolStats:
 
 
 class _Entry:
-    __slots__ = ("conn", "write", "generation", "last_used")
+    __slots__ = ("conn", "write", "generation", "last_used", "pool")
 
-    def __init__(self, conn: BackendConnection, write: bool, generation: int) -> None:
+    def __init__(
+        self, conn: BackendConnection, write: bool, generation: int, pool: "Pool"
+    ) -> None:
         self.conn = conn
         self.write = write
         self.generation = generation
         self.last_used = time.monotonic()
+        self.pool = pool
 
 
 class Pool:
-    """Created by its ``Database`` on first use (so an unused database costs
-    no pool); cumulative open/close counts live on the database."""
+    """Created by its ``Database`` on first use and dropped when the
+    database goes to sleep; cumulative open/close counts live on the
+    database."""
 
     __slots__ = (
         "_db",
         "_backend",
+        "loop",
         "max_read_connections",
         "_read_slots",
         "_write_slot",
@@ -78,22 +89,26 @@ class Pool:
         "_in_use",
         "_generation",
         "_closed",
+        "open",
+        "users",
     )
 
-    def __init__(self, db: "Database") -> None:
+    def __init__(self, db: "Database", loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._db = db
         self._backend: Backend = db._backend
-        max_read_connections = db.max_read_connections
-        self.max_read_connections = max_read_connections
-        # asyncio primitives bind to the running loop lazily (3.10+), so
-        # creating them here opens nothing and needs no loop.
-        self._read_slots = asyncio.Semaphore(max_read_connections)
+        self.loop = loop
+        self.max_read_connections = db.max_read_connections
+        self._read_slots = asyncio.Semaphore(self.max_read_connections)
         self._write_slot = asyncio.Lock()
         self._idle_read: list[_Entry] = []
         self._idle_write: _Entry | None = None
         self._in_use: dict[int, _Entry] = {}
         self._generation = 0
         self._closed = False
+        self.open = 0
+        """Connections open, being opened or being closed."""
+        self.users = 0
+        """Callers inside ``acquire`` or holding a connection."""
 
     # -- checkout ------------------------------------------------------------
 
@@ -116,21 +131,38 @@ class Pool:
         slot until released."""
         if self._closed:
             raise DatabaseClosed("database is closed")
-        slot = self._write_slot if write else self._read_slots
-        await slot.acquire()
+        self.users += 1
         try:
-            if self._closed:
-                raise DatabaseClosed("database is closed")
-            entry = self._take_idle(write)
-            if entry is None:
-                conn = await self._backend.open(write=write)
-                self._db._opened_total += 1
-                entry = _Entry(conn, write, self._generation)
+            slot = self._write_slot if write else self._read_slots
+            await slot.acquire()
+            try:
+                if self._closed:
+                    raise DatabaseClosed("database is closed")
+                entry = self._take_idle(write)
+                if entry is None:
+                    entry = await self._open_entry(write)
+            except BaseException:
+                slot.release()
+                raise
         except BaseException:
-            slot.release()
+            self.users -= 1
+            self._check_empty()
             raise
         self._in_use[id(entry.conn)] = entry
         return entry.conn
+
+    async def _open_entry(self, write: bool) -> _Entry:
+        await self._db._ensure_awake()
+        if self._closed:
+            raise DatabaseClosed("database is closed")
+        self.open += 1
+        try:
+            conn = await self._backend.open(write=write)
+        except BaseException:
+            self.open -= 1
+            raise
+        self._db._opened_total += 1
+        return _Entry(conn, write, self._generation, self)
 
     async def release(self, conn: BackendConnection, *, discard: bool = False) -> None:
         entry = self._in_use.pop(id(conn), None)
@@ -149,14 +181,19 @@ class Pool:
             try:
                 if reuse and self._reusable(entry):
                     entry.last_used = time.monotonic()
-                    if entry.write:
-                        self._idle_write = entry
-                    else:
-                        self._idle_read.append(entry)
+                    self._check_in(entry)
                 else:
                     await self._close_entry(entry)
             finally:
                 slot.release()
+                self.users -= 1
+                self._check_empty()
+
+    def _check_in(self, entry: _Entry) -> None:
+        if entry.write:
+            self._idle_write = entry
+        else:
+            self._idle_read.append(entry)
 
     def _reusable(self, entry: _Entry) -> bool:
         return not self._closed and entry.generation == self._generation
@@ -167,20 +204,32 @@ class Pool:
             return entry
         return self._idle_read.pop() if self._idle_read else None
 
+    def _check_empty(self) -> None:
+        if self.open == 0 and self.users == 0:
+            self._db._pool_empty(self)
+
+    @property
+    def empty(self) -> bool:
+        return self.open == 0 and self.users == 0
+
     # -- shutdown ------------------------------------------------------------
+
+    def _take_all_idle(self) -> list[_Entry]:
+        entries = self._idle_read
+        self._idle_read = []
+        if self._idle_write is not None:
+            entries.append(self._idle_write)
+            self._idle_write = None
+        return entries
 
     async def close_idle(self) -> int:
         """Close every checked-in connection and arrange for connections in
         use now to be closed when they are returned. Returns how many were
         closed now. The pool stays usable."""
         self._generation += 1
-        entries = self._idle_read
-        self._idle_read = []
-        if self._idle_write is not None:
-            entries.append(self._idle_write)
-            self._idle_write = None
-        for entry in entries:
-            await self._close_entry(entry)
+        entries = self._take_all_idle()
+        if entries:
+            await asyncio.gather(*(self._close_entry(e) for e in entries))
         return len(entries)
 
     async def close(self) -> None:
@@ -190,11 +239,14 @@ class Pool:
         await self.close_idle()
 
     async def _close_entry(self, entry: _Entry) -> None:
-        self._db._closed_total += 1
         try:
             await entry.conn.close()
         except Exception:
             pass
+        finally:
+            self.open -= 1
+            self._db._closed_total += 1
+            self._check_empty()
 
     # -- introspection -------------------------------------------------------
 
