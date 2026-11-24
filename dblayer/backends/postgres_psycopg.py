@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import time
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from decimal import Decimal
@@ -113,6 +114,10 @@ if TYPE_CHECKING:
 __all__ = ["PostgresPsycopg", "PsycopgDialect", "PsycopgConnection"]
 
 _CURSOR = "_dblayer_cur"
+"""The cursor a limited read inside a transaction is declared as (closed in
+the same pipeline). Streams use their own names (``_dblayer_stream_<n>``),
+so a statement can run while a stream is open."""
+_stream_names = itertools.count(1)
 _STREAM_CHUNK = 1000
 """Rows per libpq chunk when ``execute`` reads with a row or byte limit."""
 _SELECTS = frozenset({"SELECT", "VALUES", "TABLE"})
@@ -1024,7 +1029,7 @@ class _PsycopgStream:
             self._started = True
             await conn._settle_timeout(None)
             if conn._in_tx():
-                self._server_cursor = raw.cursor(_CURSOR)
+                self._server_cursor = raw.cursor(f"_dblayer_stream_{next(_stream_names)}")
                 await self._server_cursor.execute(self._sql, self._args)
                 self.columns = _columns(self._server_cursor.description)
             else:

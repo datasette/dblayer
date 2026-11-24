@@ -597,3 +597,24 @@ async def test_schema_version_tracks_ddl_from_any_client(make_pg):
 async def test_rewriter_against_server(db, sql, params, expected):
     r = await db.execute(sql, params)
     assert tuple(r.rows[0]) == expected
+
+
+async def test_backend_stream_inside_a_transaction(make_pg):
+    # db.stream() never runs inside a transaction, but the backend supports
+    # it (a server-side cursor), and statements can run while it is open.
+    db = make_pg()
+    backend = db._backend
+    await db.execute_write("create table t (x integer)")
+    conn = await backend.open(write=True)
+    try:
+        await conn.begin("write")
+        await conn.execute("insert into t select generate_series(1, 25)", [], time_limit_ms=None, max_rows=None)
+        stream = conn.stream("select x from t order by x", [], chunk_rows=10)
+        first = await stream.__anext__()
+        r = await conn.execute("select count(*) from t", [], time_limit_ms=None, max_rows=10)
+        rest = [row for chunk in [c async for c in stream] for row in chunk]
+        assert [row[0] for row in first + rest] == list(range(1, 26))
+        assert r.rows == [(25,)]
+        await conn.rollback()
+    finally:
+        await conn.close()
