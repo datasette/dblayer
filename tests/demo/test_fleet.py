@@ -309,3 +309,19 @@ async def test_stats_count_c_worker_processes(
     while set(live_worker_pids()) & new:
         assert asyncio.get_running_loop().time() < deadline
         await asyncio.sleep(0.1)
+
+
+async def test_auto_refresh_updates_in_place_without_reloading(
+    fleet_client: tuple[Fleet, httpx.AsyncClient],
+) -> None:
+    """A full-page meta refresh made the grid flicker; with JavaScript the
+    page patches itself, and the meta refresh is only a <noscript> fallback."""
+    _, client = fleet_client
+    r = await client.get("/-/fleet?refresh=1")
+    assert r.status_code == 200
+    outside_noscript = re.sub(r"<noscript>.*?</noscript>", "", r.text, flags=re.S)
+    assert 'http-equiv="refresh"' not in outside_noscript
+    assert '<noscript><meta http-equiv="refresh"' in r.text
+    assert 'id="fleet-live"' in r.text and "setInterval(update" in r.text
+    plain = await client.get("/-/fleet")
+    assert "setInterval(update" not in plain.text and 'http-equiv="refresh"' not in plain.text

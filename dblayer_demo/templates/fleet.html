@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Fleet{% endblock %}
-{% block head %}{% if refresh %}<meta http-equiv="refresh" content="{{ refresh }}">{% endif %}{% endblock %}
+{# Auto-refresh updates the page in place (see the script below); a full reload flickered.
+   Without JavaScript the meta refresh still reloads the page. #}
+{% block head %}{% if refresh %}<noscript><meta http-equiv="refresh" content="{{ refresh }}"></noscript>{% endif %}{% endblock %}
 {% block crumbs %} / <a href="/-/fleet">fleet</a>{% endblock %}
 {% block content %}
 <h1>Fleet: {{ "{:,}".format(fleet.members | length) }} databases, one Registry</h1>
@@ -11,6 +13,7 @@ Databases start <b>cold</b> (not on local disk) and are built from a template on
 {% include "_stats.html" %}
 {% include "_fanout_links.html" %}
 
+<div id="fleet-live">
 <table class="rows counts">
 <thead><tr><th>Backend</th>{% for s in states %}<th><a href="?state={{ s }}{% if kind %}&amp;backend={{ kind }}{% endif %}">{{ s }}</a></th>{% endfor %}<th>All</th></tr></thead>
 <tbody>
@@ -21,11 +24,60 @@ Databases start <b>cold</b> (not on local disk) and are built from a template on
 {% endfor %}
 </tbody>
 </table>
-<p>Showing {{ members | length }}{% if kind or state %} ({{ kind or "any backend" }}, {{ state or "any state" }}) <a href="/-/fleet">show all</a>{% endif %}.
+<p class="showing">Showing {{ members | length }}{% if kind or state %} ({{ kind or "any backend" }}, {{ state or "any state" }}) <a href="/-/fleet">show all</a>{% endif %}.
 {% if refresh %}<a href="?{% if kind %}backend={{ kind }}&amp;{% endif %}{% if state %}state={{ state }}{% endif %}">stop auto-refresh</a>{% else %}<a href="?refresh=3{% if kind %}&amp;backend={{ kind }}{% endif %}{% if state %}&amp;state={{ state }}{% endif %}">auto-refresh every 3 s</a>{% endif %}
 <span class="legend"><span class="s-awake">awake</span> <span class="s-asleep">asleep</span> <span class="s-cold">cold</span> <span class="s-unavailable">unavailable</span></span></p>
 
 <div class="grid">
 {% for m in members %}<a class="s-{{ m.state }}" href="/{{ m.name }}" title="{{ m.demo.spec.title }}: {{ m.state }}{% if m.db %}, {{ m.db.stats().open_total }} open{% endif %}{% if m.demo.error %} ({{ m.demo.error }}){% endif %}">{{ m.name }}</a>{% endfor %}
 </div>
+</div>
+{% if refresh %}
+<script>
+// Every {{ refresh }} s: fetch this page again and patch what changed, in place.
+(function () {
+  const live = document.getElementById("fleet-live");
+  let busy = false;
+  async function update() {
+    if (busy || document.hidden) return;
+    busy = true;
+    try {
+      const response = await fetch(location.href, {headers: {"X-Fleet-Refresh": "1"}});
+      if (!response.ok) return;
+      const next = new DOMParser()
+        .parseFromString(await response.text(), "text/html")
+        .getElementById("fleet-live");
+      if (!next) return;
+      // Counts table and the "Showing N" line: small, so swap only if different.
+      for (const selector of ["table.counts tbody", "p.showing"]) {
+        const now = live.querySelector(selector), then = next.querySelector(selector);
+        if (now && then && now.innerHTML !== then.innerHTML) now.innerHTML = then.innerHTML;
+      }
+      // The grid: when the same databases are shown, change only the cells
+      // whose state moved; otherwise (a state filter is on) swap the children.
+      const grid = live.querySelector(".grid"), nextGrid = next.querySelector(".grid");
+      const cells = grid.children, nextCells = nextGrid.children;
+      let same = cells.length === nextCells.length;
+      for (let i = 0; same && i < cells.length; i++) {
+        same = cells[i].textContent === nextCells[i].textContent;
+      }
+      if (same) {
+        for (let i = 0; i < cells.length; i++) {
+          if (cells[i].className !== nextCells[i].className) cells[i].className = nextCells[i].className;
+          if (cells[i].title !== nextCells[i].title) cells[i].title = nextCells[i].title;
+        }
+      } else {
+        grid.replaceChildren(...nextCells);
+      }
+    } catch (error) {
+      // The server may be restarting: keep the page as it is and try again.
+    } finally {
+      busy = false;
+    }
+  }
+  setInterval(update, {{ refresh * 1000 }});
+  document.addEventListener("visibilitychange", update);
+})();
+</script>
+{% endif %}
 {% endblock %}
