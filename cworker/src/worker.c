@@ -1077,6 +1077,40 @@ static int cfg_bool(const val *cfg, const char *k, int dflt) {
     return dflt;
 }
 
+/* busy_timeout that a cancel can stop. SQLite's own busy handler sleeps
+ * through sqlite3_interrupt(), so a cancelled or timed-out request waiting
+ * for another connection's lock waited out the whole busy_timeout (5 s by
+ * default) and then failed with "database is locked". This is SQLite's
+ * default back-off schedule, slept in slices of at most 5 ms, giving up as
+ * soon as the connection is interrupted. */
+static int busy_cb(void *p, int count) {
+    conn *c = p;
+    static const int delays[] = {1, 2, 5, 10, 15, 20, 25, 25, 25, 50, 50, 100};
+    static const int totals[] = {0, 1, 3, 8, 18, 33, 53, 78, 103, 128, 178, 228};
+    const int n = (int)(sizeof delays / sizeof delays[0]);
+    int delay = count < n ? delays[count] : delays[n - 1];
+    int prior = count < n ? totals[count] : totals[n - 1] + delays[n - 1] * (count - (n - 1));
+    if (prior + delay > c->busy_ms) {
+        delay = c->busy_ms - prior;
+        if (delay <= 0)
+            return 0;
+    }
+    while (delay > 0) {
+#if SQLITE_VERSION_NUMBER >= 3041000
+        if (sqlite3_is_interrupted(c->db))
+            return 0;
+#endif
+        int slice = delay > 5 ? 5 : delay;
+        sqlite3_sleep(slice);
+        delay -= slice;
+    }
+#if SQLITE_VERSION_NUMBER >= 3041000
+    if (sqlite3_is_interrupted(c->db))
+        return 0;
+#endif
+    return 1;
+}
+
 static int h_open(job *j, wbuf *w, err_t *e) {
     const val *engine = field(j, "engine");
     if (engine && engine->t != V_NIL && !val_is_str(engine, SQLITE_ENGINE)) {
@@ -1227,6 +1261,7 @@ static int h_open(job *j, wbuf *w, err_t *e) {
     *c = tmp;
     c->db = db;
     c->write = write;
+    sqlite3_busy_handler(db, busy_cb, c); /* replaces the busy_timeout set above */
     pthread_mutex_lock(&g_mu);
     c->id = ++g_conn_seq;
     c->next = g_conns;
@@ -1890,7 +1925,11 @@ static void run_expire(job *j) {
 
 /* Server.translate */
 static void translate(job *j, err_t *e) {
-    if (!atomic_load(&j->cancelled) || e->type == NULL || strcmp(e->type, "QueryInterrupted") != 0)
+    if (!atomic_load(&j->cancelled) || e->type == NULL)
+        return;
+    /* A lock wait cut short by the cancel (busy_cb) ends in SQLITE_BUSY. */
+    int busy = (e->sqlite_ext & 0xff) == SQLITE_BUSY;
+    if (strcmp(e->type, "QueryInterrupted") != 0 && !busy)
         return;
     pthread_mutex_lock(&g_mu);
     int reason = j->reason;

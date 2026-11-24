@@ -297,6 +297,29 @@ def test_end_of_input_with_busy_connections_exits(raw, tmp_path):
     assert sqlite3.connect(tmp_path / "e0.db").execute("select count(*) from t").fetchone() == (0,)
 
 
+def test_cancel_stops_a_lock_wait(raw, tmp_path):
+    """A connection waiting for a lock another connection holds (inside
+    busy_timeout, 5 s by default) stops at once when cancelled; so does end
+    of input."""
+    w = raw()
+    holder, waiter = w.open(tmp_path / "l.db"), w.open(tmp_path / "l.db")
+    tx = w.call({"type": "begin", "mode": "write", "conn": holder})["tx"]
+    assert tx
+    t0 = time.perf_counter()
+    blocked = w.send({"type": "begin", "mode": "write", "conn": waiter})
+    time.sleep(0.2)
+    w.send({"type": "cancel", "target": blocked})
+    err = w.reply(blocked)["error"]
+    elapsed = time.perf_counter() - t0
+    print(f"\n[cworker --multi] cancel of a lock wait returned after {elapsed * 1000:.0f} ms")
+    assert err["type"] == "QueryInterrupted" and elapsed < 2.0
+    w.send({"type": "begin", "mode": "write", "conn": waiter})
+    time.sleep(0.1)
+    t0 = time.perf_counter()
+    assert w.close() == 0
+    assert time.perf_counter() - t0 < 2.0
+
+
 def test_lookaside_option(raw, tmp_path):
     w = raw("--lookaside", "0,0")
     a = w.open(tmp_path / "a.db")
