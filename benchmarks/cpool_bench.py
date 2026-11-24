@@ -65,7 +65,18 @@ def close_pools() -> None:
 
 
 def _cpu_s(pid: int) -> float:
-    """User + system CPU seconds of ``pid`` (``ps``, 10 ms resolution)."""
+    """User + system CPU seconds of ``pid``: ``/proc`` on Linux (clock-tick
+    resolution; procps ``ps -o time`` there has whole seconds, which read
+    as 0 cores in the first Linux run), else ``ps`` (10 ms on macOS)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+    except FileNotFoundError:
+        if os.path.exists("/proc/self/stat"):
+            return 0.0  # Linux, process gone
+    except (OSError, ValueError, IndexError):
+        pass
     out = subprocess.run(["ps", "-o", "time=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
     if not out:
         return 0.0
