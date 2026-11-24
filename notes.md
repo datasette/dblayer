@@ -1394,3 +1394,18 @@ At Simon's instruction I ran `killall corespotlightd`. The old process (up 10 da
 Simon chose a dedicated Fly.io machine over cleaning up this Mac. Org `datasette-cloud-dev`; one `performance-8x` machine (8 dedicated CPUs, 16 GB) in `sjc` with a volume and PostgreSQL inside it; everything destroyed after each run. The repository is now public (private-repo CI minutes were costing money), so a `fly/` folder holds all the configuration with no secrets, and the machine clones the repo without credentials. A subagent is building that folder and a single benchmark runner (`benchmarks/run_all.py`), then doing a quick trial run now to prove the mechanism before the final code lands. Safeguards asked for, because subagents have been stopped mid-task before: a hard maximum lifetime on the machine, no automatic restart, and an idempotent teardown script.
 
 The plan to move generated files under one Dropbox-ignored parent folder is dropped at Simon's request. The ignore attributes already set remain.
+
+### Found: the build filled the disk (2026-11-24, about 09:50)
+
+- **The Mac's data volume hit 100% full** (126 MB free of 1.8 TB), and subagents' test runs started failing with "database or disk is full". Cause: pytest keeps every test's temp directory for the whole session and the last three sessions after it. One full-suite run used 28 GB and a PGlite-only run 17 GB, since each PGlite data directory is about 40 MB. With several subagents running suites, that added up to tens of gigabytes.
+- Two subagents deleted their own temp directories and build outputs, which brought free space back to about 46 GB. About 20 GB of older pytest temp directories from finished subagents remains, along with 7.8 GB of worktrees.
+- **Fix being committed by the CI subagent:** `tmp_path_retention_policy = "failed"` in `pyproject.toml`, so a passing test's directory is removed at teardown.
+- Lesson for the process: a suite with heavy backends needs temp retention switched off from the start, and a disk check belongs beside the load check before any long run.
+
+### Found: CI repair, interim (2026-11-24)
+
+Interim, not yet confirmed by a green run.
+
+- **Likely cause of the Linux hang:** `tests/scale/test_threads.py` holds 1,000 databases open at once. On the Python and Node.js SQLite workers that is 1,000 processes, measured at 38 GB and 62 GB of summed resident memory on macOS, against a 16 GB CI runner. Those two backends now hold 100 open, and the thread assertions compare sets, which also fixes the macOS `11 == 12` failure.
+- **A real bug in the C worker, and the same one in the Rust port:** a cancel that arrived just after a stream's last frame was lost; the stream stayed open and its stale interrupt failed the next statement. That explains three of the four sanitizer-job failures. Fixed.
+- The workflow is now split by backend family, with a timeout on every job and stack dumps on a hang.
