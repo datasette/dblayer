@@ -269,6 +269,10 @@ class PyRowEncoder:
 # -- the stream -------------------------------------------------------------------------
 
 
+BACKSTOP_GRACE_S = 0.1
+"""How long past ``time_limit_ms`` the core cancels a backend step itself."""
+
+
 class ExportStream:
     """What ``db.export()`` returns: an async iterator of ``bytes`` chunks
     (each one the consumer's to keep), also an async context manager whose
@@ -311,6 +315,7 @@ class ExportStream:
         self._params = params
         self._time_limit_ms = time_limit_ms
         self._spent_ms = 0.0
+        self._backstop_fired = False
         self._max_rows = max_rows
         self._max_bytes = max_bytes
         self._chunk_bytes = chunk_bytes
@@ -357,9 +362,17 @@ class ExportStream:
                     aw.close()
                 raise QueryInterrupted(f"export exceeded time_limit_ms={limit}")
             try:
-                async with asyncio.timeout(remaining):
+                # A grace behind the backend's own limit (it was given the
+                # same budget): the engine stopping its statement is the
+                # clean path; this cancel is the backstop.
+                async with asyncio.timeout(remaining + BACKSTOP_GRACE_S):
                     return await aw
             except TimeoutError:
+                # The core cancelled a backend call mid-flight, past the
+                # backend's own limit: do not trust that connection again
+                # (psycopg can be left "busy" by a cancel that lands in its
+                # cleanup; the DuckDB worker with its read transaction open).
+                self._backstop_fired = True
                 raise QueryInterrupted(f"export exceeded time_limit_ms={limit}") from None
         finally:
             self._spent_ms += (time.perf_counter() - t0) * 1000
@@ -402,7 +415,7 @@ class ExportStream:
             discard = _should_discard(e)
             raise
         finally:
-            await pool.release(conn, discard=discard)
+            await pool.release(conn, discard=discard or self._backstop_fired)
 
     async def _native_body(self, conn: Any, sql: str, params: Any) -> AsyncIterator[bytes]:
         spec = self.spec

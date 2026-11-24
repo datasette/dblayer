@@ -117,6 +117,11 @@ puts no `\n` after the last row; this format does, as JSON Lines asks.)
 - `time_limit_ms`: a budget of time spent waiting on the backend, summed
   over chunks, as for `stream()`; time the consumer spends between chunks
   does not count. Past it the export raises `QueryInterrupted`.
+  The backend is given the same budget and is expected to stop its own
+  statement; the core cancels the backend call itself only 100 ms later
+  (`BACKSTOP_GRACE_S`), and then discards that connection instead of
+  pooling it, since a cancel that lands while a backend is already
+  stopping can leave it unusable (seen on psycopg and the DuckDB worker).
 - An error after some bytes were delivered is raised from the iterator.
   The body is then incomplete, and that is the only signal: nothing is
   appended to it. An HTTP server must abort the response (no terminating
