@@ -366,6 +366,8 @@ class Postgres:
             returning=True,
             snapshot_reads=True,
             replace_keeps_views=False,
+            # Statement savepoints contain a failure, as SQLite does.
+            statement_errors_abort_transaction=not statement_savepoints,
         )
         self._schema_ready = False
         self._hint_generation = 0

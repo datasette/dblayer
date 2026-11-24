@@ -54,12 +54,10 @@ def test_moving_loops_closes_connections_left_on_the_old_one(make_backend):
 
 
 @pytest.mark.requires("sleep_releases_everything")
-def test_moving_loops_leaks_no_file_descriptors(make_backend, backend_spec):
-    if backend_spec.id == "postgres":
-        pytest.xfail(
-            "asyncpg connections left on a closed loop cannot be closed from "
-            "another loop: close() and terminate() both need the old loop"
-        )
+def test_moving_loops_leaks_no_file_descriptors(make_backend):
+    # PostgreSQL: connections left on a closed loop have their socket closed
+    # directly (PostgresConnection.close), since asyncpg's close() and
+    # terminate() both need the old loop.
     db = Database(make_backend())
     asyncio.run(db.execute_write("create table t (x integer)"))
     asyncio.run(db.sleep())
