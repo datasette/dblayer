@@ -1,0 +1,12 @@
+<div class="scroll">
+<table class="rows">
+<thead><tr>
+{% for c in results.columns %}<th scope="col">{{ c.name }}{% set t = c.type or (types or {}).get(c.name) %}{% if t %} <span class="type">{{ t }}</span>{% endif %}</th>{% endfor %}
+</tr></thead>
+<tbody>
+{% for row in results.rows %}
+<tr>{% for value in row %}<td{% if value is numeric %} class="num"{% endif %}>{{ value | cell }}</td>{% endfor %}</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>

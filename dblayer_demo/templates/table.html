@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{{ info.name }} - {{ demo.spec.title }}{% endblock %}
+{% block crumbs %} / <a href="/{{ demo.spec.slug }}">{{ demo.spec.title }}</a> / <a href="/{{ demo.spec.slug }}/{{ info.name | urlencode }}">{{ info.name }}</a>{% endblock %}
+{% block content %}
+<h1>{{ info.name }} <span class="meta">{{ info.kind }}</span></h1>
+<p class="meta">{% if count is none %}Row count timed out.{% else %}{{ "{:,}".format(count) }} row{{ "" if count == 1 else "s" }}.{% endif %}
+{% if results is not none and results.rows %}Showing rows {{ offset + 1 }} to {{ offset + results.rows | length }}.{% endif %}
+<a href="/{{ demo.spec.slug }}/-/query?sql={{ sql | urlencode }}">View and edit SQL</a></p>
+
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+{% if results is not none %}
+{% if results.rows %}{% include "_results.html" %}{% else %}<p>No rows{% if offset %} at this offset{% endif %}.</p>{% endif %}
+{% endif %}
+
+<p class="pager">
+{% if prev_offset is not none %}<a href="?_offset={{ prev_offset }}" rel="prev">&larr; Previous</a>{% endif %}
+{% if next_offset is not none %}<a href="?_offset={{ next_offset }}" rel="next">Next &rarr;</a>{% endif %}
+</p>
+
+<h2>Columns</h2>
+<table class="rows">
+<thead><tr><th>Name</th><th>Type</th><th>Not null</th><th>Default</th><th>Primary key</th></tr></thead>
+<tbody>
+{% for c in info.columns %}
+<tr><td>{{ c.name }}</td><td>{{ c.type }}</td><td>{{ "yes" if c.not_null else "" }}</td><td>{{ c.default if c.default is not none else "" }}</td><td>{{ c.primary_key or "" }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+
+{% if info.foreign_keys %}
+<h2>Foreign keys</h2>
+<ul>
+{% for fk in info.foreign_keys %}
+<li>{{ fk.columns | join(", ") }} &rarr; <a href="/{{ demo.spec.slug }}/{{ fk.other_table | urlencode }}">{{ fk.other_table }}</a>({{ fk.other_columns | join(", ") }})</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if info.indexes %}
+<h2>Indexes</h2>
+<ul>
+{% for ix in info.indexes %}
+<li>{{ ix.name }} ({% for c in ix.columns %}{{ c if c is not none else "<expression>" }}{% if not loop.last %}, {% endif %}{% endfor %}){% if ix.unique %} unique{% endif %}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+<h2>Definition</h2>
+{% if definition %}<pre class="sql">{{ definition }}</pre>{% elif definition_note %}<p class="meta">{{ definition_note }}</p>{% else %}<p class="meta">No definition recorded.</p>{% endif %}
+{% endblock %}

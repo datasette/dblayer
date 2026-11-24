@@ -20,7 +20,8 @@ from starlette.responses import Response
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from dblayer import Database, DblayerError
+from dblayer import Database, DblayerError, NotSupported, Results
+from dblayer.core.schema import TableInfo
 
 from .databases import DemoDatabase, DemoSpec, close_all, open_all
 from .render import cell, describe_error, is_numeric
@@ -103,6 +104,76 @@ async def database_page(request: Request) -> Response:
     )
 
 
+def _order_by(db: Database, info: TableInfo) -> str:
+    """A stable order for paging: the primary key, else the implicit row id
+    (SQLite tables), else every column by position (views; PostgreSQL and
+    DuckDB tables without a key)."""
+    q = db.dialect.quote_identifier
+    if info.primary_keys:
+        return ", ".join(q(c) for c in info.primary_keys)
+    rowid = db.dialect.rowid_column
+    if info.kind == "table" and rowid and not info.virtual:
+        return q(rowid)
+    return ", ".join(str(i) for i in range(1, len(info.columns) + 1)) or "1"
+
+
+def _offset(request: Request) -> int:
+    try:
+        return max(0, int(request.query_params.get("_offset", "0")))
+    except ValueError:
+        raise HTTPException(400, "_offset must be an integer") from None
+
+
+async def table_page(request: Request) -> Response:
+    demo, db = _database(request)
+    name = request.path_params["table"]
+    info = (await db.schema()).get(name)
+    if info is None:
+        raise HTTPException(404, f"No table or view named {name!r}")
+    offset = _offset(request)
+    q = db.dialect.quote_identifier
+    # LIMIT one more than max_rows: ``truncated`` then says whether there is
+    # a next page, with no second query.
+    sql = (
+        f"select * from {q(name)} order by {_order_by(db, info)} "
+        f"limit {PAGE_SIZE + 1} offset {offset}"
+    )
+    results: Results | None = None
+    error: str | None = None
+    try:
+        results = await db.execute(sql, time_limit_ms=QUERY_TIME_LIMIT_MS, max_rows=PAGE_SIZE)
+    except DblayerError as e:
+        error = describe_error(e, time_limit_ms=QUERY_TIME_LIMIT_MS)
+    definition: str | None = None
+    definition_note: str | None = None
+    try:
+        definition = await db.definition(name)
+    except NotSupported:
+        definition_note = "This backend cannot supply CREATE statements (definition())."
+    except DblayerError as e:
+        definition_note = describe_error(e)
+    types = {c.name: c.type for c in info.columns}
+    return TEMPLATES.TemplateResponse(
+        request,
+        "table.html",
+        {
+            "demo": demo,
+            "info": info,
+            "sql": sql,
+            "results": results,
+            "error": error,
+            "types": types,
+            "count": await count_rows(db, name),
+            "offset": offset,
+            "page_size": PAGE_SIZE,
+            "next_offset": offset + PAGE_SIZE if results is not None and results.truncated else None,
+            "prev_offset": max(0, offset - PAGE_SIZE) if offset > 0 else None,
+            "definition": definition,
+            "definition_note": definition_note,
+        },
+    )
+
+
 async def http_error(request: Request, exc: Exception) -> Response:
     assert isinstance(exc, HTTPException)
     return TEMPLATES.TemplateResponse(
@@ -131,6 +202,7 @@ def create_app(
     routes = [
         Route("/", homepage, name="index"),
         Route("/{database}", database_page, name="database"),
+        Route("/{database}/{table:path}", table_page, name="table"),
     ]
     return Starlette(
         routes=routes, lifespan=lifespan, exception_handlers={HTTPException: http_error}
