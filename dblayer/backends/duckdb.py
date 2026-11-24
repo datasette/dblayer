@@ -99,6 +99,9 @@ class DuckDBDialect(Dialect):
         "blob": "BLOB",
     }
     native_alter = frozenset({"rename", "drop", "types"})
+    # A table other tables reference can be neither ALTERed (dependency
+    # error) nor dropped for a rebuild ("main key table").
+    alter_referenced_tables = False
     rowid_column = None  # DuckDB's rowid pseudo-column is not stable
     # Dropping a table other tables reference fails ("main key table"), and
     # foreign keys have no ON DELETE actions, so nothing is touched silently.

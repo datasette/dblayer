@@ -531,6 +531,19 @@ async def alter_table(
         if bad:
             raise ValueError(f"pk column(s) {sorted(bad)} not in the table")
 
+    if not d.alter_referenced_tables:
+        schema = await tx.schema()
+        referrers = sorted(
+            t.name
+            for t in schema.tables.values()
+            if t.name.casefold() != table.casefold()
+            and any(fk.other_table.casefold() == table.casefold() for fk in t.foreign_keys)
+        )
+        if referrers:
+            raise NotSupported(
+                f"cannot alter {table!r}: {', '.join(referrers)} reference it with foreign "
+                "keys, and this backend can neither alter nor drop a referenced table"
+            )
     native = d.native_alter_for(info, rename=rename, drop=drop_list, types=types_map)
     if rename and "rename" in native:
         for old, new in rename.items():
@@ -668,16 +681,38 @@ async def check_drop_safe(tx: TxLike, schema: Schema, table: str) -> list[str]:
 
 
 async def recreate_dependents(
-    tx: TxLike, info: TableInfo, schema: Schema, *, drop: Iterable[str] = ()
+    tx: TxLike,
+    info: TableInfo,
+    schema: Schema,
+    *,
+    drop: Iterable[str] = (),
+    rename: Mapping[str, str] | None = None,
 ) -> None:
     """Re-run the CREATE statements of ``info``'s own indexes and triggers
     (both are dropped with the table). Indexes on dropped columns are left
-    out, as a native DROP COLUMN would drop them."""
+    out, as a native DROP COLUMN would drop them. An index on a renamed
+    column is rebuilt from its column list instead of its definition (only
+    possible for plain-column, non-partial indexes)."""
     drop_set = set(drop)
+    rename = dict(rename or {})
     for idx in info.indexes:
         if idx.origin != "c":
             continue
         if any(c in drop_set for c in idx.columns if c is not None):
+            continue
+        if any(c in rename for c in idx.columns if c is not None):
+            if idx.partial or any(c is None for c in idx.columns):
+                raise NotSupported(
+                    f"cannot rename a column used by expression or partial index {idx.name!r}"
+                )
+            await tx.execute(
+                tx.dialect.create_index_sql(
+                    idx.name,
+                    info.name,
+                    [rename.get(c, c) for c in idx.columns if c is not None],
+                    unique=idx.unique,
+                )
+            )
             continue
         if idx.definition is None:
             raise NotSupported(f"index {idx.name!r} has no CREATE statement to replay")
@@ -718,10 +753,9 @@ async def rebuild_table(
     info = _table(schema, table)
     check_rebuildable(info)
     await check_drop_safe(tx, schema, table)
-    if rename and (schema.triggers or any(i.origin == "c" for i in info.indexes)):
-        # Only reachable on dialects without native RENAME COLUMN: replayed
-        # definitions would still name the old column.
-        raise NotSupported("renaming columns of an indexed or triggered table needs native RENAME COLUMN")
+    if rename and any(t.table.casefold() == table.casefold() for t in schema.triggers.values()):
+        # Replayed trigger definitions would still name the old column.
+        raise NotSupported("renaming columns of a table with triggers needs native RENAME COLUMN")
     defn = table_definition(info, rename=rename, drop=drop_list, types=types, pk=pk)
     tmp = f"{HIDDEN_PREFIX}alter_{uuid.uuid4().hex[:12]}"
     src = [c.name for c in info.columns if not c.hidden and c.name not in set(drop_list)]
@@ -740,7 +774,7 @@ async def rebuild_table(
     ]
     for sql in statements:
         await tx.execute(sql)
-    await recreate_dependents(tx, info, schema, drop=drop_list)
+    await recreate_dependents(tx, info, schema, drop=drop_list, rename=rename)
 
 
 # -- registry and argument normalisation ----------------------------------------

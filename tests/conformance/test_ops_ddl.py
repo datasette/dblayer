@@ -35,7 +35,8 @@ async def test_create_table_python_types_and_native_passthrough(ops_db):
     await ops_db.create_table("t", {"a": int, "b": str, "c": float, "d": bytes, "e": "varchar(20)"})
     types = col_types(await ops_db.table_columns("t"))
     assert "int" in types["a"] and is_text_type(types["b"])
-    assert types["e"] == "varchar(20)"
+    # Passed through unchanged (DuckDB accepts the length and drops it).
+    assert types["e"] in ("varchar(20)", "character varying(20)", "varchar")
 
 
 async def test_create_table_compound_pk_not_null_defaults(ops_db):

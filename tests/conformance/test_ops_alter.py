@@ -125,6 +125,12 @@ async def test_inbound_foreign_keys_still_point_at_table(ops_db):
     )
     await ops_db.insert_rows("authors", [{"id": 1, "name": "a"}])
     await ops_db.insert_rows("posts", [{"id": 1, "author_id": 1}])
+    if not ops_db._backend.dialect.alter_referenced_tables:
+        # DuckDB: a referenced table can be neither altered nor dropped.
+        with pytest.raises(NotSupported):
+            await ops_db.alter_table("authors", types={"name": "blob"})
+        assert [c.type for c in await ops_db.table_columns("authors")][1] != "BLOB"
+        return
     await ops_db.alter_table("authors", types={"name": "blob"})
     fks = await ops_db.foreign_keys("posts")
     assert fks[0].other_table == "authors"

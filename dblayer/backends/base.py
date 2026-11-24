@@ -178,6 +178,11 @@ class Dialect:
         abort the whole transaction, so trying first is not an option)."""
         return self.native_alter
 
+    alter_referenced_tables: bool = True
+    """False when ``alter_table`` cannot change a table that other tables
+    reference with foreign keys (DuckDB refuses both ALTER and DROP of such
+    a table); it then raises ``NotSupported`` before running anything."""
+
     rowid_column: str | None = None
     """Name of the implicit row id (``"rowid"`` on SQLite), used to address
     rows of tables without a primary key and preserved by rebuilds. ``None``
