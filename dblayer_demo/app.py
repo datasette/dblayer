@@ -20,7 +20,8 @@ from starlette.responses import Response
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from dblayer import Database, DblayerError, NotSupported, Results
+from dblayer import Database, DblayerError, NotSupported, QueryError, Results
+from dblayer.core.params import find_placeholders, leading_keyword
 from dblayer.core.schema import TableInfo
 
 from .databases import DemoDatabase, DemoSpec, close_all, open_all
@@ -41,6 +42,10 @@ COUNT_TIME_LIMIT_MS = 200
 QUERY_TIME_LIMIT_MS = 1000
 QUERY_MAX_ROWS = 1000
 PAGE_SIZE = 100
+READ_KEYWORDS = frozenset(
+    {"SELECT", "WITH", "VALUES", "EXPLAIN", "PRAGMA", "SHOW", "DESCRIBE", "SUMMARIZE", "TABLE", "FROM"}
+)
+"""Statements that read; an error from anything else gets a read-only hint."""
 
 
 def _limits() -> dict[str, int]:
@@ -174,6 +179,61 @@ async def table_page(request: Request) -> Response:
     )
 
 
+def named_parameters(db: Database, sql: str) -> list[str]:
+    """``:name`` placeholders in ``sql``, in order, without duplicates,
+    found with dblayer's own scanner (so strings, comments and ``::casts``
+    are skipped the way the engine would)."""
+    names: list[str] = []
+    for p in find_placeholders(sql, db.dialect.flavor):
+        if p.kind == "named" and p.name and p.name not in names:
+            names.append(p.name)
+    return names
+
+
+async def query_page(request: Request) -> Response:
+    demo, db = _database(request)
+    sql = request.query_params.get("sql", "").strip()
+    params: dict[str, str] = {}
+    results: Results | None = None
+    error: str | None = None
+    if sql:
+        try:
+            names = named_parameters(db, sql)
+        except DblayerError as e:
+            names = []
+            error = describe_error(e)
+        params = {n: request.query_params.get(n, "") for n in names}
+        if error is None:
+            try:
+                results = await db.execute(
+                    sql,
+                    params or None,
+                    time_limit_ms=QUERY_TIME_LIMIT_MS,
+                    max_rows=QUERY_MAX_ROWS,
+                )
+            except DblayerError as e:
+                error = describe_error(e, time_limit_ms=QUERY_TIME_LIMIT_MS)
+                keyword = (leading_keyword(sql, db.dialect.flavor) or "").upper()
+                if isinstance(e, QueryError) and keyword not in READ_KEYWORDS:
+                    error += (
+                        f"\n\n{keyword or 'This'} statements cannot run here: this page"
+                        " uses the read path, Database.execute(), on read-only connections."
+                    )
+    return TEMPLATES.TemplateResponse(
+        request,
+        "query.html",
+        {
+            "demo": demo,
+            "sql": sql,
+            "params": params,
+            "results": results,
+            "error": error,
+            **_limits(),
+        },
+        status_code=400 if error else 200,
+    )
+
+
 async def http_error(request: Request, exc: Exception) -> Response:
     assert isinstance(exc, HTTPException)
     return TEMPLATES.TemplateResponse(
@@ -202,6 +262,7 @@ def create_app(
     routes = [
         Route("/", homepage, name="index"),
         Route("/{database}", database_page, name="database"),
+        Route("/{database}/-/query", query_page, name="query"),
         Route("/{database}/{table:path}", table_page, name="table"),
     ]
     return Starlette(

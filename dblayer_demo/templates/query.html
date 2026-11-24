@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Query - {{ demo.spec.title }}{% endblock %}
+{% block crumbs %} / <a href="/{{ demo.spec.slug }}">{{ demo.spec.title }}</a> / query{% endblock %}
+{% block content %}
+<h1>Query {{ demo.spec.title }}</h1>
+{% include "_sql_form.html" %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if results is not none %}
+<p class="meta">{{ results.rows | length }} row{{ "" if results.rows | length == 1 else "s" }}{% if results.truncated %}
+<span class="notice">truncated: the query returned more than {{ max_rows }} rows; only the first {{ max_rows }} are shown</span>{% endif %}</p>
+{% if results.columns %}{% include "_results.html" %}{% endif %}
+{% endif %}
+{% endblock %}
