@@ -145,9 +145,9 @@ class Transaction(IntrospectionMixin, OperationsMixin):
                 f"a transaction is already open on database {db.name!r} in this task; "
                 "transactions cannot be nested"
             )
-        pool = db._get_pool()
         write = self.mode == "write"
         with map_errors(db._backend):
+            pool = await db._use_pool()
             conn = await pool.acquire(write=write)
         try:
             with map_errors(db._backend):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping, Sequence
 from typing import Any
@@ -175,11 +176,75 @@ class Database(IntrospectionMixin, OperationsMixin):
         return self.idle_timeout  # type: ignore[return-value]
 
     def _get_pool(self) -> Pool:
+        """The current pool, created if there is none. Does not handle a
+        change of event loop; the core uses ``_use_pool``."""
         pool = self._pool
         if pool is None:
             self._check_open()
-            pool = self._pool = Pool(self)
+            try:
+                loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            pool = self._pool = Pool(self, loop)
         return pool
+
+    async def _use_pool(self) -> Pool:
+        """The pool for the running event loop.
+
+        A pool (its asyncio locks, and connections some drivers bind to a
+        loop) belongs to one event loop. When the database is used from a
+        different loop and nothing is checked out on the old one, the old
+        pool is retired: its idle connections are closed, the database goes
+        to sleep as usual, and a fresh pool is made for this loop. If the
+        old loop is closed, connections it left checked out are closed too.
+        Moving while a connection is checked out on a loop that is still
+        alive raises ``RuntimeError``."""
+        loop = asyncio.get_running_loop()
+        pool = self._pool
+        if pool is not None and pool.loop is loop:
+            return pool
+        self._check_open()
+        if pool is None:
+            pool = self._pool = Pool(self, loop)
+            return pool
+        if pool.loop is None:
+            pool.loop = loop  # created outside any loop and never used
+            return pool
+        return await self._move_to_loop(pool, loop)
+
+    async def _move_to_loop(self, old: Pool, loop: asyncio.AbstractEventLoop) -> Pool:
+        assert old.loop is not None
+        old_alive = not old.loop.is_closed()
+        if old_alive and old.users:
+            raise RuntimeError(
+                f"database {self.name!r} has connections checked out on another event "
+                "loop; a Database can move to a new loop only when nothing is in use"
+            )
+        entries = old._retire(include_in_use=not old_alive)
+        was_awake = self._awake
+        self._awake = False
+        new = self._pool = Pool(self, loop)
+        # Callers arriving now wait for this, as for any sleep.
+        fut = loop.create_future()
+        transition = ("sleep", fut)
+        self._transition = transition
+        try:
+            for e in entries:
+                try:
+                    await e.conn.close()
+                except Exception:
+                    pass
+                self._closed_total += 1
+            if was_awake and (self._closed or self.capabilities.sleep_releases_everything):
+                try:
+                    await self._backend.close()
+                except Exception:
+                    pass
+        finally:
+            if self._transition is transition:
+                self._transition = None
+            fut.set_result(None)
+        return new
 
     # -- lifecycle internals -----------------------------------------------------
 
@@ -275,7 +340,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         self._check_open()
         native_sql, native_params = self._native(sql, params)
         with map_errors(self._backend):
-            async with self._get_pool().connection(write=False) as conn:
+            async with (await self._use_pool()).connection(write=False) as conn:
                 with map_errors(self._backend):
                     return await conn.execute(
                     native_sql,
@@ -329,7 +394,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         self._check_open()
         native_sql, native_params = self._native(sql, params)
         with map_errors(self._backend):
-            pool = self._get_pool()
+            pool = await self._use_pool()
             conn = await pool.acquire(write=False)
         discard = False
         try:
@@ -379,7 +444,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         native_sql, native_params = self._native(sql, params)
         try:
             with map_errors(self._backend):
-                async with self._get_pool().connection(write=True) as conn:
+                async with (await self._use_pool()).connection(write=True) as conn:
                     with map_errors(self._backend):
                         res = await conn.execute(
                         native_sql,
@@ -545,7 +610,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         if cached is not None:
             return cached
         with map_errors(self._backend):
-            async with self._get_pool().connection(write=False) as conn:
+            async with (await self._use_pool()).connection(write=False) as conn:
                 with map_errors(self._backend):
                     if cache.schema is not None:
                         version = await conn.schema_version()
@@ -561,7 +626,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         database (one cheap query)."""
         self._check_open()
         with map_errors(self._backend):
-            async with self._get_pool().connection(write=False) as conn:
+            async with (await self._use_pool()).connection(write=False) as conn:
                 with map_errors(self._backend):
                     return await conn.schema_version()
 
@@ -615,8 +680,10 @@ class Database(IntrospectionMixin, OperationsMixin):
 
     # -- for later milestones ----------------------------------------------------
 
-    def _connection(self, *, write: bool) -> Any:
-        """Pooled connection context manager, for core modules only
-        (transactions in milestone 2). Yields a ``BackendConnection``."""
-        return self._get_pool().connection(write=write)
+    @asynccontextmanager
+    async def _connection(self, *, write: bool) -> AsyncIterator[Any]:
+        """Pooled connection context manager, for core modules only.
+        Yields a ``BackendConnection``."""
+        async with (await self._use_pool()).connection(write=write) as conn:
+            yield conn
 

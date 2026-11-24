@@ -247,6 +247,19 @@ class Pool:
             self.hub.untrack(e)
         return entries
 
+    def _retire(self, *, include_in_use: bool) -> list[_Entry]:
+        """Leave this pool for good without awaiting anything (its event
+        loop is gone or no longer used). Returns the connections the caller
+        must close; the pool no longer counts them."""
+        self._closed = True
+        entries = self._take_all_idle()
+        if include_in_use:
+            entries.extend(self._in_use.values())
+            self._in_use.clear()
+        self.open = 0
+        self.users = 0
+        return entries
+
     async def close_idle(self) -> int:
         """Close every checked-in connection and arrange for connections in
         use now to be closed when they are returned. Returns how many were
