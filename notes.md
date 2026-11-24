@@ -1513,3 +1513,9 @@ Simon dropped the queued work to register every backend through a pluggy hook. N
 All 16 featured databases answer a count query, serve a table page and export a 201-line CSV, including the new multi-tenant Rust worker. The fleet's mix is now 500 in-process SQLite, 200 C worker, 100 multi-tenant C, 100 DuckDB, 50 DuckDB worker, 30 PostgreSQL and 20 Python worker; a 500-way fan-out succeeded in 0.86 s with connections at the cap of 40.
 
 A slip of mine on the way: running `uv run python` without `--python 3.14` in the main checkout made uv delete and recreate the virtual environment on Python 3.15 with no extras, underneath the running demo server. I restored it with `uv sync --python 3.14 --all-extras --group demo`, rebuilt the native workers and restarted the demo. Lesson: the checkout the demo runs from needs its interpreter pinned (a `.python-version` file), because ClickHouse's chDB has no Python 3.15 build and uv's default here is 3.15.
+
+### Found: a Linux-only bug in the Rust SQLite worker, from the Fly.io run (2026-11-24)
+
+Subagent-reported from the full benchmark run's memory-limit topic. Under a 128 MB `RLIMIT_AS`, the Rust multi-tenant worker aborts at open instead of reporting `ResourceLimitExceeded`: Rust's standard library maps an alternate signal stack for every new thread, that mapping fails under the limit, and the crate is built to abort on panic. The C pool passes the same test. In a multi-tenant process an abort takes down every database on it. The other 42 memory-limit tests passed. The fix has been passed to the CI repair subagent.
+
+This is a count against Rust in the C against Rust comparison, and one that could not have been seen on macOS, where `RLIMIT_AS` is not enforced. It also shows why "abort on panic" needs care in a process that serves many tenants.
