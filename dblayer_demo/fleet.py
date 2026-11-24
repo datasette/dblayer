@@ -241,7 +241,9 @@ class Fleet:
     # -- cold storage: templates stand in for object storage ---------------------
 
     def template_path(self, kind: str) -> Path:
-        return self.dir / ("_template.db" if kind == "sqlite" else "_template.duckdb")
+        # A worker-process SQLite database is an ordinary SQLite file.
+        sqlite_file = kind in ("sqlite", "sqlite-worker")
+        return self.dir / ("_template.db" if sqlite_file else "_template.duckdb")
 
     async def _ensure_templates(self) -> dict[str, str]:
         """The seeded dataset, once per kind: what "fetching from object
@@ -249,7 +251,11 @@ class Fleet:
         later runs find them already there. Returns ``{kind: reason}`` for
         kinds that cannot run here (DuckDB not installed)."""
         errors: dict[str, str] = {}
-        kinds = [k for k in ("sqlite", "duckdb") if self.mix.get(k)]
+        kinds = []
+        if self.mix.get("sqlite") or self.mix.get("sqlite-worker"):
+            kinds.append("sqlite")
+        if self.mix.get("duckdb"):
+            kinds.append("duckdb")
         for kind in kinds:
             path = self.template_path(kind)
             if path.exists():
@@ -287,7 +293,8 @@ class Fleet:
         return None
 
     def _file_backend(self, kind: str, path: Path) -> Backend:
-        if kind == "sqlite":
+        if kind in ("sqlite", "sqlite-worker"):
+            # Building the file needs no worker: it is plain SQLite on disk.
             from dblayer.backends.sqlite import SqliteInProcess
 
             return SqliteInProcess(path, executor=self.registry.executor)

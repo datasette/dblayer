@@ -185,3 +185,22 @@ async def test_databases_sleep_after_the_idle_timeout_then_evict_and_rebuild(
     r = await client.get(f"/{m.name}/-/query", params={"sql": "select name from branch"})
     assert r.status_code == 200 and m.branch in r.text  # rebuilt from the template
     assert m.materialised == 2
+
+
+async def test_one_member_of_every_backend_kind_browses(
+    fleet_client: tuple[Fleet, httpx.AsyncClient],
+) -> None:
+    """Each kind builds from the right template: a worker-process SQLite
+    member is a SQLite file, not a copy of the DuckDB template."""
+    fleet, client = fleet_client
+    seen: set[str] = set()
+    for name, m in fleet.members.items():
+        if m.kind in seen or m.state == "unavailable":
+            continue
+        seen.add(m.kind)
+        r = await client.get(f"/{name}")
+        assert r.status_code == 200, (name, r.text[:300])
+        assert m.branch in r.text
+        r = await client.get(f"/{name}/-/query", params={"sql": "select name from branch"})
+        assert r.status_code == 200 and m.branch in r.text, name
+    assert {"sqlite", "sqlite-worker"} <= seen
