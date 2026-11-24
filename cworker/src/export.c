@@ -16,6 +16,13 @@
  *             for reading (`data_path`); the pipe is the backpressure.
  *             The data starts with a 4-byte length and a JSON array of the
  *             column names. The request's only reply comes at the end.
+ *   "socket": socket handoff. After the columns frame the worker connects to
+ *             the Unix socket `handoff_path` and receives a file descriptor
+ *             (SCM_RIGHTS): the HTTP client's own connection, with the
+ *             status line, headers and the first chunk already sent by the
+ *             parent. The worker writes the rows to it as HTTP/1.1 chunks
+ *             (never the terminating 0-chunk: the parent writes the tail),
+ *             closes its copy, then sends {"id", "end", ...}.
  *
  * For "frames" and "raw" the first frame is {"id", "columns": [...]}; the
  * last is {"id", "end": true, "row_count": n, "truncated": bool}. */
@@ -24,10 +31,15 @@
 #include <math.h>
 #ifndef CWORKER_WASM
 #include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #endif
 
 enum { ENC_CSV, ENC_TSV, ENC_JSON_OBJECTS, ENC_JSON_ARRAYS, ENC_NDJSON };
-enum { T_FRAMES, T_RAW, T_FIFO };
+enum { T_FRAMES, T_RAW, T_FIFO, T_SOCKET };
+
+#define SOCK_HEAD 10 /* room for an HTTP chunk-size line: 8 hex digits + CRLF */
 
 #define RAW_HEAD 13 /* frame length (4) + 0x00 + request id (8) */
 
@@ -710,6 +722,176 @@ static int export_fifo(job *j, stream *s, wbuf *w, err_t *e) {
 }
 #endif
 
+#ifndef CWORKER_WASM
+/* -- the "socket" transport ------------------------------------------------------ */
+
+/* Receive one descriptor over the Unix socket at `path`. */
+static int recv_handoff_fd(const char *path, err_t *e) {
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    if (strlen(path) >= sizeof sa.sun_path) {
+        err_set(e, "ValueError", NULL, "handoff_path too long");
+        e->builtin = 1;
+        return -1;
+    }
+    memcpy(sa.sun_path, path, strlen(path) + 1);
+    int us = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (us < 0 || connect(us, (struct sockaddr *)&sa, sizeof sa) < 0) {
+        err_set(e, "QueryError", NULL, "cannot connect to the handoff socket: %s", strerror(errno));
+        if (us >= 0)
+            close(us);
+        return -1;
+    }
+    char byte;
+    struct iovec iov = {&byte, 1};
+    union {
+        struct cmsghdr h;
+        char buf[CMSG_SPACE(sizeof(int))];
+    } ctl;
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_iov = &iov;
+    m.msg_iovlen = 1;
+    m.msg_control = ctl.buf;
+    m.msg_controllen = sizeof ctl.buf;
+    ssize_t k;
+    do
+        k = recvmsg(us, &m, 0);
+    while (k < 0 && errno == EINTR);
+    close(us);
+    struct cmsghdr *c = k > 0 ? CMSG_FIRSTHDR(&m) : NULL;
+    if (c == NULL || c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS ||
+        c->cmsg_len != CMSG_LEN(sizeof(int))) {
+        err_set(e, "QueryError", NULL, "no descriptor received on the handoff socket");
+        return -1;
+    }
+    int fd;
+    memcpy(&fd, CMSG_DATA(c), sizeof fd);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+}
+
+/* Write all of p to a socket that may be non-blocking. O_NONBLOCK belongs
+ * to the open file description the parent shares with this descriptor, so
+ * it is left as it is and EAGAIN is waited out with poll(), checking for
+ * cancellation every 100 ms. 0: written; -1: the peer is gone (errno);
+ * -2: cancelled. */
+static int sock_write_all(job *j, int fd, const uint8_t *p, size_t n) {
+    while (n > 0) {
+#ifdef MSG_NOSIGNAL
+        ssize_t k = send(fd, p, n, MSG_NOSIGNAL);
+#else
+        ssize_t k = send(fd, p, n, 0); /* SIGPIPE is ignored (main) */
+#endif
+        if (k >= 0) {
+            p += k;
+            n -= (size_t)k;
+            continue;
+        }
+        if (errno == EINTR)
+            continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK)
+            return -1;
+        struct pollfd pf = {fd, POLLOUT, 0};
+        for (;;) {
+            if (atomic_load(&j->cancelled))
+                return -2;
+            int r = poll(&pf, 1, 100);
+            if (r > 0 || (r < 0 && errno != EINTR))
+                break;
+        }
+        if (pf.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            errno = EPIPE;
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* x->out holds SOCK_HEAD bytes of room, then data: frame it as one HTTP
+ * chunk ("<hex>\r\n" data "\r\n") in place and write it. */
+static int sock_send_chunk(job *j, export_state *x, int fd) {
+    size_t n = x->out.len - SOCK_HEAD;
+    char hex[16];
+    int k = snprintf(hex, sizeof hex, "%zx\r\n", n);
+    uint8_t *start = x->out.p + SOCK_HEAD - k;
+    memcpy(start, hex, (size_t)k);
+    xb_put(&x->out, "\r\n", 2);
+    if (x->out.failed)
+        return -1;
+    int rc = sock_write_all(j, fd, start, x->out.len - (SOCK_HEAD - (size_t)k));
+    x->out.len = SOCK_HEAD;
+    return rc;
+}
+
+static int export_socket(job *j, stream *s, wbuf *w, err_t *e) {
+    export_state *x = s->ex;
+    const val *path = field(j, "handoff_path");
+    if (path == NULL || path->t != V_STR) {
+        err_set(e, "ValueError", NULL, "export with transport 'socket' needs handoff_path");
+        e->builtin = 1;
+        return -1;
+    }
+    if (export_chunk(j, s, e) < 0)
+        return -1;
+    /* The columns first, so the parent can send the head before it hands
+     * the connection over. "rows": 0 makes it count as a frame. */
+    w_start(w, atomic_load(&g_codec), atomic_load(&g_max_frame));
+    w_map_open(w);
+    w_cstr(w, "id"); w_int(w, s->id);
+    w_cstr(w, "columns");
+    export_columns_value(w, s);
+    w_cstr(w, "rows"); w_int(w, 0);
+    if (export_send(w, e) < 0)
+        return -1;
+    char *p = xstrndup(path->u.s.p, path->u.s.n);
+    int fd = recv_handoff_fd(p, e);
+    free(p);
+    if (fd < 0)
+        return -1;
+    x->fd = fd; /* closed by export_free on every error path */
+    int64_t bytes = 0;
+    for (;;) {
+        if (atomic_load(&j->cancelled)) {
+            err_set(e, "QueryInterrupted", NULL, "query cancelled");
+            return -1;
+        }
+        if (export_chunk(j, s, e) < 0)
+            return -1;
+        if (x->out.len > SOCK_HEAD) {
+            bytes += (int64_t)(x->out.len - SOCK_HEAD);
+            int rc = sock_send_chunk(j, x, fd);
+            if (rc == -2) {
+                err_set(e, "QueryInterrupted", NULL, "query cancelled");
+                return -1;
+            }
+            if (rc < 0) {
+                err_set(e, "QueryInterrupted", NULL, "client connection closed: %s", strerror(errno));
+                return -1;
+            }
+        }
+        if (!s->has_row)
+            break;
+    }
+    /* The copy is closed before the reply: once the parent hears back, this
+     * process can no longer touch the client's connection. */
+    close(x->fd);
+    x->fd = -1;
+    w_start(w, atomic_load(&g_codec), atomic_load(&g_max_frame));
+    w_map_open(w);
+    w_cstr(w, "id"); w_int(w, s->id);
+    w_cstr(w, "end"); w_bool(w, 1);
+    w_cstr(w, "row_count"); w_int(w, x->rows);
+    w_cstr(w, "truncated"); w_bool(w, x->truncated);
+    w_cstr(w, "bytes"); w_int(w, bytes);
+    if (export_send(w, e) < 0)
+        return -1;
+    return 1;
+}
+
+#endif
+
 static int h_export(job *j, conn *wc, wbuf *w, err_t *e) {
     if (check_tx(j, wc, e) < 0)
         return -1;
@@ -730,14 +912,15 @@ static int h_export(job *j, conn *wc, wbuf *w, err_t *e) {
     if (tv == NULL || tv->t == V_NIL || val_is_str(tv, "frames")) transport = T_FRAMES;
     else if (val_is_str(tv, "raw")) transport = T_RAW;
     else if (val_is_str(tv, "fifo")) transport = T_FIFO;
+    else if (val_is_str(tv, "socket")) transport = T_SOCKET;
     else {
         err_set(e, "ValueError", NULL, "unknown export transport");
         e->builtin = 1;
         return -1;
     }
 #ifdef CWORKER_WASM
-    if (transport == T_FIFO) {
-        err_set(e, "NotSupported", NULL, "no fifo transport in the WebAssembly build");
+    if (transport == T_FIFO || transport == T_SOCKET) {
+        err_set(e, "NotSupported", NULL, "no fifo or socket transport in the WebAssembly build");
         return -1;
     }
 #endif
@@ -751,15 +934,16 @@ static int h_export(job *j, conn *wc, wbuf *w, err_t *e) {
     memset(x, 0, sizeof *x);
     x->enc = encv;
     x->transport = transport;
-    x->chunk_bytes = chunk + (int64_t)(transport == T_RAW ? RAW_HEAD : 0);
+    x->chunk_bytes = chunk + (int64_t)(transport == T_RAW ? RAW_HEAD : transport == T_SOCKET ? SOCK_HEAD : 0);
     x->max_rows = get_int(&j->msg, "max_rows", 0, &x->has_max_rows);
     if (x->has_max_rows && x->max_rows < 0)
         x->max_rows = 0;
     x->first_row = 1;
     x->fd = -1;
-    if (transport == T_RAW) {
-        xb_grow(&x->out, RAW_HEAD + (size_t)chunk);
-        x->out.len = RAW_HEAD;
+    if (transport == T_RAW || transport == T_SOCKET) {
+        size_t head = transport == T_RAW ? RAW_HEAD : SOCK_HEAD;
+        xb_grow(&x->out, head + (size_t)chunk + 2);
+        x->out.len = head;
     }
     stream *s = xmalloc(sizeof *s);
     memset(s, 0, sizeof *s);
@@ -776,6 +960,11 @@ static int h_export(job *j, conn *wc, wbuf *w, err_t *e) {
     if (transport == T_FIFO) {
         /* Not registered as a stream: it never pauses. */
         int rc = export_fifo(j, s, w, e);
+        stream_drop_unlisted(s);
+        return rc;
+    }
+    if (transport == T_SOCKET) {
+        int rc = export_socket(j, s, w, e);
         stream_drop_unlisted(s);
         return rc;
     }
@@ -806,7 +995,7 @@ static void export_hello(wbuf *w) {
 #ifdef CWORKER_WASM
     w_array(w, 2); w_cstr(w, "frames"); w_cstr(w, "raw"); w_end(w);
 #else
-    w_array(w, 3); w_cstr(w, "frames"); w_cstr(w, "raw"); w_cstr(w, "fifo"); w_end(w);
+    w_array(w, 4); w_cstr(w, "frames"); w_cstr(w, "raw"); w_cstr(w, "fifo"); w_cstr(w, "socket"); w_end(w);
 #endif
     w_end(w);
 }
