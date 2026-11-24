@@ -12,7 +12,7 @@ import time
 import pytest
 
 from dblayer import Database, ResourceLimitExceeded, WorkerCrashed
-from dblayer.backends.sqlite_worker import SqliteWorker, WorkerConnection
+from dblayer.backends.sqlite_worker import WorkerConnection
 
 from ..scale.harness import current_rss
 from .conftest import LINUX, linux_only
@@ -31,8 +31,8 @@ def _conn(db: Database, write: bool = False) -> WorkerConnection:
     return idle[0].conn  # type: ignore[return-value]
 
 
-async def test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged(tmp_path):
-    db = Database(SqliteWorker(tmp_path / "m.db", memory_limit_mb=256))
+async def test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchanged(tmp_path, make_worker):
+    db = Database(make_worker(tmp_path / "m.db", memory_limit_mb=256))
     try:
         await db.execute("select 1")
         gc.collect()
@@ -53,8 +53,8 @@ async def test_multi_gigabyte_value_stopped_by_heap_limit_parent_memory_unchange
         await db.close()
 
 
-async def test_huge_single_allocation_stopped_by_heap_limit(tmp_path):
-    db = Database(SqliteWorker(tmp_path / "h.db", memory_limit_mb=128))
+async def test_huge_single_allocation_stopped_by_heap_limit(tmp_path, make_worker):
+    db = Database(make_worker(tmp_path / "h.db", memory_limit_mb=128))
     try:
         with pytest.raises(ResourceLimitExceeded):
             await db.execute("select length(randomblob(500000000))")
@@ -63,8 +63,8 @@ async def test_huge_single_allocation_stopped_by_heap_limit(tmp_path):
         await db.close()
 
 
-async def test_max_result_bytes_stops_fetching_in_the_worker(tmp_path):
-    db = Database(SqliteWorker(tmp_path / "b.db"))
+async def test_max_result_bytes_stops_fetching_in_the_worker(tmp_path, make_worker):
+    db = Database(make_worker(tmp_path / "b.db"))
     try:
         sql = "select randomblob(10000) from (with recursive c(i) as (select 1 union all select i + 1 from c where i < 10000) select i from c)"
         with pytest.raises(ResourceLimitExceeded, match="max_result_bytes"):
@@ -74,19 +74,19 @@ async def test_max_result_bytes_stops_fetching_in_the_worker(tmp_path):
         await db.close()
 
 
-def test_memory_limit_capability_is_linux_only(tmp_path):
-    caps = SqliteWorker(tmp_path / "c.db").capabilities
+def test_memory_limit_capability_is_linux_only(tmp_path, make_worker):
+    caps = make_worker(tmp_path / "c.db").capabilities
     assert caps.hard_kill
     assert caps.memory_limit is LINUX
 
 
 @linux_only
-async def test_rlimit_as_stops_python_side_allocation(tmp_path):
+async def test_rlimit_as_stops_python_side_allocation(tmp_path, make_worker):
     """Rows of 200 MB each pass SQLite's heap limit one at a time, but the
     Python copies pile up in the worker: RLIMIT_AS makes that a
     MemoryError there, reported as ResourceLimitExceeded; the worker exits
     and is replaced. The parent is untouched."""
-    db = Database(SqliteWorker(tmp_path / "r.db", memory_limit_mb=512))
+    db = Database(make_worker(tmp_path / "r.db", memory_limit_mb=512))
     try:
         await db.execute("select 1")
         assert _conn(db).process.hello.get("rlimit_as") is True
@@ -105,11 +105,11 @@ async def test_rlimit_as_stops_python_side_allocation(tmp_path):
 
 
 @linux_only
-async def test_rlimit_as_in_init_hook_function(tmp_path):
+async def test_rlimit_as_in_init_hook_function(tmp_path, make_worker):
     """A plugin SQL function allocating without bound runs inside the
     worker, under its limit."""
     db = Database(
-        SqliteWorker(tmp_path / "i.db", memory_limit_mb=256, init=["tests.worker.hooks:hog"])
+        make_worker(tmp_path / "i.db", memory_limit_mb=256, init=["tests.worker.hooks:hog"])
     )
     try:
         assert (await db.execute("select hog(10)")).rows == [(10,)]
@@ -134,8 +134,8 @@ async def _debug(db: Database, action: str) -> None:
     "action,error",
     [("oversized_frame", ResourceLimitExceeded), ("truncated_frame", WorkerCrashed), ("garbage", WorkerCrashed)],
 )
-async def test_bad_frame_from_worker_drops_it_and_the_pool_replaces_it(tmp_path, action, error):
-    db = Database(SqliteWorker(tmp_path / "f.db", debug=True))
+async def test_bad_frame_from_worker_drops_it_and_the_pool_replaces_it(tmp_path, action, error, make_worker):
+    db = Database(make_worker(tmp_path / "f.db", debug=True))
     try:
         await db.execute("select 1")
         old = _conn(db).process
@@ -149,8 +149,8 @@ async def test_bad_frame_from_worker_drops_it_and_the_pool_replaces_it(tmp_path,
         await db.close()
 
 
-async def test_reply_over_frame_cap_is_refused_by_the_worker(tmp_path):
-    db = Database(SqliteWorker(tmp_path / "c.db", max_frame_bytes=1_000_000))
+async def test_reply_over_frame_cap_is_refused_by_the_worker(tmp_path, make_worker):
+    db = Database(make_worker(tmp_path / "c.db", max_frame_bytes=1_000_000))
     try:
         await db.execute("select 1")
         pid = _conn(db).pid
@@ -162,8 +162,8 @@ async def test_reply_over_frame_cap_is_refused_by_the_worker(tmp_path):
         await db.close()
 
 
-async def test_request_over_frame_cap_is_refused_before_sending(tmp_path):
-    db = Database(SqliteWorker(tmp_path / "q.db", max_frame_bytes=1_000_000))
+async def test_request_over_frame_cap_is_refused_before_sending(tmp_path, make_worker):
+    db = Database(make_worker(tmp_path / "q.db", max_frame_bytes=1_000_000))
     try:
         await db.execute_write("create table t (b blob)")
         with pytest.raises(ResourceLimitExceeded, match="too large"):

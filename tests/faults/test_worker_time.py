@@ -13,7 +13,6 @@ import time
 import pytest
 
 from dblayer import Database, QueryInterrupted
-from dblayer.backends.sqlite_worker import SqliteWorker
 
 UNBOUNDED = "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c"
 
@@ -38,8 +37,8 @@ BOUND_S = 3.0  # generous: limit + grace is 0.45 s
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(SqliteWorker(tmp_path / "t.db", kill_grace_ms=GRACE_MS), name="t")
+async def db(tmp_path, make_worker):
+    d = Database(make_worker(tmp_path / "t.db", kill_grace_ms=GRACE_MS), name="t")
     yield d
     await d.close()
 

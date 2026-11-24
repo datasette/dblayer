@@ -14,7 +14,7 @@ import pytest
 
 from dblayer import Database, QueryInterrupted, TransactionExpired, WorkerCrashed
 from dblayer.backends.sqlite import SqliteInProcess
-from dblayer.backends.sqlite_worker import SqliteWorker, WorkerConnection, reap_workers
+from dblayer.backends.sqlite_worker import WorkerConnection, reap_workers
 
 UNBOUNDED = "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c"
 EVADING = "select instr(printf('%.*c', 2000000, 'a'), printf('%.*c', 100000, 'a') || 'b')"
@@ -54,9 +54,9 @@ def _check_file(path) -> None:
 
 
 @pytest.mark.parametrize("journal", ["delete", "wal"])
-async def test_kill_read_worker_mid_query(tmp_path, journal):
+async def test_kill_read_worker_mid_query(tmp_path, journal, make_worker):
     path = tmp_path / "r.db"
-    db = Database(SqliteWorker(path))
+    db = Database(make_worker(path))
     try:
         await db.execute_write(f"pragma journal_mode = {journal}")
         await db.execute_write("create table t (x)")
@@ -73,9 +73,9 @@ async def test_kill_read_worker_mid_query(tmp_path, journal):
 
 
 @pytest.mark.parametrize("journal", ["delete", "wal"])
-async def test_kill_write_worker_mid_transaction(tmp_path, journal):
+async def test_kill_write_worker_mid_transaction(tmp_path, journal, make_worker):
     path = tmp_path / "w.db"
-    db = Database(SqliteWorker(path))
+    db = Database(make_worker(path))
     try:
         await db.execute_write(f"pragma journal_mode = {journal}")
         await db.execute_write("create table t (x)")
@@ -110,7 +110,7 @@ async def test_kill_write_worker_mid_transaction(tmp_path, journal):
 
 
 @pytest.mark.parametrize("kind", ["worker", "in-process"])
-async def test_idle_readers_recover_a_hot_journal_left_by_a_killed_writer(tmp_path, kind):
+async def test_idle_readers_recover_a_hot_journal_left_by_a_killed_writer(tmp_path, kind, make_worker):
     """Found while writing these tests: in rollback-journal mode a writer
     killed mid-transaction leaves a hot journal that a ``mode=ro`` reader
     cannot roll back (``SQLITE_READONLY_ROLLBACK``) - every read fails
@@ -125,7 +125,7 @@ async def test_idle_readers_recover_a_hot_journal_left_by_a_killed_writer(tmp_pa
     setup.execute("insert into t values (0)")
     setup.commit()
     setup.close()
-    backend = SqliteWorker(path) if kind == "worker" else SqliteInProcess(path)
+    backend = make_worker(path) if kind == "worker" else SqliteInProcess(path)
     db = Database(backend, idle_timeout=None)
     try:
         assert (await db.execute("select count(*) from t")).rows == [(1,)]  # an idle reader now
@@ -151,9 +151,9 @@ async def test_idle_readers_recover_a_hot_journal_left_by_a_killed_writer(tmp_pa
     _check_file(path)
 
 
-async def test_kill_write_worker_while_statement_runs(tmp_path):
+async def test_kill_write_worker_while_statement_runs(tmp_path, make_worker):
     path = tmp_path / "s.db"
-    db = Database(SqliteWorker(path))
+    db = Database(make_worker(path))
     try:
         await db.execute_write("create table t (x)")
 
@@ -178,8 +178,8 @@ async def test_kill_write_worker_while_statement_runs(tmp_path):
     _check_file(path)
 
 
-async def test_parent_stops_reading_worker_is_killed_by_timer(tmp_path):
-    db = Database(SqliteWorker(tmp_path / "p.db", kill_grace_ms=250))
+async def test_parent_stops_reading_worker_is_killed_by_timer(tmp_path, make_worker):
+    db = Database(make_worker(tmp_path / "p.db", kill_grace_ms=250))
     try:
         await db.execute("select 1")
         pool = db._pool
@@ -207,12 +207,12 @@ async def test_parent_stops_reading_worker_is_killed_by_timer(tmp_path):
         await db.close()
 
 
-async def test_deadline_kill_when_worker_cannot_confirm_rollback(tmp_path):
+async def test_deadline_kill_when_worker_cannot_confirm_rollback(tmp_path, make_worker):
     """A statement that ignores interrupts is running when the deadline
     passes: the worker cannot roll back, so the parent kills it shortly
     after; the caller gets TransactionExpired and other writers proceed."""
     path = tmp_path / "d.db"
-    db = Database(SqliteWorker(path, kill_grace_ms=250))
+    db = Database(make_worker(path, kill_grace_ms=250))
     try:
         await db.execute_write("create table t (x)")
         t0 = time.perf_counter()
@@ -230,11 +230,11 @@ async def test_deadline_kill_when_worker_cannot_confirm_rollback(tmp_path):
     _check_file(path)
 
 
-async def test_worker_rolls_back_at_deadline_even_if_parent_is_unresponsive(tmp_path):
+async def test_worker_rolls_back_at_deadline_even_if_parent_is_unresponsive(tmp_path, make_worker):
     """The worker's own deadline: with the parent's event loop blocked, the
     transaction is still rolled back on time (another process can write)."""
     path = tmp_path / "u.db"
-    db = Database(SqliteWorker(path))
+    db = Database(make_worker(path))
     try:
         await db.execute_write("create table t (x)")
         async with db.transaction(deadline_ms=200) as tx:
