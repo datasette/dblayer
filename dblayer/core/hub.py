@@ -41,7 +41,7 @@ from .common import spawn
 
 if TYPE_CHECKING:
     from .database import Database
-    from .pool import _Entry
+    from .pool import Pool, _Entry
 
 __all__ = ["Hub", "default_hub", "DEFAULT_IDLE_TIMEOUT", "LifecycleHook"]
 
@@ -65,7 +65,7 @@ class Hub:
         self.max_open_connections = max_open_connections
         self.open = 0
         """Connections open, opening or closing, across the hub."""
-        self._waiters: deque[asyncio.Future[None]] = deque()
+        self._waiters: deque[tuple[asyncio.Future[None], Pool]] = deque()
         self.cap_evictions = 0
         """Connections closed to make room under the cap: idle ones taken
         by ``reserve()``, and ones closed on check-in for a waiter."""
@@ -93,34 +93,39 @@ class Hub:
 
     # -- global cap ------------------------------------------------------------
 
-    async def reserve(self) -> None:
-        """Take one place under the cap; called before opening a connection.
-        The caller must ``release()`` it once the connection is closed (or
-        failed to open)."""
+    async def reserve(self, pool: "Pool") -> None:
+        """Take one place under the cap for ``pool``; called before opening
+        a connection. The caller must ``release()`` it once the connection
+        is closed (or failed to open)."""
         cap = self.max_open_connections
         if cap is None or (self.open < cap and not self._has_waiters()):
             self.open += 1
             return
         entry = self.pop_lru()
         if entry is not None:
-            # Close it and take its place (``open`` is unchanged).
+            # Close it and take its place (``open`` is unchanged), unless it
+            # was its database's last connection: an awake database keeps
+            # one place until its backend is released (Pool._close_entry).
             self.cap_evictions += 1
-            try:
-                await entry.pool._close_entry(entry, release=False)
-            except BaseException:
-                self.release()
-                raise
+            if await entry.pool._close_entry(entry, handoff=True):
+                return
+            if self.open < cap and not self._has_waiters():
+                self.open += 1
+                return
+        if pool._db._held_place is self:
+            pool._db._held_place = None  # our own database kept a place meanwhile
             return
         fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._waiters.append(fut)
+        waiter = (fut, pool)
+        self._waiters.append(waiter)
         try:
-            await fut  # resolved by release(): its place is handed to us
+            await fut  # resolved by release() or hand_to(): a place is ours
         except asyncio.CancelledError:
             if fut.done() and not fut.cancelled():
                 self.release()  # handed over just as we were cancelled
             else:
                 try:
-                    self._waiters.remove(fut)
+                    self._waiters.remove(waiter)
                 except ValueError:
                     pass
             raise
@@ -129,20 +134,35 @@ class Hub:
         """Give a place back: to the first waiter if any, else to the pool
         of free places."""
         while self._waiters:
-            w = self._waiters.popleft()
+            w, _pool = self._waiters.popleft()
             if not w.done() and not w.get_loop().is_closed():
                 w.set_result(None)
                 return
         self.open -= 1
 
+    def hand_to(self, pool: "Pool") -> bool:
+        """Give a place to the first caller waiting for one for ``pool``, if
+        any (used when that database's last connection closes while its own
+        callers wait). O(waiters)."""
+        for waiter in self._waiters:
+            w, p = waiter
+            if p is pool and not w.done():
+                self._waiters.remove(waiter)
+                w.set_result(None)
+                return True
+        return False
+
+    def has_waiter_for(self, pool: "Pool") -> bool:
+        return any(p is pool and not w.done() for w, p in self._waiters)
+
     def _has_waiters(self) -> bool:
-        while self._waiters and self._waiters[0].done():
+        while self._waiters and self._waiters[0][0].done():
             self._waiters.popleft()
         return bool(self._waiters)
 
     @property
     def waiting(self) -> int:
-        return sum(1 for w in self._waiters if not w.done())
+        return sum(1 for w, _ in self._waiters if not w.done())
 
     def wants_connection_closed(self) -> bool:
         """True when a caller is waiting for a place: a connection being

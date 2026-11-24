@@ -24,12 +24,14 @@ async def counted(make_backend):
     await db.close()
 
 
-async def _settle() -> None:
-    # A few loop turns, plus time for a backend whose close() is a thread
-    # hop (DuckDB checkpoints its WAL on close).
-    for _ in range(5):
-        await asyncio.sleep(0)
-    await asyncio.sleep(0.1)
+async def _settle(db) -> None:
+    """Wait for the sleep that follows the last connection coming back: it
+    runs in the background, and closing a backend can take a thread hop or
+    more (DuckDB checkpoints its WAL on close)."""
+    for _ in range(1000):
+        await asyncio.sleep(0.005)
+        if db._transition is None and not db._awake:
+            return
 
 
 @pytest.mark.requires("sleep_releases_everything")
@@ -51,7 +53,7 @@ async def test_sleep_while_reading_closes_backend_after_return(counted):
     await db.sleep()
     assert not backend.released  # a connection is still in use
     assert (await task).rows[0][0] == 300000
-    await _settle()
+    await _settle(db)
     assert backend.released
     assert db.stats().open_total == 0
     assert db._pool is None
@@ -66,7 +68,7 @@ async def test_sleep_inside_transaction_closes_backend_after_commit(counted):
         await db.sleep()
         assert not backend.released
         await tx.execute("insert into t (x) values (2)")
-    await _settle()
+    await _settle(db)
     assert backend.released
     assert (await db.execute("select count(*) from t")).rows[0][0] == 2
 
@@ -80,7 +82,7 @@ async def test_stream_open_across_sleep(counted):
         await db.sleep()
         rest = [row async for chunk in chunks for row in chunk]
     assert len(first) + len(rest) == 50
-    await _settle()
+    await _settle(db)
     assert backend.released
 
 
@@ -91,7 +93,7 @@ async def test_close_while_in_use_closes_backend_after_return(counted):
     closes = backend.closes
     await db.close()
     assert (await task).rows[0][0] == 300000
-    await _settle()
+    await _settle(db)
     assert backend.closes > closes
     assert backend.released
     assert db.state == "closed"

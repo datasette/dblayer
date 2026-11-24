@@ -94,6 +94,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         "idle_timeout",
         "_hub",
         "_cold",
+        "_held_place",
     )
 
     def __init__(
@@ -139,6 +140,10 @@ class Database(IntrospectionMixin, OperationsMixin):
         idle connections."""
         self._hub: Hub | None = None
         self._cold = False
+        self._held_place: Hub | None = None
+        """The hub whose cap place this awake database keeps with no
+        connection open: for its next connection, or until its backend is
+        released by the sleep (see ``Pool._close_entry``)."""
         self._transition: tuple[str, asyncio.Future[Any]] | None = None
         """A wake or sleep in progress: ``(kind, future)``."""
 
@@ -238,6 +243,7 @@ class Database(IntrospectionMixin, OperationsMixin):
                 "loop; a Database can move to a new loop only when nothing is in use"
             )
         entries = old._retire(include_in_use=not old_alive)
+        self._release_held_place()
         was_awake = self._awake
         self._awake = False
         new = self._pool = Pool(self, loop)
@@ -344,15 +350,22 @@ class Database(IntrospectionMixin, OperationsMixin):
                 self._transition = None
             fut.set_result(None)
 
-    def _pool_empty(self, pool: Pool) -> None:
-        """The pool has no connections and no users: go to sleep."""
+    def _pool_empty(self, pool: Pool) -> bool:
+        """The pool has no connections and no users: go to sleep. Returns
+        True if a sleep started."""
         if pool is not self._pool or not self._awake:
-            return
+            return False
         self._awake = False
         fut = asyncio.get_running_loop().create_future()
         transition = ("sleep", fut)
         self._transition = transition
         spawn(self._sleep_job(transition, pool.hub))
+        return True
+
+    def _release_held_place(self) -> None:
+        hub, self._held_place = self._held_place, None
+        if hub is not None:
+            hub.release()
 
     async def _sleep_job(self, transition: tuple[str, asyncio.Future[Any]], hub: Hub) -> None:
         """Runs once the last connection has closed: release the backend,
@@ -360,6 +373,7 @@ class Database(IntrospectionMixin, OperationsMixin):
         try:
             await self._release_everything(hub)
         finally:
+            self._release_held_place()
             if self._transition is transition:
                 self._transition = None
             pool = self._pool
@@ -380,6 +394,7 @@ class Database(IntrospectionMixin, OperationsMixin):
                 await self._backend.close()
             except Exception:
                 logger.exception("closing the backend of %r failed", self)
+        self._release_held_place()  # backend released: the cap place is free
         if hub.on_sleep is not None:
             try:
                 await hub.on_sleep(self)

@@ -183,7 +183,11 @@ class Pool:
         await self._db._ensure_awake()
         if self._closed:
             raise DatabaseClosed("database is closed")
-        await self.hub.reserve()  # global cap: may close an idle connection
+        db = self._db
+        if db._held_place is self.hub:
+            db._held_place = None  # the place this awake database kept
+        else:
+            await self.hub.reserve(self)  # global cap: may close an idle connection
         self.open += 1
         try:
             conn = await self._backend.open(write=write)
@@ -208,20 +212,36 @@ class Pool:
                 except Exception:
                     reuse = False
         finally:
+            # Not counted as a user while its connection closes, so that
+            # closing the last connection is seen as emptying the pool.
+            self.users -= 1
+            keep = reuse and self._reusable(entry)
+            close_for: str | None = None
+            if keep and self.hub.wants_connection_closed():
+                # Callers wait for a place under the cap. If one of them is
+                # ours (wanting the other kind of connection), this place
+                # goes to it; otherwise close it if that frees a place (an
+                # awake database keeps one place while its own callers are
+                # about to reuse this connection; see _after_close).
+                if self.hub.has_waiter_for(self):
+                    close_for = "own"
+                elif self.open > 1 or self.users == 0:
+                    close_for = "other"
+                if close_for is not None:
+                    self.hub.cap_evictions += 1
+                    keep = False
             try:
-                if reuse and self._reusable(entry):
-                    if self.hub.wants_connection_closed():
-                        # Someone is waiting for a place under the cap.
-                        self.hub.cap_evictions += 1
-                        await self._close_entry(entry)
-                    else:
-                        entry.last_used = time.monotonic()
-                        self._check_in(entry)
+                if keep:
+                    entry.last_used = time.monotonic()
+                    self._check_in(entry)
+                elif close_for == "own":
+                    if await self._close_entry(entry, handoff=True):
+                        if not self.hub.hand_to(self):
+                            self.hub.release()
                 else:
                     await self._close_entry(entry)
             finally:
                 slot.release()
-                self.users -= 1
                 self._check_empty()
 
     def _check_in(self, entry: _Entry) -> None:
@@ -291,20 +311,39 @@ class Pool:
         self._closed = True
         await self.close_idle()
 
-    async def _close_entry(self, entry: _Entry, *, release: bool = True) -> None:
+    async def _close_entry(self, entry: _Entry, *, handoff: bool = False) -> bool:
         """Close a connection this pool no longer lists (not idle, not in
-        use). ``release=False`` keeps its place under the hub's cap for the
-        caller (eviction hands it to the one who needed it)."""
+        use) and give its place under the hub's cap back.
+
+        An awake database counts as at least one place, because its backend
+        may hold resources of its own (a DuckDB instance keeps the file and
+        its WAL open): when its last connection closes, the database keeps
+        that place, for its next connection if callers are waiting, or until
+        the sleep that follows has released the backend. Otherwise the place
+        is released now, or with ``handoff=True`` kept for the caller (cap
+        eviction). Returns True if the caller now holds the place."""
         try:
             await entry.conn.close()
         except Exception:
             pass
-        finally:
-            if release:
-                self.hub.release()
-            self.open -= 1
-            self._db._closed_total += 1
-            self._check_empty()
+        except BaseException:
+            self._after_close(handoff=False)
+            raise
+        return self._after_close(handoff)
+
+    def _after_close(self, handoff: bool) -> bool:
+        self.open -= 1
+        db = self._db
+        db._closed_total += 1
+        if self.open == 0 and db._awake and self is db._pool and db._held_place is None:
+            if not self.hub.hand_to(self):  # our own waiting caller gets it, or
+                db._held_place = self.hub  # we keep it (released by the sleep)
+            self._check_empty()  # starts the sleep if nobody is waiting
+            return False
+        if not handoff:
+            self.hub.release()
+        self._check_empty()
+        return handoff
 
     # -- introspection -------------------------------------------------------
 

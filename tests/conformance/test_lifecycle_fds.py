@@ -54,7 +54,15 @@ async def test_cap_bounds_descriptors_under_load(make_backend):
         await dbs[0].execute("select 1")
         await dbs[0].sleep()
         baseline = count_open_fds()
-        limit = baseline + cap + ALLOWANCE_PER_THREAD * threads
+        # Descriptors one awake database with one connection holds: 1 for
+        # SQLite, more where the backend keeps files of its own (a DuckDB
+        # instance holds the file and its WAL). The cap counts an awake
+        # database as at least one place, so this bounds every place.
+        await dbs[0].execute("select 1")
+        per_place = count_open_fds() - baseline
+        await dbs[0].sleep()
+        assert count_open_fds() == baseline
+        limit = baseline + cap * max(per_place, 1) + ALLOWANCE_PER_THREAD * threads
         peak = 0
 
         async def op(d, write):
@@ -66,7 +74,7 @@ async def test_cap_bounds_descriptors_under_load(make_backend):
             peak = max(peak, count_open_fds())
 
         await asyncio.gather(*(op(rng.choice(dbs), rng.random() < 0.3) for _ in range(400)))
-        assert peak <= limit, (peak, baseline, cap)
+        assert peak <= limit, (peak, baseline, cap, per_place)
         assert registry.stats().cap_evictions > 0
         for d in dbs:
             await d.sleep()
