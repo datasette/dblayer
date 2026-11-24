@@ -63,16 +63,31 @@ async def test_rollback_on_query_error_propagates(t):
     assert await count(t) == 0
 
 
+@pytest.mark.requires_not("statement_errors_abort_transaction")
 async def test_failed_statement_does_not_end_transaction(t):
     async with t.transaction() as tx:
         await tx.execute("insert into t (id, v) values (1, 'a')")
         with pytest.raises(QueryError):
             await tx.execute("insert into nope values (1)")
-        if t._backend.dialect.name == "sqlite":
-            # SQLite rolls back only the failed statement.
-            await tx.execute("insert into t (id, v) values (2, 'b')")
-    if t._backend.dialect.name == "sqlite":
-        assert await count(t) == 2
+        # Only the failed statement is rolled back.
+        await tx.execute("insert into t (id, v) values (2, 'b')")
+    assert await count(t) == 2
+
+
+@pytest.mark.requires("statement_errors_abort_transaction")
+async def test_failed_statement_aborts_transaction(t):
+    # The failure is caught, but the transaction is dead: a clean exit must
+    # not report a commit (DuckDB itself would turn COMMIT into a silent
+    # rollback).
+    with pytest.raises(QueryError):
+        async with t.transaction() as tx:
+            await tx.execute("insert into t (id, v) values (1, 'a')")
+            with pytest.raises(QueryError):
+                await tx.execute("insert into nope values (1)")
+    assert await count(t) == 0
+    async with t.transaction() as tx:  # the connection is fine afterwards
+        await tx.execute("insert into t (id, v) values (2, 'b')")
+    assert await count(t) == 1
 
 
 async def test_execute_many(t):
@@ -231,8 +246,8 @@ async def test_reads_on_db_inside_write_transaction(t):
 async def test_other_database_not_affected(make_db):
     a = make_db(name="a")
     b = make_db(name="b")
-    await a.execute_write("create table t (x)")
-    await b.execute_write("create table t (x)")
+    await a.execute_write("create table t (x integer)")
+    await b.execute_write("create table t (x integer)")
     async with a.transaction() as tx:
         await tx.execute("insert into t values (1)")
         await asyncio.wait_for(b.execute_write("insert into t values (2)"), 1)
@@ -322,7 +337,7 @@ async def test_two_writers_are_serialised(t):
     async def writer(name):
         async with t.transaction() as tx:
             events.append(f"{name} begin")
-            await tx.execute("insert into t (v) values (?)", [name])
+            await tx.execute("insert into t (id, v) values (?, ?)", [ord(name), name])
             await asyncio.sleep(0.05)
             events.append(f"{name} end")
 
@@ -341,7 +356,7 @@ async def test_writers_queue_fifo(t):
     async def writer(i):
         async with t.transaction() as tx:
             order.append(i)
-            await tx.execute("insert into t (v) values (?)", [str(i)])
+            await tx.execute("insert into t (id, v) values (?, ?)", [i, str(i)])
 
     holder_ready = asyncio.Event()
     release = asyncio.Event()
@@ -380,7 +395,7 @@ async def test_introspection_sees_own_ddl(t):
 async def test_schema_cache_invalidated_by_transaction_ddl(t):
     assert await t.table_names() == ["t"]  # fill the cache
     async with t.transaction() as tx:
-        await tx.execute("create table u (a)")
+        await tx.execute("create table u (a integer)")
     # Invalidated before the caller hears back, even within one mtime tick.
     assert sorted(await t.table_names()) == ["t", "u"]
 
@@ -389,7 +404,7 @@ async def test_schema_cache_not_poisoned_by_rolled_back_ddl(t):
     assert await t.table_names() == ["t"]
     with pytest.raises(RuntimeError):
         async with t.transaction() as tx:
-            await tx.execute("create table u (a)")
+            await tx.execute("create table u (a integer)")
             raise RuntimeError
     assert await t.table_names() == ["t"]
 

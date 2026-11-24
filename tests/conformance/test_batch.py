@@ -55,7 +55,7 @@ async def test_batch_with_matching_schema_version(t):
 
 async def test_batch_schema_changed_runs_nothing(t):
     version = await t.schema_version()
-    await t.execute_write("create table other (x)")
+    await t.execute_write("create table other (x integer)")
     with pytest.raises(SchemaChanged):
         await t.batch(
             [("insert into log (msg) values ('x')", None)], expect_schema_version=version
@@ -65,7 +65,7 @@ async def test_batch_schema_changed_runs_nothing(t):
 
 async def test_batch_ddl_invalidates_schema_cache(t):
     assert "made" not in await t.table_names()
-    await t.batch(["create table made (x)", "insert into made values (1)"])
+    await t.batch(["create table made (x integer)", "insert into made values (1)"])
     assert "made" in await t.table_names()
 
 

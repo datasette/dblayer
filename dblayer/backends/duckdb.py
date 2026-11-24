@@ -318,6 +318,7 @@ class DuckDB:
             sleep_releases_everything=True,
             returning=True,
             snapshot_reads=True,
+            statement_errors_abort_transaction=True,
         )
         self._instance: _duckdb.DuckDBPyConnection | None = None
         self._lock = threading.Lock()

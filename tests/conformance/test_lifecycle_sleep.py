@@ -25,8 +25,11 @@ async def counted(make_backend):
 
 
 async def _settle() -> None:
+    # A few loop turns, plus time for a backend whose close() is a thread
+    # hop (DuckDB checkpoints its WAL on close).
     for _ in range(5):
         await asyncio.sleep(0)
+    await asyncio.sleep(0.1)
 
 
 @pytest.mark.requires("sleep_releases_everything")

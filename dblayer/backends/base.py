@@ -97,6 +97,12 @@ class Capabilities:
     by writes committed while it is open. Not in the spec's table: false for
     SQLite shared-cache memory databases, whose readers use
     ``read_uncommitted`` and share one page cache with the writer."""
+    statement_errors_abort_transaction: bool = False
+    """A failed statement aborts the whole open transaction, even when the
+    caller catches the error: later statements fail and a clean exit from
+    the block raises instead of committing. True on DuckDB, which has no
+    savepoints to contain the failure. Not in the spec's table; the only
+    flag with a default, so backends written before it need no change."""
 
     def has(self, flag: str) -> bool:
         if flag not in self.names():

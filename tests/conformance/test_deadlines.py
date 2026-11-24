@@ -111,7 +111,7 @@ async def test_deadline_releases_slot_while_statement_holder_never_returns(t):
 
 async def test_default_deadline_comes_from_database(make_db):
     db = make_db(deadline_ms=50)
-    await db.execute_write("create table t (x)")
+    await db.execute_write("create table t (x integer)")
     with pytest.raises(TransactionExpired):
         async with db.transaction() as tx:
             await asyncio.sleep(0.15)
