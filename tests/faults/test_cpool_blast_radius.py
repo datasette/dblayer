@@ -215,6 +215,36 @@ async def test_idle_connections_reconnect_after_a_kill(tmp_path):
         pool.close()
 
 
+async def test_a_stream_open_at_a_kill_fails_loudly_and_its_database_carries_on(tmp_path):
+    """Another tenant's stream paused mid-way when the process is killed
+    for one tenant's sake is not retried (rows were already handed out):
+    its next chunk raises WorkerCrashed, and the database's next request
+    reconnects on a new process."""
+    from dblayer.backends.sqlite_cpool import CPool, InnocentCrash, SqliteCPool
+
+    pool = CPool(1, linger=0, kill_grace_ms=GRACE_MS)
+    culprit = Database(SqliteCPool(tmp_path / "c.db", pool=pool))
+    other = Database(SqliteCPool(tmp_path / "s.db", pool=pool))
+    try:
+        await culprit.execute("select 1")
+        series = "with recursive c(x) as (select 1 union all select x + 1 from c where x < 5000) select x from c"
+        seen = 0
+        with pytest.raises(WorkerCrashed) as e:
+            async for chunk in other.stream(series, chunk_rows=100):
+                seen += len(chunk)
+                if seen == 100:
+                    with pytest.raises(QueryInterrupted):
+                        await culprit.execute(EVADING, time_limit_ms=LIMIT_MS)
+        assert not isinstance(e.value, InnocentCrash)
+        assert 100 <= seen < 5000
+        assert pool.stats.kills == 1
+        assert (await other.execute("select count(*) from (" + series + ")")).rows == [(5000,)]
+    finally:
+        await culprit.close()
+        await other.close()
+        pool.close()
+
+
 async def test_external_kill_retries_nothing(tmp_path):
     """A process killed from outside has no known culprit: every in-flight
     request fails with WorkerCrashed, reads included (one of them may be
