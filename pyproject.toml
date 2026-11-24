@@ -12,7 +12,7 @@ duckdb = ["duckdb"]
 msgpack = ["msgpack"]
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "asyncpg"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [build-system]
 requires = ["setuptools>=69"]
