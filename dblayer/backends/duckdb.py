@@ -56,6 +56,7 @@ import os
 import re
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Executor
 from pathlib import Path
@@ -328,6 +329,8 @@ class DuckDB:
         self._parse_cache: dict[str, tuple[str, ...]] = {}
         self.instances_opened = 0
         """How many times the instance was opened (once per wake)."""
+        self.native_calls: Counter[str] = Counter()
+        """Named operations run by the native override, by name."""
 
     def __repr__(self) -> str:
         return f"DuckDB({str(self.path)!r})"
@@ -697,6 +700,74 @@ class DuckDBConnection:
 
         return await self._run(run)
 
+    # -- native operations ------------------------------------------------------
+
+    async def run_operation(self, name: str, args: dict[str, Any]) -> object:
+        """``insert_rows`` through DuckDB's appender (``SupportsOperations``).
+        executemany costs ~0.2 ms a row here; the appender inserts 100 rows
+        in under 1 ms and 100,000 in ~80 ms (scripts/bench_duckdb_insert.py).
+        It converts values as executemany parameters are converted, so
+        results match the default path. ``ignore`` / ``replace`` decline."""
+        if name != "insert_rows":
+            return NotImplemented
+        if args.get("ignore") or args.get("replace") or not args.get("rows"):
+            return NotImplemented
+        self._backend.native_calls[name] += 1
+        return await self._insert_rows(
+            args["table"], args["rows"], args.get("pk"), bool(args.get("alter"))
+        )
+
+    async def _insert_rows(
+        self, table: str, rows: list[dict[str, Any]], pk: Any, alter: bool
+    ) -> object:
+        from ..core import operations as ops
+
+        existing = await self._run(self._table_columns, table)
+        if existing is None:
+            # Missing table (or a view): the default code creates it, or
+            # lets the engine refuse the view, exactly as it would.
+            created, added = await ops._ensure_table(
+                _ConnectionTx(self), table, rows, ops._pk_tuple(pk), alter
+            )
+        else:
+            created = False
+            added: tuple[str, ...] = ()
+            if alter:
+                have = {c.casefold() for c in existing}
+                types = ops._column_types(rows)
+                missing = [c for c in types if c.casefold() not in have]
+                for c in missing:
+                    sql = self._backend.dialect.add_column_sql(table, ops.ColumnDef(c, types[c]))
+                    await self.execute(sql, [], time_limit_ms=None, max_rows=0)
+                added = tuple(missing)
+        groups = [(list(cols), [[r[c] for c in cols] for r in group]) for cols, group in ops._groups(rows)]
+
+        def append() -> int:
+            total = 0
+            for cols, values in groups:
+                app = self._cur.appender(table, columns=cols)
+                try:
+                    app.append_rows(values)
+                    app.flush()
+                except BaseException:
+                    app.clear()  # never let buffered rows be flushed later
+                    raise
+                total += len(values)
+            return total
+
+        total = await self._run(append)
+        return ops.OperationResult(rowcount=total, table_created=created, columns_added=added)
+
+    def _table_columns(self, table: str) -> list[str] | None:
+        rows = self._cur.execute(
+            "SELECT c.column_name FROM duckdb_columns() c JOIN duckdb_tables() t "
+            "ON c.table_oid = t.table_oid "
+            f"WHERE t.{_HERE.replace(' AND ', ' AND t.')} AND t.table_name = $name "
+            "ORDER BY c.column_index",
+            {"name": table},
+        ).fetchall()
+        return [r[0] for r in rows] or None
+
     # -- misc ----------------------------------------------------------------
 
     async def interrupt(self) -> None:
@@ -706,6 +777,34 @@ class DuckDBConnection:
         if not self._closed:
             self._closed = True
             await run_blocking(self._backend.executor, self._cur.close)
+
+
+class _ConnectionTx:
+    """The ``TxLike`` view of a connection inside an open transaction, so a
+    native override can reuse default helpers (table creation)."""
+
+    def __init__(self, conn: DuckDBConnection) -> None:
+        self._conn = conn
+        self.dialect = conn._backend.dialect
+        self.capabilities = conn._backend.capabilities
+
+    def _native(self, sql: str, params: Any) -> tuple[str, Any]:
+        from ..core.params import rewrite
+
+        return rewrite(sql, params, self.dialect.paramstyle, self.dialect.flavor)
+
+    async def execute(self, sql: str, params: Any = None) -> Results:
+        native, p = self._native(sql, params)
+        return await self._conn.execute(native, p, time_limit_ms=None, max_rows=None)
+
+    async def execute_many(self, sql: str, params_seq: Any) -> WriteResult:
+        rewritten = [self._native(sql, p) for p in params_seq]
+        if not rewritten:
+            return WriteResult(rowcount=0)
+        return await self._conn.execute_many(rewritten[0][0], [p for _, p in rewritten])
+
+    async def schema(self) -> Schema:
+        return await self._conn.schema()
 
 
 class _DuckDBStream:

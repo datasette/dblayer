@@ -93,7 +93,7 @@ async def _postgres_cleanup(backend: Backend) -> None:
 BACKENDS: list[BackendSpec] = [
     BackendSpec("sqlite", _sqlite_file),
     BackendSpec("sqlite-memory", _sqlite_memory),
-    BackendSpec("duckdb", _duckdb_file, available=_duckdb_available),
+    BackendSpec("duckdb", _duckdb_file, available=_duckdb_available, native_operations=True),
     BackendSpec(
         "postgres",
         _postgres,
