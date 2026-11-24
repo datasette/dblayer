@@ -13,7 +13,7 @@ from dblayer import (
     Results,
 )
 
-from ..helpers import check_latency
+from ..helpers import check_latency, series_sql
 
 UNBOUNDED = (
     "with recursive c(x) as (select 1 union all select x + 1 from c) "
@@ -21,11 +21,6 @@ UNBOUNDED = (
 )
 
 
-def series(n: int) -> str:
-    return (
-        "with recursive c(x) as (select 1 union all select x + 1 from c "
-        f"where x < {n}) select x from c"
-    )
 
 
 @pytest.fixture
@@ -140,11 +135,11 @@ async def test_max_rows_zero(posts):
 
 async def test_max_rows_default_from_database(make_db):
     db = make_db(max_rows=10)
-    r = await db.execute(series(50))
+    r = await db.execute(series_sql(db, 50))
     assert len(r) == 10 and r.truncated
-    r = await db.execute(series(50), max_rows=None)
+    r = await db.execute(series_sql(db, 50), max_rows=None)
     assert len(r) == 50 and not r.truncated
-    r = await db.execute(series(50), max_rows=DEFAULT)
+    r = await db.execute(series_sql(db, 50), max_rows=DEFAULT)
     assert len(r) == 10
 
 
@@ -172,7 +167,7 @@ async def test_time_limit_default_from_database(make_db):
 
 
 async def test_fast_query_within_time_limit(db):
-    r = await db.execute(series(10), time_limit_ms=1000)
+    r = await db.execute(series_sql(db, 10), time_limit_ms=1000)
     assert len(r) == 10
 
 
@@ -180,7 +175,7 @@ async def test_time_limit_does_not_persist(db):
     with pytest.raises(QueryInterrupted):
         await db.execute(UNBOUNDED, time_limit_ms=20)
     # Same pooled connection, no limit: a moderately long query completes.
-    r = await db.execute(series(200_000) + " order by x desc", max_rows=1)
+    r = await db.execute(series_sql(db, 200_000) + " order by x desc", max_rows=1)
     assert r.rows[0][0] == 200_000
 
 
@@ -195,9 +190,8 @@ async def test_connection_usable_after_interrupt(db):
 
 
 async def test_max_result_bytes(db):
-    sql = (
-        "with recursive c(x) as (select 1 union all select x + 1 from c where x < 1000) "
-        "select x, :pad as pad from c"
+    sql = series_sql(db, 1000).replace(") select x from", ") select x, :pad as pad from").replace(
+        "as x from", "as x, :pad as pad from"
     )
     with pytest.raises(ResourceLimitExceeded):
         await db.execute(sql, {"pad": "x" * 100}, max_result_bytes=10_000)

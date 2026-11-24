@@ -14,7 +14,7 @@ import pytest
 from dblayer import Database
 from dblayer.core.hub import Hub
 
-from ..helpers import CountingBackend, IdleClock, wait_until
+from ..helpers import CountingBackend, IdleClock, wait_until, count_to
 
 def asleep(db: Database) -> bool:
     """Asleep and the sleep finished: ``state`` says "asleep" as soon as the
@@ -22,10 +22,7 @@ def asleep(db: Database) -> bool:
     return db.state == "asleep" and db._transition is None
 
 
-SLOW = (
-    "with recursive c(x) as (select 1 union all select x + 1 from c where x < 400000) "
-    "select count(*) from c"
-)
+SLOW_N = 400000  # count_to(db, SLOW_N): a read that takes a while
 
 
 async def test_idle_connection_is_closed_and_database_sleeps(make_backend):
@@ -60,7 +57,7 @@ async def test_use_before_the_timeout_keeps_the_connection(make_db, monkeypatch)
 
 async def test_connection_in_use_is_never_closed_by_the_timeout(make_db):
     db = make_db(idle_timeout=0.01)
-    assert (await db.execute(SLOW)).rows[0][0] == 400000
+    assert (await db.execute(count_to(db, SLOW_N))).rows[0][0] == 400000
     # Then it was checked in, and times out.
     await wait_until(lambda: db.stats().open_total == 0)
 

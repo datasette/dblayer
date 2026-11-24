@@ -49,6 +49,7 @@ async def test_commit(conns):
     assert await count(backend, r) == 1
 
 
+@pytest.mark.requires("transactions")
 async def test_rollback(conns):
     backend, w, r = conns
     await w.begin("write")

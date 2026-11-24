@@ -6,13 +6,12 @@ import threading
 
 import pytest
 
+from ..helpers import count_to
+
 from dblayer import Database, Registry
 from dblayer.backends.base import UsesExecutor
 
-SLOW = (
-    "with recursive c(x) as (select 1 union all select x + 1 from c where x < 100000) "
-    "select count(*) from c"
-)
+SLOW_N = 100000  # count_to(db, SLOW_N): a read that takes a while
 
 
 def _registry_threads() -> list[threading.Thread]:
@@ -46,7 +45,7 @@ async def test_thread_count_is_fixed_by_max_threads(executor_backend):
 
         async def run(d):
             nonlocal peak
-            await d.execute(SLOW)
+            await d.execute(count_to(d, SLOW_N))
             peak = max(peak, len(_registry_threads()))
 
         await asyncio.gather(*(run(d) for d in dbs))
@@ -72,7 +71,7 @@ async def test_explicit_executor_is_kept(executor_backend):
 async def test_closing_the_registry_stops_its_threads(executor_backend):
     registry = Registry(max_threads=2)
     db = registry.add("a", Database(executor_backend()))
-    await asyncio.gather(*(db.execute(SLOW) for _ in range(3)))
+    await asyncio.gather(*(db.execute(count_to(db, SLOW_N)) for _ in range(3)))
     executor = registry.executor
     await registry.close()
     assert not any(t.is_alive() for t in executor._threads)  # type: ignore[attr-defined]

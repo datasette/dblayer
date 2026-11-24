@@ -9,12 +9,9 @@ import pytest
 
 from dblayer import Database, Registry
 
-from ..helpers import EVENTUALLY_S, wait_until
+from ..helpers import EVENTUALLY_S, wait_until, count_to
 
-SLOW = (
-    "with recursive c(x) as (select 1 union all select x + 1 from c where x < 50000) "
-    "select count(*) from c"
-)
+SLOW_N = 50000  # count_to(db, SLOW_N): a read that takes a while
 
 
 def _open(dbs):
@@ -102,7 +99,7 @@ async def test_cancelled_waiter_does_not_leak_a_place(make_backend):
 async def test_checked_in_connection_goes_to_a_waiter(make_backend):
     async with Registry(max_open_connections=1) as registry:
         a, b = (registry.add(n, Database(make_backend())) for n in "ab")
-        first = asyncio.create_task(a.execute(SLOW))
+        first = asyncio.create_task(a.execute(count_to(a, SLOW_N)))
         await wait_until(lambda: registry._hub.open == 1)  # a holds the place
         second = asyncio.create_task(b.execute("select 1"))
         await asyncio.gather(first, second)

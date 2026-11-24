@@ -116,6 +116,10 @@ _CODE = re.compile(r"Code: (\d+)\.")
 _NAME = re.compile(r"\(([A-Z][A-Z0-9_]+)\)\s*(?:\(version [^)]*\))?\.?\s*$")
 
 
+def _nullable(t: str) -> bool:
+    return t.startswith(("Nullable(", "LowCardinality(Nullable("))
+
+
 class ClickHouseDialect(Dialect):
     name = "clickhouse"
     paramstyle = ParamStyle.NUMERIC_DOLLAR
@@ -145,7 +149,11 @@ class ClickHouseDialect(Dialect):
         return col.type
 
     def column_sql(self, col: ColumnDef, *, key: bool = False) -> str:
-        parts = [self.quote_identifier(col.name), self._column_type(col, key=key)]
+        t = self._column_type(col, key=key)
+        parts = [self.quote_identifier(col.name), t]
+        if not _nullable(t):
+            # Sessions run with data_type_default_nullable=1.
+            parts.append("NOT NULL")
         if col.default is not None:
             parts.append(self.default_clause(col.default))
         return " ".join(parts)
@@ -201,7 +209,7 @@ class ClickHouseDialect(Dialect):
         t = self._column_type(ColumnDef(column, type_name), key=False)
         return (
             f"ALTER TABLE {self.quote_identifier(table)} MODIFY COLUMN "
-            f"{self.quote_identifier(column)} {t}"
+            f"{self.quote_identifier(column)} {t}{'' if _nullable(t) else ' NOT NULL'}"
         )
 
     def native_alter_for(
@@ -355,6 +363,16 @@ def bind(sql: str, params: NativeParams, suffix: str = "") -> tuple[str, dict[st
 # -- statement checks --------------------------------------------------------------------
 
 _RESULT_KINDS = frozenset({"SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "EXISTS"})
+# Refused on read connections before they reach ClickHouse (which refuses
+# them too, with readonly=1). Anything else is left to the engine, so a
+# misspelt "selec 1" gets ClickHouse's syntax error.
+_WRITE_KINDS = frozenset(
+    {
+        "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "RENAME", "EXCHANGE",
+        "TRUNCATE", "OPTIMIZE", "SYSTEM", "KILL", "ATTACH", "DETACH", "GRANT", "REVOKE",
+        "UNDROP", "MOVE", "BACKUP", "RESTORE",
+    }
+)
 _REFUSED = {
     "BEGIN": "BEGIN/COMMIT/ROLLBACK are managed by dblayer (and ClickHouse has no transactions)",
     "START": "BEGIN/COMMIT/ROLLBACK are managed by dblayer (and ClickHouse has no transactions)",
@@ -366,13 +384,14 @@ _REFUSED = {
 
 
 class _Statement:
-    __slots__ = ("kind", "where", "target", "set_at")
+    __slots__ = ("kind", "where", "target", "set_at", "index_without_type")
 
     def __init__(self, kind: str | None) -> None:
         self.kind = kind
         self.where: int | None = None  # offset of a top-level WHERE
         self.target: tuple[int, int] | None = None  # UPDATE / DELETE FROM table span
         self.set_at: int | None = None
+        self.index_without_type = False  # CREATE INDEX with no TYPE clause
 
 
 def _analyse(sql: str, *, host_access: bool) -> _Statement:
@@ -416,6 +435,9 @@ def _analyse(sql: str, *, host_access: bool) -> _Statement:
                 "FORMAT_NOT_ALLOWED",
             )
         prev = w
+    top = [w[0] for w in words if w[3] == 0]
+    if kind == "CREATE" and top[1:2] == ["INDEX"] or top[1:3] == ["UNIQUE", "INDEX"]:
+        st.index_without_type = "TYPE" not in top
     if kind in ("UPDATE", "DELETE"):
         first = [w for w in words if w[3] == 0]
         try:
@@ -516,6 +538,42 @@ def _read_arrow(data: bytes) -> Any:
 # -- the shared embedded server ------------------------------------------------------------
 
 
+# Server-wide MergeTree defaults, so tables made by plain SQL DDL behave like
+# the dialect's: plain UPDATE works (lightweight updates need the block
+# columns) and a nullable column can be in the key (columns are Nullable by
+# default, see _SESSION).
+_SERVER_ARGS = (
+    "merge_tree.allow_nullable_key=1",
+    "merge_tree.enable_block_number_column=1",
+    "merge_tree.enable_block_offset_column=1",
+)
+
+# Session settings of every connection.
+_SESSION: dict[str, Any] = {
+    "output_format_arrow_string_as_string": 0,
+    "output_format_arrow_fixed_string_as_fixed_byte_array": 1,
+    # Mutations and lightweight deletes finish before the statement returns.
+    "mutations_sync": 2,
+    "lightweight_deletes_sync": 2,
+    # NULL into a non-Nullable column is an error, not the type's default.
+    "insert_null_as_default": 0,
+    "input_format_null_as_default": 0,
+    # Plain SQL DDL as other engines take it: "create table t (x integer)"
+    # makes a MergeTree with nullable columns (unless NOT NULL), ordered by
+    # its PRIMARY KEY or by nothing.
+    "default_table_engine": "MergeTree",
+    "create_table_empty_primary_key_by_default": 1,
+    "data_type_default_nullable": 1,
+    "max_recursive_cte_evaluation_depth": 100_000_000,
+    "max_query_size": 64 << 20,
+    "max_ast_elements": 1 << 22,
+}
+
+
+def _connection_string(path: Path) -> str:
+    return f"{path}?{'&'.join(_SERVER_ARGS)}"
+
+
 class _Server:
     """The process's one chDB server: its directory, how many connections
     are open, and a control connection for KILL QUERY and catalog work."""
@@ -540,11 +598,11 @@ class _Server:
                 )
             if self.path is None:
                 path.mkdir(parents=True, exist_ok=True)
-                self._control = sqlitelike.Connection(str(path))
+                self._control = sqlitelike.Connection(_connection_string(path))
                 self.path = path
                 self.starts += 1
             try:
-                conn = sqlitelike.Connection(str(path))
+                conn = sqlitelike.Connection(_connection_string(path))
             except BaseException:
                 if self.open == 0:
                     self._shutdown()
@@ -643,6 +701,7 @@ class ClickHouse:
             unique_constraints=False,
             foreign_keys=False,
             distinct_blob_type=False,
+            duplicate_column_names=False,
         )
         self._created = False
         self.connections_opened = 0
@@ -708,7 +767,7 @@ class ClickHouse:
             finally:
                 _server.release(conn)
 
-        await run_blocking(self.executor, run)
+        await run_blocking(None, run)  # the registry's executor may be shut down
 
     # -- internals -------------------------------------------------------------
 
@@ -721,15 +780,7 @@ class ClickHouse:
                     conn.query(f"CREATE DATABASE IF NOT EXISTS {q}", "TSV")
                 self._created = True
             conn.query(f"USE {q}", "TSV")
-            settings: dict[str, Any] = {
-                "output_format_arrow_string_as_string": 0,
-                "output_format_arrow_fixed_string_as_fixed_byte_array": 1,
-                "mutations_sync": 2,
-                "lightweight_deletes_sync": 2,
-                "insert_null_as_default": 0,
-                "max_query_size": 64 << 20,
-                "max_ast_elements": 1 << 22,
-            }
+            settings = dict(_SESSION)
             if self.memory_limit is not None:
                 settings["max_memory_usage"] = self.memory_limit
             if self.threads is not None:
@@ -834,7 +885,7 @@ class ClickHouseConnection:
 
     def _check(self, sql: str) -> _Statement:
         st = _analyse(sql, host_access=self.write and self._backend.allow_host_access)
-        if st.kind is not None and not self.write and st.kind not in _RESULT_KINDS:
+        if st.kind is not None and not self.write and st.kind in _WRITE_KINDS:
             raise QueryError(
                 f"attempt to write a read-only connection ({st.kind} statement)", "READ_ONLY"
             )
@@ -862,6 +913,16 @@ class ClickHouseConnection:
         st = self._check(sql)
         if st.kind is None:
             return Results.from_tuples((), [])
+        if st.index_without_type:
+            # Standard CREATE INDEX: ClickHouse needs a data-skipping index type.
+            sql = (
+                sql.rstrip().removesuffix(";")
+                + f" TYPE {self._backend.dialect.index_type} GRANULARITY 1"  # type: ignore[attr-defined]
+            )
+        if st.kind in ("UPDATE", "DELETE") and st.where is None:
+            # ClickHouse needs a WHERE; SQL's "every row" is WHERE 1.
+            sql = sql.rstrip().removesuffix(";") + " WHERE 1"
+            st = self._check(sql)
         native, values = bind(sql, params)
         if st.kind in _RESULT_KINDS:
             return self._select(native, values, time_limit_ms, max_rows, max_result_bytes)

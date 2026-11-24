@@ -11,7 +11,8 @@ from ..helpers import EVENTUALLY_S
 
 @pytest.fixture
 async def t(db):
-    await db.execute_write("create table log (msg text unique)")
+    unique = " unique" if db.capabilities.unique_constraints else ""
+    await db.execute_write(f"create table log (msg text{unique})")
     await db.execute_write("create table counters (name text primary key, n integer)")
     await db.execute_write("insert into counters values ('runs', 0)")
     return db
@@ -36,6 +37,7 @@ async def test_batch_accepts_bare_sql(t):
     assert (await t.execute("select count(*) from log")).rows[0][0] == 2
 
 
+@pytest.mark.requires("transactions")
 async def test_batch_is_all_or_nothing(t):
     with pytest.raises(IntegrityError):
         await t.batch(

@@ -5,14 +5,11 @@ from contextlib import aclosing
 
 import pytest
 
+from ..helpers import series_sql
+
 from dblayer import QueryInterrupted, ResourceLimitExceeded, Row
 
 
-def series(n: int) -> str:
-    return (
-        "with recursive c(x) as (select 1 union all select x + 1 from c "
-        f"where x < {n}) select x from c"
-    )
 
 
 INFINITE = "with recursive c(x) as (select 1 union all select x + 1 from c) select x from c"
@@ -21,7 +18,7 @@ INFINITE = "with recursive c(x) as (select 1 union all select x + 1 from c) sele
 async def test_stream_chunks(db):
     sizes = []
     values = []
-    async for chunk in db.stream(series(95), chunk_rows=10):
+    async for chunk in db.stream(series_sql(db, 95), chunk_rows=10):
         sizes.append(len(chunk))
         assert all(isinstance(r, Row) for r in chunk)
         values.extend(r["x"] for r in chunk)
@@ -37,11 +34,11 @@ async def test_stream_params(db):
 
 
 async def test_stream_empty(db):
-    assert [c async for c in db.stream(series(5) + " where x > 100")] == []
+    assert [c async for c in db.stream(series_sql(db, 5) + " where x > 100")] == []
 
 
 async def test_stream_releases_connection_when_exhausted(db):
-    async for _ in db.stream(series(20), chunk_rows=5):
+    async for _ in db.stream(series_sql(db, 20), chunk_rows=5):
         assert db.stats().in_use_read == 1
     assert db.stats().in_use_read == 0
 
@@ -52,7 +49,7 @@ async def test_slow_consumer_does_not_use_up_time_limit(db):
     # (With 200 ms the fetches themselves - a thread hop or a round trip per
     # chunk - added up past the limit on a loaded machine.)
     n = 0
-    async for chunk in db.stream(series(50), chunk_rows=10, time_limit_ms=1000):
+    async for chunk in db.stream(series_sql(db, 50), chunk_rows=10, time_limit_ms=1000):
         n += len(chunk)
         await asyncio.sleep(0.25)
     assert n == 50
@@ -84,9 +81,8 @@ async def test_backpressure_infinite_stream_can_be_abandoned(db):
 
 
 async def test_stream_max_result_bytes(db):
-    sql = (
-        "with recursive c(x) as (select 1 union all select x + 1 from c where x < 1000) "
-        "select x, :pad as pad from c"
+    sql = series_sql(db, 1000).replace(") select x from", ") select x, :pad as pad from").replace(
+        "as x from", "as x, :pad as pad from"
     )
     with pytest.raises(ResourceLimitExceeded):
         async for _ in db.stream(sql, {"pad": "p" * 100}, chunk_rows=50, max_result_bytes=5000):
@@ -99,7 +95,7 @@ async def test_concurrent_streams_and_reads(make_db):
 
     async def consume():
         total = 0
-        async for chunk in db.stream(series(100), chunk_rows=7):
+        async for chunk in db.stream(series_sql(db, 100), chunk_rows=7):
             total += sum(r[0] for r in chunk)
             await asyncio.sleep(0)
         return total
@@ -127,7 +123,7 @@ async def test_stream_context_manager_releases_on_error(db):
 
 
 async def test_stream_context_manager_unstarted(db):
-    async with db.stream(series(5)):
+    async with db.stream(series_sql(db, 5)):
         pass
     assert db.stats().in_use_read == 0
 

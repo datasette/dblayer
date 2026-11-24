@@ -8,12 +8,9 @@ import pytest
 
 from dblayer import Database
 
-from ..helpers import CountingBackend, wait_until
+from ..helpers import CountingBackend, wait_until, count_to
 
-SLOW = (
-    "with recursive c(x) as (select 1 union all select x + 1 from c where x < 300000) "
-    "select count(*) from c"
-)
+SLOW_N = 300000  # count_to(db, SLOW_N): a read that takes a while
 
 
 @pytest.fixture
@@ -48,7 +45,7 @@ async def test_sleep_with_nothing_in_use_closes_backend(counted):
 @pytest.mark.requires("sleep_releases_everything")
 async def test_sleep_while_reading_closes_backend_after_return(counted):
     db, backend = counted
-    task = asyncio.create_task(db.execute(SLOW))
+    task = asyncio.create_task(db.execute(count_to(db, SLOW_N)))
     await wait_until(lambda: db.stats().in_use_read == 1, interval=0)  # in flight
     await db.sleep()
     assert not backend.released  # a connection is still in use
@@ -88,7 +85,7 @@ async def test_stream_open_across_sleep(counted):
 
 async def test_close_while_in_use_closes_backend_after_return(counted):
     db, backend = counted
-    task = asyncio.create_task(db.execute(SLOW))
+    task = asyncio.create_task(db.execute(count_to(db, SLOW_N)))
     await wait_until(lambda: db.stats().in_use_read == 1, interval=0)  # in flight
     closes = backend.closes
     await db.close()

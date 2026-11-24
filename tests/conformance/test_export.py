@@ -15,16 +15,13 @@ import math
 
 import pytest
 
+from ..helpers import series_sql
+
 from dblayer import QueryError, QueryInterrupted, ResourceLimitExceeded
 
 INFINITE = "with recursive c(x) as (select 1 union all select x + 1 from c) select x from c"
 
 
-def series(n: int) -> str:
-    return (
-        "with recursive c(x) as (select 1 union all select x + 1 from c "
-        f"where x < {n}) select x from c"
-    )
 
 
 @pytest.fixture(params=[True, False], ids=["native", "fallback"])
@@ -149,7 +146,7 @@ async def test_empty_result(items, native, fmt, backend_spec):
 
 @pytest.mark.parametrize("fmt", ["csv", "json", "ndjson"])
 async def test_max_rows_truncates(db, native, fmt):
-    stream = db.export(series(50), format=fmt, max_rows=7, native=native)
+    stream = db.export(series_sql(db, 50), format=fmt, max_rows=7, native=native)
     data = await stream.read_all()
     assert stream.row_count == 7
     assert stream.truncated is True
@@ -164,14 +161,14 @@ async def test_max_rows_truncates(db, native, fmt):
 
 
 async def test_max_rows_exact_is_not_truncated(db, native):
-    stream = db.export(series(7), format="json", max_rows=7, native=native)
+    stream = db.export(series_sql(db, 7), format="json", max_rows=7, native=native)
     doc = json.loads(await stream.read_all())
     assert stream.truncated is False and doc["truncated"] is False
     assert len(doc["rows"]) == 7
 
 
 async def test_max_rows_zero(db, native):
-    stream = db.export(series(3), format="csv", max_rows=0, native=native)
+    stream = db.export(series_sql(db, 3), format="csv", max_rows=0, native=native)
     assert await stream.read_all() == b"x\r\n"
     assert stream.truncated is True
 
@@ -187,7 +184,7 @@ async def test_max_rows_stops_an_unbounded_query(db, native, request):
 
 async def test_many_rows_and_chunks(db, native):
     chunks = []
-    async with db.export(series(20000), format="csv", chunk_bytes=4096, native=native) as stream:
+    async with db.export(series_sql(db, 20000), format="csv", chunk_bytes=4096, native=native) as stream:
         async for chunk in stream:
             assert type(chunk) is bytes
             chunks.append(chunk)
@@ -201,7 +198,7 @@ async def test_many_rows_and_chunks(db, native):
 async def test_byte_cap(db, native):
     got = []
     with pytest.raises(ResourceLimitExceeded):
-        async with db.export(series(100000), format="csv", max_bytes=10000, chunk_bytes=1024, native=native) as s:
+        async with db.export(series_sql(db, 100000), format="csv", max_bytes=10000, chunk_bytes=1024, native=native) as s:
             async for chunk in s:
                 got.append(chunk)
     assert sum(map(len, got)) <= 10000
@@ -310,6 +307,7 @@ async def test_non_finite_floats(db, native):
     json.loads(await body(db, sql, format="json", native=native))
 
 
+@pytest.mark.requires("distinct_blob_type")
 async def test_blob(db, native):
     await db.create_table("b", {"id": "integer", "b": "blob"}, pk="id")
     await db.insert_rows("b", [{"id": 1, "b": b"\x00\xffhi"}, {"id": 2, "b": b""}])
@@ -330,6 +328,7 @@ async def test_big_value(db, native):
     assert json.loads(data) == {"t": big}
 
 
+@pytest.mark.requires("duplicate_column_names")
 async def test_duplicate_column_names(db, native):
     data = await body(db, "select 1 as a, 2 as a, 3 as b", format="ndjson", native=native)
     assert data == b'{"a":1,"b":3}\n'

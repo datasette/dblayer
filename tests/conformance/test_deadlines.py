@@ -66,7 +66,8 @@ async def test_clean_exit_after_expiry_raises(t):
             await tx.execute("insert into t (id, v) values (1, 'a')")
             await asyncio.sleep(0.2)
     assert tx.state == "expired"
-    assert await count(t) == 0
+    if t.capabilities.transactions:  # else the insert stays
+        assert await count(t) == 0
 
 
 async def test_exception_after_expiry_propagates_unchanged(t):
@@ -98,10 +99,11 @@ async def test_deadline_interrupts_running_statement(t):
             await tx.execute("insert into t (id, v) values (1, 'a')")
             await tx.execute(INFINITE, time_limit_ms=None)
     check_latency("deadline -> running statement interrupted", time.perf_counter() - t0 - 0.15, 0.85)
-    assert await count(t) == 0
+    kept = 0 if t.capabilities.transactions else 1  # no rollback: the insert stays
+    assert await count(t) == kept
     # The connection was not left in use, and works.
     await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), EVENTUALLY_S)
-    assert await count(t) == 1
+    assert await count(t) == kept + 1
 
 
 async def test_deadline_releases_slot_while_statement_holder_never_returns(t):
@@ -119,7 +121,8 @@ async def test_deadline_releases_slot_while_statement_holder_never_returns(t):
     task = asyncio.create_task(holder())
     await holding.wait()
     await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), EVENTUALLY_S)
-    assert (await t.execute("select id from t")).rows == [(2,)]
+    expected = [(2,)] if t.capabilities.transactions else [(1,), (2,)]  # no rollback
+    assert (await t.execute("select id from t order by id")).rows == expected
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

@@ -6,12 +6,9 @@ import pytest
 
 from dblayer import DatabaseClosed
 
-from ..helpers import EVENTUALLY_S, count_open_fds, wait_until
+from ..helpers import EVENTUALLY_S, count_open_fds, wait_until, count_to
 
-SLOW = (
-    "with recursive c(x) as (select 1 union all select x + 1 from c where x < 200000) "
-    "select count(*) from c"
-)
+SLOW_N = 200000  # count_to(db, SLOW_N): a read that takes a while
 
 
 async def test_creating_a_database_opens_nothing(make_db):
@@ -32,7 +29,7 @@ async def test_read_pool_is_bounded(make_db):
 
     async def read():
         nonlocal peak
-        r = await db.execute(SLOW)
+        r = await db.execute(count_to(db, SLOW_N))
         peak = max(peak, db.stats().open_read)
         return r.rows[0][0]
 
@@ -71,7 +68,7 @@ async def test_sleep_is_repeatable(db):
 
 async def test_sleep_during_in_flight_read(db):
     await db.execute_write("create table t (x integer)")
-    task = asyncio.create_task(db.execute(SLOW))
+    task = asyncio.create_task(db.execute(count_to(db, SLOW_N)))
     await wait_until(lambda: db.stats().in_use_read == 1, interval=0)  # in flight
     await db.sleep()
     assert (await task).rows[0][0] == 200000  # finished on the connection it held
@@ -86,7 +83,7 @@ async def test_sleep_leaks_no_file_descriptors(make_db):
     baseline = count_open_fds()
     for _ in range(3):
         # Force several read connections plus the writer open at once.
-        await asyncio.gather(*(db.execute(SLOW) for _ in range(3)))
+        await asyncio.gather(*(db.execute(count_to(db, SLOW_N)) for _ in range(3)))
         await db.execute_write("insert into t (x) values (1)")
         await db.table_names()
         assert count_open_fds() > baseline
@@ -108,7 +105,7 @@ async def test_close_is_permanent(db):
 
 
 async def test_close_waits_for_nothing_but_closes_on_return(db):
-    task = asyncio.create_task(db.execute(SLOW))
+    task = asyncio.create_task(db.execute(count_to(db, SLOW_N)))
     await wait_until(lambda: db.stats().in_use_read == 1, interval=0)  # in flight
     await db.close()
     # The in-flight read finishes on the connection it holds.

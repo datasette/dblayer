@@ -146,3 +146,27 @@ class CountingBackend:
         self.closes += 1
         self.released = True
         await self.inner.close()  # type: ignore[attr-defined]
+
+
+def count_to(db: object, n: int) -> str:
+    """A read that is in flight for a while and returns ``n``: a recursive
+    CTE counting to ``n``. On ClickHouse a recursive CTE costs about 0.3 ms
+    an iteration (a minute for 200,000), so there it is a scan of ``n``
+    numbers that sleeps about 0.15 s in all."""
+    if db.dialect.name == "clickhouse":  # type: ignore[attr-defined]
+        return f"select count(*) from numbers({n}) where sleepEachRow({0.15 / n!r}) = 0"
+    return (
+        f"with recursive c(x) as (select 1 union all select x + 1 from c where x < {n}) "
+        "select count(*) from c"
+    )
+
+
+def series_sql(db: object, n: int) -> str:
+    """``select x`` for x from 1 to ``n``: a recursive CTE, or ``numbers()``
+    on ClickHouse (see ``count_to``)."""
+    if db.dialect.name == "clickhouse":  # type: ignore[attr-defined]
+        return f"select number + 1 as x from numbers({n})"
+    return (
+        "with recursive c(x) as (select 1 union all select x + 1 from c "
+        f"where x < {n}) select x from c"
+    )

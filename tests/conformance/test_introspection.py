@@ -10,15 +10,19 @@ from ..helpers import is_text_type
 
 @pytest.fixture
 async def blog(db):
+    # Foreign keys and the unique index only where the backend has them
+    # (not ClickHouse); the tests of those features are skipped there.
+    fks = db.capabilities.foreign_keys
+    unique = "unique " if db.capabilities.unique_constraints else ""
     for sql in [
         "create table authors (id integer primary key, name text not null, "
         "country text default 'uk')",
         "create table posts (id integer primary key, author_id integer "
-        "references authors(id), title text, body text)",
+        f"{'references authors(id)' if fks else ''}, title text, body text)",
         "create table tags (post_id integer not null, tag text not null, "
-        "primary key (tag, post_id), "
-        "foreign key (post_id) references posts(id))",
-        "create unique index idx_posts_title on posts (title)",
+        "primary key (tag, post_id)"
+        f"{', foreign key (post_id) references posts(id)' if fks else ''})",
+        f"create {unique}index idx_posts_title on posts (title)",
         "create index idx_posts_author_title on posts (author_id, title)",
         "create view post_titles as select id, title from posts",
     ]:
@@ -60,6 +64,7 @@ async def test_no_primary_key(db):
     assert await db.primary_keys("loose") == []
 
 
+@pytest.mark.requires("foreign_keys")
 async def test_foreign_keys(blog):
     fks = await blog.foreign_keys("posts")
     assert all(isinstance(f, ForeignKey) for f in fks)
@@ -77,7 +82,7 @@ async def test_indexes(blog):
     idx = {i.name: i for i in await blog.indexes("posts")}
     assert all(isinstance(i, Index) for i in idx.values())
     assert idx["idx_posts_title"].columns == ("title",)
-    assert idx["idx_posts_title"].unique is True
+    assert idx["idx_posts_title"].unique is blog.capabilities.unique_constraints
     assert idx["idx_posts_author_title"].columns == ("author_id", "title")
     assert idx["idx_posts_author_title"].unique is False
 
@@ -87,7 +92,8 @@ async def test_definition(blog):
         pytest.skip("no definition SQL")
     assert "create table" in (await blog.definition("authors")).lower()
     assert "create view" in (await blog.definition("post_titles")).lower()
-    assert "create unique index" in (await blog.definition("idx_posts_title")).lower()
+    unique = "unique " if blog.capabilities.unique_constraints else ""
+    assert f"create {unique}index" in (await blog.definition("idx_posts_title")).lower()
     with pytest.raises(TableNotFound):
         await blog.definition("nope")
 

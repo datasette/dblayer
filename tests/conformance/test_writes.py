@@ -9,8 +9,11 @@ from dblayer import IntegrityError, QueryInterrupted, WriteResult
 
 @pytest.fixture
 async def items(db):
+    # UNIQUE only where the engine enforces it (not ClickHouse); the
+    # uniqueness test itself is skipped there.
+    unique = " unique" if db.capabilities.unique_constraints else ""
     await db.execute_write(
-        "create table items (id integer primary key, name text not null unique, n integer)"
+        f"create table items (id integer primary key, name text not null{unique}, n integer)"
     )
     return db
 
@@ -95,6 +98,7 @@ async def test_returning_limit_default_from_database(make_db):
     assert len(r.rows) == 3 and not r.truncated
 
 
+@pytest.mark.requires("unique_constraints")
 async def test_integrity_error_unique(items):
     await items.execute_write("insert into items (id, name) values (1, 'a')")
     with pytest.raises(IntegrityError) as e:

@@ -36,6 +36,7 @@ from dblayer import Database
 from dblayer.backends.base import Backend, Capabilities
 from dblayer.backends.sqlite import SqliteInProcess
 
+from . import clickhouse as ch
 from . import pg, pglite_spec
 from .override_backend import OverrideBackend
 
@@ -335,6 +336,10 @@ BACKENDS: list[BackendSpec] = [
         native_operations=True,
         cleanup=_postgres_cleanup,
     ),
+    # ClickHouse embedded in-process through chDB (experimental, extra
+    # "clickhouse", Python <= 3.14): one ClickHouse database per test.
+    BackendSpec("clickhouse", lambda tmp_path: ch.make(), available=ch.unavailable, native_operations=True,
+                cleanup=ch.cleanup),
 ]
 
 

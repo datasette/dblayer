@@ -131,6 +131,9 @@ class Capabilities:
     """Binary and text values are told apart: bytes read back as bytes.
     False on ClickHouse, whose single ``String`` type holds both; values
     that are valid UTF-8 come back as ``str``."""
+    duplicate_column_names: bool = True
+    """A result may have two columns of the same name (``select 1 as a, 2
+    as a``). False on ClickHouse, which refuses the query."""
 
     def has(self, flag: str) -> bool:
         if flag not in self.names():

@@ -48,6 +48,7 @@ async def test_uncommitted_writes_invisible_to_other_connections(t):
     assert await count(t) == 1
 
 
+@pytest.mark.requires("transactions")
 async def test_rollback_on_exception(t):
     with pytest.raises(ZeroDivisionError):
         async with t.transaction() as tx:
@@ -57,6 +58,7 @@ async def test_rollback_on_exception(t):
     assert await count(t) == 0
 
 
+@pytest.mark.requires("transactions", "unique_constraints")
 async def test_rollback_on_query_error_propagates(t):
     with pytest.raises(IntegrityError):
         async with t.transaction() as tx:
@@ -154,7 +156,8 @@ async def test_cancel_rolls_back_and_releases_write_slot(t):
     # "write slot released within 50 ms", asserted under strict timing).
     await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), EVENTUALLY_S)
     check_latency("cancel -> write slot released", time.perf_counter() - t0, 0.05)
-    assert (await t.execute("select id from t")).rows == [(2,)]
+    if t.capabilities.transactions:  # else the first insert stays
+        assert (await t.execute("select id from t")).rows == [(2,)]
     assert t.stats().in_use_write == 0
 
 
@@ -180,7 +183,8 @@ async def test_cancel_during_running_statement(t):
         await task
     await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), EVENTUALLY_S)
     check_latency("cancel mid-statement -> write slot released", time.perf_counter() - t0, 0.5)
-    assert (await t.execute("select id from t")).rows == [(2,)]
+    if t.capabilities.transactions:  # else the first insert stays
+        assert (await t.execute("select id from t")).rows == [(2,)]
 
 
 async def test_double_cancel_still_rolls_back(t):
@@ -200,7 +204,8 @@ async def test_double_cancel_still_rolls_back(t):
     with pytest.raises(asyncio.CancelledError):
         await task
     await asyncio.wait_for(t.execute_write("insert into t (id, v) values (2, 'b')"), EVENTUALLY_S)
-    assert (await t.execute("select id from t")).rows == [(2,)]
+    if t.capabilities.transactions:  # else the first insert stays
+        assert (await t.execute("select id from t")).rows == [(2,)]
 
 
 # -- nesting -------------------------------------------------------------------
@@ -403,6 +408,7 @@ async def test_schema_cache_invalidated_by_transaction_ddl(t):
     assert sorted(await t.table_names()) == ["t", "u"]
 
 
+@pytest.mark.requires("transactional_ddl")
 async def test_schema_cache_not_poisoned_by_rolled_back_ddl(t):
     assert await t.table_names() == ["t"]
     with pytest.raises(RuntimeError):

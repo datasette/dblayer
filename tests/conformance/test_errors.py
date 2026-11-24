@@ -43,6 +43,7 @@ async def test_write_syntax_error(db):
     assert_driver_cause(e.value)
 
 
+@pytest.mark.requires("unique_constraints")
 async def test_integrity_error(db):
     await db.execute_write("create table t (id integer primary key)")
     await db.execute_write("insert into t (id) values (1)")
