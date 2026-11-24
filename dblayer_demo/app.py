@@ -7,6 +7,8 @@ never write: the library rejects it and the page shows the error.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,6 +31,8 @@ from .fleet import BACKEND_CLASS, FANOUT_MAX, KINDS, FanoutBusy, Fleet
 from .stats import all_stats, state_counts
 from .databases import DemoDatabase, DemoSpec, close_all, open_all
 from .render import cell, describe_error, is_numeric
+
+logger = logging.getLogger("uvicorn.error")
 
 TEMPLATES = Jinja2Templates(
     env=jinja2.Environment(
@@ -348,8 +352,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
+        t0 = time.perf_counter()
         demos = await open_all(config, specs)
         app.state.demos = {d.spec.slug: d for d in demos}
+        featured_s = time.perf_counter() - t0
         fleet: Fleet | None = None
         if config.fleet_size > 0:
             fleet = Fleet(config)
@@ -359,6 +365,15 @@ def create_app(
                 postgres_db=pg.db if pg is not None else None,
             )
         app.state.fleet = fleet
+        app.state.startup = {
+            "featured_s": round(featured_s, 3),
+            "fleet_s": round(fleet.startup_seconds, 3) if fleet else None,
+        }
+        logger.info(
+            "dblayer demo: %d featured databases (%d available) in %.2f s; fleet of %d in %.2f s",
+            len(demos), sum(d.available for d in demos), featured_s,
+            len(fleet.members) if fleet else 0, fleet.startup_seconds if fleet else 0.0,
+        )
         try:
             yield
         finally:
