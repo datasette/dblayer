@@ -806,27 +806,6 @@ class SharedWorkers:
 # -- the backend ------------------------------------------------------------------------
 
 
-def _capabilities() -> Capabilities:
-    from .sqlite import _capabilities as sqlite_caps
-
-    inner = sqlite_caps(False)
-    return replace(
-        inner,
-        hard_kill=hasattr(signal, "SIGKILL"),
-        memory_limit=sys.platform.startswith("linux"),
-    )
-
-
-_CAPS: Capabilities | None = None
-
-
-def worker_capabilities() -> Capabilities:
-    global _CAPS
-    if _CAPS is None:
-        _CAPS = _capabilities()
-    return _CAPS
-
-
 _configs: dict[WorkerConfig, WorkerConfig] = {}
 
 
@@ -834,53 +813,68 @@ def _intern(cfg: WorkerConfig) -> WorkerConfig:
     return _configs.setdefault(cfg, cfg)
 
 
-class SqliteWorker:
-    """SQLite in worker processes.
+_caps_cache: dict[Capabilities, Capabilities] = {}
 
-    ``SqliteWorker(path)`` gives dedicated placement with the JSON codec and
-    no memory limit. Options:
 
-    * ``placement``: ``"dedicated"`` or ``"shared"`` (then pass
-      ``workers=SharedWorkers(...)``, whose settings for codec, memory limit
-      and grace apply instead of this backend's).
+def _worker_capabilities(engine_caps: Capabilities) -> Capabilities:
+    """The engine's flags, plus what the process boundary adds:
+    ``hard_kill`` wherever SIGKILL exists, ``memory_limit`` where
+    ``RLIMIT_AS`` is enforced (Linux) or the engine has its own."""
+    caps = _caps_cache.get(engine_caps)
+    if caps is None:
+        caps = _caps_cache[engine_caps] = replace(
+            engine_caps,
+            hard_kill=hasattr(signal, "SIGKILL"),
+            memory_limit=sys.platform.startswith("linux") or engine_caps.memory_limit,
+        )
+    return caps
+
+
+class WorkerBackend:
+    """Any in-process backend, run in worker processes.
+
+    ``engine`` is an importable ``"module:callable"`` that returns a
+    ``Backend`` when called as ``factory(path, **engine_config)``; it is
+    called in each worker (for real) and once here, to learn the engine's
+    ``dialect``, ``capabilities`` and ``change_hint()`` (so it must open
+    nothing when called). ``engine_config`` must be plain data (it is sent
+    in the ``open`` message). ``SqliteWorker`` is the SQLite-specific
+    constructor; a DuckDB worker would be ``WorkerBackend(path,
+    engine="dblayer.backends.duckdb:DuckDB", engine_config={...})``.
+
+    Process options:
+
+    * ``placement``: ``"dedicated"`` (a process per pooled connection) or
+      ``"shared"`` (pass ``workers=SharedWorkers(...)``, whose codec, memory
+      limit and grace settings then apply instead of these).
     * ``codec``: ``"json"`` or ``"msgpack"`` (optional extra).
-    * ``memory_limit_mb``: ``PRAGMA hard_heap_limit`` everywhere, plus
-      ``RLIMIT_AS`` on Linux.
-    * ``init``: importable ``"module:function"`` names, each called in the
-      worker with every new raw ``sqlite3.Connection`` (register SQL
-      functions, load extensions). Runs inside the worker, under its limits.
-    * ``sql_limits``: ``{"length": 1_000_000, "expr_depth": 100, ...}``,
-      applied with ``Connection.setlimit()``.
-    * ``kill_grace_ms``: how long past a time limit (or a cancel) the parent
-      waits before SIGKILL; ``max_frame_bytes``: the frame size cap.
-
-    Capability flags: as the in-process file backend, plus ``hard_kill``
-    (wherever SIGKILL exists) and ``memory_limit`` (Linux only, where
-    ``RLIMIT_AS`` is enforced).
+    * ``memory_limit_mb``: ``RLIMIT_AS`` in the worker on Linux (engines may
+      add their own limit: SQLite's ``hard_heap_limit``).
+    * ``kill_grace_ms``: how long past a time limit, a cancel or a
+      transaction deadline the parent waits before SIGKILL.
+    * ``max_frame_bytes``: the frame size cap, both directions.
     """
 
-    __slots__ = ("_path", "placement", "workers", "config", "init", "sql_limits",
-                 "immutable", "create", "busy_timeout", "capabilities", "processes_started",
-                 "executor", "__weakref__")
-    dialect: Dialect = SqliteInProcess.dialect
+    __slots__ = ("_path", "engine", "engine_config", "placement", "workers", "config",
+                 "_local", "capabilities", "dialect", "processes_started",
+                 "__weakref__")
 
     def __init__(
         self,
         path: str | os.PathLike[str],
         *,
+        engine: str,
+        engine_config: Mapping[str, Any] | None = None,
         placement: Literal["dedicated", "shared"] = "dedicated",
         workers: SharedWorkers | None = None,
         codec: str = "json",
         memory_limit_mb: int | None = None,
-        init: Sequence[str] = (),
-        sql_limits: Mapping[str, int] | None = None,
-        immutable: bool = False,
-        create: bool = True,
-        busy_timeout: float = 5.0,
         kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
         max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
         debug: bool = False,
     ) -> None:
+        from ..worker.engines import load_engine
+
         if placement not in ("dedicated", "shared"):
             raise ValueError(f"placement must be 'dedicated' or 'shared', not {placement!r}")
         if placement == "shared" and workers is None:
@@ -891,10 +885,9 @@ class SqliteWorker:
             raise ValueError(f"unknown codec {codec!r}")
         if codec == "msgpack" and "msgpack" not in available_codecs():
             raise NotSupported("codec 'msgpack' needs the msgpack package (the 'msgpack' extra)")
-        for name in init:
-            if ":" not in name:
-                raise ValueError(f"init hook {name!r} must be 'module:function'")
         self._path = os.path.abspath(os.fspath(path))
+        self.engine = engine
+        self.engine_config: dict[str, Any] = dict(engine_config or {})
         self.placement = placement
         self.workers = workers
         self.config = _intern(
@@ -906,29 +899,33 @@ class SqliteWorker:
                 debug=debug,
             )
         )
-        self.init = tuple(init)
-        self.sql_limits = dict(sql_limits) if sql_limits else None
-        self.immutable = immutable
-        self.create = create and not immutable
-        self.busy_timeout = busy_timeout
-        self.capabilities = worker_capabilities()
+        self._local: Any = load_engine(engine)(self._path, **self.engine_config)
+        """The engine's backend, in this process: never opened; only its
+        dialect, capabilities and change_hint() are used."""
+        self.capabilities = _worker_capabilities(self._local.capabilities)
+        self.dialect: Dialect = self._local.dialect
         self.processes_started = 0
-        self.executor: Any = None
-        """Accepted for ``UsesExecutor`` compatibility and unused: the
-        parent side runs no blocking code."""
+        # No ``executor``: the parent side runs no blocking code, so this
+        # is deliberately not a ``UsesExecutor`` backend.
 
     @property
     def path(self) -> Path:
         return Path(self._path)
 
     def __repr__(self) -> str:
-        return f"SqliteWorker({self._path!r}, placement={self.placement!r})"
+        return f"{type(self).__name__}({self._path!r}, placement={self.placement!r})"
+
+    def _open_message(self, write: bool) -> dict[str, Any]:
+        msg: dict[str, Any] = {"type": "open", "path": self._path, "mode": "write" if write else "read"}
+        if self.engine != _SQLITE_ENGINE:
+            msg["engine"] = self.engine
+        if self.engine_config:
+            msg["config"] = self.engine_config
+        return msg
 
     # -- Backend protocol ----------------------------------------------------------
 
     async def open(self, *, write: bool) -> "WorkerConnection":
-        if write and self.immutable:
-            raise NotSupported("database is immutable; writes are not allowed")
         if self.workers is not None:
             proc = await self.workers.acquire()
             shared = True
@@ -946,17 +943,85 @@ class SqliteWorker:
         return conn
 
     def change_hint(self) -> object:
-        return (_stat(self._path), _stat(self._path + "-wal"))
+        return self._local.change_hint()
 
     async def close(self) -> None:
         pass  # every process belongs to a connection (or a SharedWorkers group)
+
+
+_SQLITE_ENGINE = "dblayer.worker.engines:sqlite"
+
+
+class SqliteWorker(WorkerBackend):
+    """SQLite in worker processes: ``WorkerBackend`` running the in-process
+    SQLite backend (engine ``dblayer.worker.engines:sqlite``).
+
+    ``SqliteWorker(path)`` gives dedicated placement, the JSON codec and no
+    memory limit. SQLite-specific options, applied inside the worker:
+
+    * ``memory_limit_mb``: also ``PRAGMA hard_heap_limit`` (every platform).
+    * ``init``: importable ``"module:function"`` names, each called with
+      every new raw ``sqlite3.Connection`` (register SQL functions, load
+      extensions). They run inside the worker, under its limits.
+    * ``sql_limits``: ``{"length": 1_000_000, "expr_depth": 100, ...}``,
+      applied with ``Connection.setlimit()``.
+    * ``immutable``, ``create``, ``busy_timeout``: as ``SqliteInProcess``.
+
+    Capability flags: as the in-process file backend, plus ``hard_kill``
+    and ``memory_limit`` (Linux only, where ``RLIMIT_AS`` is enforced).
+    """
+
+    __slots__ = ()
+
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        init: Sequence[str] = (),
+        sql_limits: Mapping[str, int] | None = None,
+        immutable: bool = False,
+        create: bool = True,
+        busy_timeout: float = 5.0,
+        memory_limit_mb: int | None = None,
+        **options: Any,
+    ) -> None:
+        for name in init:
+            if ":" not in name:
+                raise ValueError(f"init hook {name!r} must be 'module:function'")
+        config: dict[str, Any] = {}
+        if init:
+            config["init"] = list(init)
+        if sql_limits:
+            config["sql_limits"] = dict(sql_limits)
+        if immutable:
+            config["immutable"] = True
+        if not create:
+            config["create"] = False
+        if busy_timeout != 5.0:
+            config["busy_timeout"] = busy_timeout
+        workers = options.get("workers")
+        heap_mb = memory_limit_mb if workers is None else workers.config.memory_limit_mb
+        if heap_mb:
+            config["memory_limit_mb"] = heap_mb
+        super().__init__(
+            path, engine=_SQLITE_ENGINE, engine_config=config, memory_limit_mb=memory_limit_mb, **options
+        )
+
+    @property
+    def immutable(self) -> bool:
+        return bool(self.engine_config.get("immutable"))
+
+    async def open(self, *, write: bool) -> "WorkerConnection":
+        if write and self.immutable:
+            raise NotSupported("database is immutable; writes are not allowed")
+        return await super().open(write=write)
 
 
 class WorkerConnection:
     """One pooled connection: a dedicated worker process, or a connection
     inside a shared one. Used by one task at a time (the pool's rule)."""
 
-    def __init__(self, backend: SqliteWorker, proc: WorkerProcess, *, write: bool, shared: bool) -> None:
+    def __init__(self, backend: WorkerBackend, proc: WorkerProcess, *, write: bool, shared: bool) -> None:
         self._backend = backend
         self._proc = proc
         self.write = write
@@ -980,24 +1045,7 @@ class WorkerConnection:
         return self._proc
 
     async def _open(self) -> None:
-        b = self._backend
-        limits: dict[str, Any] = {}
-        if b.sql_limits:
-            limits["sql"] = b.sql_limits
-        msg: dict[str, Any] = {"type": "open", "path": b._path, "mode": "write" if self.write else "read"}
-        if limits:
-            msg["limits"] = limits
-        if b.init:
-            msg["init"] = list(b.init)
-        opts = {}
-        if b.immutable:
-            opts["immutable"] = True
-        if not b.create:
-            opts["create"] = False
-        if b.busy_timeout != 5.0:
-            opts["busy_timeout"] = b.busy_timeout
-        if opts:
-            msg["options"] = opts
+        msg = self._backend._open_message(self.write)
         reply = await self._proc.call(msg, owner=self)
         self._conn_id = reply["conn"]
         self._proc.notice_handlers[self._conn_id if self._shared else None] = self._on_notice

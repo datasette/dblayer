@@ -117,3 +117,25 @@ def test_schema_round_trip(codec):
     v = TableInfo(name="v", kind="view", columns=(ColumnInfo("id", ""),), definition="CREATE VIEW v")
     s = Schema(version=12, tables={"t": t}, views={"v": v}, triggers={"tr": Trigger("tr", "t", "CREATE TRIGGER")})
     assert schema_from_wire(codec.decode(codec.encode(schema_to_wire(s)))) == s
+
+
+def test_value_type_extension_point(codec):
+    """Engines returning non-portable values (DuckDB/PostgreSQL dates,
+    decimals) register them; both codecs then carry them intact."""
+    import datetime
+    import decimal
+
+    from dblayer.worker.protocol import ValueType, register_value_type, unregister_value_type
+
+    register_value_type(ValueType("decimal", 16, decimal.Decimal, str, decimal.Decimal))
+    register_value_type(ValueType("date", 17, datetime.date, datetime.date.isoformat, datetime.date.fromisoformat))
+    try:
+        msg = {
+            "type": "op",
+            "rows": [[decimal.Decimal("1.10"), datetime.date(2026, 11, 23)]],
+            "args": {"rows": [{"$x": 1}]},
+        }
+        assert codec.decode(codec.encode(msg)) == msg
+    finally:
+        unregister_value_type("decimal")
+        unregister_value_type("date")

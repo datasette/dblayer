@@ -131,7 +131,8 @@ class CountingBackend:
 
     @executor.setter
     def executor(self, value: object) -> None:
-        self.inner.executor = value  # type: ignore[attr-defined]
+        if hasattr(self.inner, "executor"):  # the worker backend runs no blocking code
+            self.inner.executor = value  # type: ignore[attr-defined]
 
     async def open(self, *, write: bool) -> object:
         self.opens += 1

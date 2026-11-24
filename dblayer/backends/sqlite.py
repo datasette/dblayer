@@ -353,6 +353,12 @@ class SqliteConnection:
         self._active = False
         self._stmt = 0
 
+    @property
+    def in_transaction(self) -> bool:
+        """Whether a transaction is open. Optional attribute, read by the
+        worker process so the parent can skip no-op rollbacks."""
+        return not self._closed and self._raw.in_transaction
+
     async def _run[T](self, fn: Callable[..., T], *args: Any) -> T:
         self._cancelled = False
         return await run_blocking(self._backend.executor, fn, *args, on_cancel=self._on_cancel)

@@ -23,6 +23,10 @@ later frame in both directions.
   may pass as a parameter so that SQLite raises its own error) travel as
   ext type 1 holding their decimal text.
 
+Other value types (dates, decimals, UUIDs) are not sent by the SQLite
+engine; ``register_value_type`` is the extension point for engines that
+return them (see ``ValueType``).
+
 Messages are dicts. Every request carries an ``id``; every reply repeats it.
 See ``docs/worker-protocol.md`` for the message table, which
 ``tests/worker/test_protocol_doc.py`` checks against ``MESSAGE_TYPES`` here.
@@ -34,6 +38,7 @@ import base64
 import json
 import struct
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..core.results import Column, Results
@@ -52,6 +57,10 @@ __all__ = [
     "get_codec",
     "frame",
     "FrameTooLarge",
+    "ValueType",
+    "VALUE_TYPES",
+    "register_value_type",
+    "unregister_value_type",
     "FrameDecoder",
     "results_to_wire",
     "results_from_wire",
@@ -102,6 +111,55 @@ class Codec(Protocol):
     def decode(self, data: bytes | bytearray | memoryview) -> dict[str, Any]: ...
 
 
+# -- extra value types ------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ValueType:
+    """A value type beyond the portable set (``None``, ``int``, ``float``,
+    ``str``, ``bytes``, ``bool``) that should cross the wire intact: dates,
+    decimals, UUIDs for a DuckDB or PostgreSQL worker.
+
+    The extension point for both codecs: ``register_value_type`` makes JSON
+    send ``{"$x": [tag, to_wire(value)]}`` and MessagePack an ext type
+    ``ext_code`` holding ``to_wire(value)`` packed. ``to_wire`` must return
+    portable data (a string is simplest); ``from_wire`` rebuilds the value.
+    Both ends must register the same types: worker-side registration
+    belongs in the engine module the worker imports. None are registered by
+    default."""
+
+    tag: str
+    ext_code: int
+    """MessagePack ext type code, 16 to 127 (1 is taken by big integers)."""
+    cls: type
+    to_wire: Callable[[Any], Any]
+    from_wire: Callable[[Any], Any]
+
+
+VALUE_TYPES: dict[str, ValueType] = {}
+_BY_EXT: dict[int, ValueType] = {}
+
+
+def register_value_type(vt: ValueType) -> None:
+    if not 16 <= vt.ext_code <= 127:
+        raise ValueError("ext_code must be between 16 and 127")
+    VALUE_TYPES[vt.tag] = vt
+    _BY_EXT[vt.ext_code] = vt
+
+
+def unregister_value_type(tag: str) -> None:
+    vt = VALUE_TYPES.pop(tag, None)
+    if vt is not None:
+        _BY_EXT.pop(vt.ext_code, None)
+
+
+def _value_type(o: Any) -> ValueType | None:
+    for vt in VALUE_TYPES.values():
+        if isinstance(o, vt.cls):
+            return vt
+    return None
+
+
 # -- JSON ------------------------------------------------------------------------
 
 
@@ -110,6 +168,9 @@ def _json_default(o: Any) -> Any:
         return {"$b": base64.b64encode(o).decode("ascii")}
     if isinstance(o, (tuple, set, frozenset)):
         return list(o)
+    vt = _value_type(o)
+    if vt is not None:
+        return {"$x": [vt.tag, vt.to_wire(o)]}
     raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
 
@@ -120,6 +181,9 @@ def _json_hook(d: dict[str, Any]) -> Any:
         if "$d" in d:
             k, v = d["$d"]
             return {k: v}
+        if "$x" in d:
+            tag, payload = d["$x"]
+            return VALUE_TYPES[tag].from_wire(payload)
     return d
 
 
@@ -128,7 +192,7 @@ def _escape(o: Any) -> Any:
     and params can contain user dicts, so only they are walked."""
     if isinstance(o, dict):
         out = {k: _escape(v) for k, v in o.items()}
-        if len(out) == 1 and next(iter(out)) in ("$b", "$d"):
+        if len(out) == 1 and next(iter(out)) in ("$b", "$d", "$x"):
             ((k, v),) = out.items()
             return {"$d": [k, v]}
         return out
@@ -181,6 +245,11 @@ class MsgpackCodec:
         if isinstance(o, int) and not isinstance(o, bool):
             # Called by the packer for integers outside 64 bits.
             return MsgpackCodec._ext(o)
+        vt = _value_type(o)
+        if vt is not None:
+            import msgpack
+
+            return msgpack.ExtType(vt.ext_code, msgpack.packb(vt.to_wire(o), use_bin_type=True))
         raise TypeError(f"cannot serialize {type(o).__name__}")
 
     @staticmethod
@@ -192,6 +261,9 @@ class MsgpackCodec:
     def _ext_hook(self, code: int, data: bytes) -> Any:
         if code == _BIGINT_EXT:
             return int(data.decode("ascii"))
+        vt = _BY_EXT.get(code)
+        if vt is not None:
+            return vt.from_wire(self._msgpack.unpackb(data, raw=False))
         return self._msgpack.ExtType(code, data)
 
     def encode(self, msg: Mapping[str, Any]) -> bytes:
