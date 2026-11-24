@@ -57,10 +57,23 @@ BUILD_COMMAND = "make -C cworker"
 DEFAULT_BINARY = Path(__file__).resolve().parent.parent.parent / "cworker" / "build" / "dblayer-cworker"
 
 
+_found: dict[tuple[str | None, str | None], str] = {}
+
+
 def find_binary(binary: str | os.PathLike[str] | None = None) -> str:
     """The C worker executable: ``binary`` if given, else ``$DBLAYER_CWORKER``,
     else the default build location. Raises ``NotSupported`` if it is not
-    an executable file."""
+    an executable file. Successful lookups are cached (registering 10,000
+    databases should not stat the binary 10,000 times)."""
+    key = (None if binary is None else os.fspath(binary), os.environ.get(ENV_VAR))
+    hit = _found.get(key)
+    if hit is not None:
+        return hit
+    _found[key] = found = _find_binary(binary)
+    return found
+
+
+def _find_binary(binary: str | os.PathLike[str] | None) -> str:
     if binary is not None:
         candidate, source = Path(binary), "binary="
     elif os.environ.get(ENV_VAR):

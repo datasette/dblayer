@@ -83,6 +83,18 @@ def _worker_backend(path: Path) -> Backend:
     return SqliteWorker(path)  # type: ignore[return-value]
 
 
+def _cworker_backend(path: Path) -> Backend:
+    from dblayer.backends.sqlite_cworker import SqliteCWorker
+
+    return SqliteCWorker(path)  # type: ignore[return-value]
+
+
+def _cworker_available() -> str | None:
+    from dblayer.backends.sqlite_cworker import binary_unavailable
+
+    return binary_unavailable()
+
+
 def _duckdb_available() -> str | None:
     try:
         import duckdb  # noqa: F401
@@ -107,6 +119,12 @@ SCALE_BACKENDS: list[ScaleBackend] = [
     # asserted.
     ScaleBackend(
         "sqlite-worker", sqlite_files, _worker_backend, 1_000, requests=2_000, growth_limit=None,
+    ),
+    # The C worker starts in a few ms instead of ~80, so the same 1,000
+    # databases take a longer load. Growth reported, as for the Python one.
+    ScaleBackend(
+        "sqlite-cworker", sqlite_files, _cworker_backend, 1_000, requests=10_000, growth_limit=None,
+        available=_cworker_available,
     ),
 ]
 
