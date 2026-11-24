@@ -79,7 +79,15 @@ def _duckdb_file(tmp_path: Path) -> Backend:
 
     global _counter
     _counter += 1
-    return DuckDB(tmp_path / f"db{_counter}.duckdb")
+    import os
+
+    # DBLAYER_DUCKDB_WRITE_QUEUE=0 runs the suite with concurrent writers
+    # (experimental). Two tests then fail by design: autocommit updates of
+    # one hot row conflict on DuckDB where PostgreSQL waits for the lock.
+    return DuckDB(
+        tmp_path / f"db{_counter}.duckdb",
+        write_queue=os.environ.get("DBLAYER_DUCKDB_WRITE_QUEUE", "1") != "0",
+    )
 
 
 def _postgres(tmp_path: Path) -> Backend:
