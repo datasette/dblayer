@@ -30,6 +30,7 @@ import { createRequire, enableCompileCache } from 'node:module';
 import { decode, encode } from './codec.mjs';
 import { writeAll, ParentGone, consoleToStderr, newWriteLock, setWriteLock } from './io.mjs';
 import { newLockTable, releaseThread } from './locks.mjs';
+import * as guard from './guard.mjs';
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_MAX_FRAME = 256 * 1024 * 1024;
@@ -196,6 +197,10 @@ class Executor {
   }
 
   onMessage(m) {
+    if (m.park) {
+      guard.park(m.park.path, m.park.fd);
+      return;
+    }
     if (m.ready) {
       this.ready = true;
       if (m.sqliteVersion !== SQLITE_VERSION) console.error(`dblayer-nodeworker: SQLite ${m.sqliteVersion}, package says ${SQLITE_VERSION}`);
@@ -314,6 +319,7 @@ class Executor {
     this.dead = true;
     this.worker.terminate().then(() => {
       releaseThread(lockTable, this.worker.threadId);
+      guard.drop(this);
       maybeFinish();
     });
   }
@@ -369,6 +375,14 @@ function dispatch(payload) {
     job.connId = connId;
     pending = pending.then(async () => {
       const ex = await takeExecutor();
+      const refused = await guard.acquire(msg.path, msg.config);
+      if (refused) {
+        if (spare === null) spare = ex;
+        else ex.retire();
+        replyError(id, refused);
+        return;
+      }
+      guard.hold(msg.path, ex); // no await since acquire: the guard is still held
       ex.conn = connId;
       executors.set(connId, ex);
       ex.enqueue(job);

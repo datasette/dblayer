@@ -163,8 +163,9 @@ npm ci --prefix nodeworker
 ```
 
 One Node process serves every connection of a database, a thread each,
-because Node cannot take the file locks native SQLite uses: nothing else may
-open the file while it does. Its tests (`sqlite-nodeworker`,
+because Node cannot take the file locks native SQLite uses. While it has the
+file open it holds a native `node:sqlite` lock on it, so any other SQLite
+process gets `database is locked` instead of a writer it cannot see. Its tests (`sqlite-nodeworker`,
 `tests/worker/test_nodeworker.py`, `tests/worker/test_nodeworker_locking.py`,
 the `node-worker` fault tests) skip until the packages are installed;
 `DBLAYER_NODE` and `DBLAYER_NODEWORKER` point at another `node` or script.

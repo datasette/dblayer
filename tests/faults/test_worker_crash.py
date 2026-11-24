@@ -234,17 +234,22 @@ async def test_worker_rolls_back_at_deadline_even_if_parent_is_unresponsive(tmp_
     """The worker's own deadline: with the parent's event loop blocked, the
     transaction is still rolled back on time (another process can write)."""
     path = tmp_path / "u.db"
-    db = Database(make_worker(path))
+    backend = make_worker(path)
+    # The Node worker locks every other process out while it has the file
+    # open (its cross-process guard), so only its own rollback is checked.
+    native_check = type(backend).__name__ != "SqliteNodeWorker"
+    db = Database(backend)
     try:
         await db.execute_write("create table t (x)")
         async with db.transaction(deadline_ms=200) as tx:
             await tx.execute("insert into t values (1)")
             time.sleep(0.6)  # blocks the parent's loop: no timers, no reads
             # The worker has already rolled back and released the lock.
-            other = sqlite3.connect(path, timeout=0)
-            other.execute("begin immediate")
-            other.execute("rollback")
-            other.close()
+            if native_check:
+                other = sqlite3.connect(path, timeout=0)
+                other.execute("begin immediate")
+                other.execute("rollback")
+                other.close()
             with pytest.raises(TransactionExpired):
                 await tx.execute("insert into t values (2)")
     except TransactionExpired:

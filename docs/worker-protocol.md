@@ -201,16 +201,31 @@ the conformance suite (`sqlite-nodeworker`) and the fault tests.
   `config.extensions` are refused as by the C worker (the build omits
   `load_extension`).
 - **One process per database, one thread per connection.** Node cannot take
-  the POSIX advisory locks native SQLite uses, so the VFS keeps SQLite's lock
-  states in shared memory inside the process: correct between its
+  the POSIX advisory locks native SQLite uses, so the VFS keeps SQLite's
+  lock states in shared memory inside the process: correct between its
   connections, invisible to every other process. Every connection of a
   database is in one Node process (`DatabaseWorker` placement), each on an
   executor thread with its own WebAssembly instance, and the parent may have
   one request in flight *per connection* (as the multi-tenant C worker): a
   writer waiting on a reader's lock must not stop the reader's next
-  request. Nothing else may open the file meanwhile; a Node worker writing
-  beside a live native writer takes its journal for a hot journal, rolls it
-  back and corrupts the database (`test_nodeworker_locking.py`).
+  request.
+- **Cross-process guard** (`nodeworker/src/guard.mjs`). On the first `open`
+  of a file the main thread opens it with Node's built-in native SQLite
+  (`node:sqlite`, `journal_mode=MEMORY`) and holds `BEGIN EXCLUSIVE` until
+  the last connection on it closes: an EXCLUSIVE fcntl lock owned by the
+  process, which the worker's own WebAssembly connections never conflict
+  with. Any other SQLite (the `sqlite3` shell, Python, another worker)
+  gets `database is locked`; an `open` that meets another process's lock
+  retries for `busy_timeout`, then fails with `QueryError` `SQLITE_BUSY`.
+  POSIX drops a process's locks on a file when *any* descriptor of it is
+  closed, so the VFS hands closed main-database descriptors to the main
+  thread, which closes them after releasing the guard. No guard for
+  `immutable`, a WAL-mode file, or `DBLAYER_NODEWORKER_GUARD=0` (which
+  reproduces the hazard: a Node worker writing beside a live native writer
+  takes its journal for a hot journal, rolls it back and corrupts the
+  database; `test_nodeworker_locking.py`). A read-only file gets a SHARED
+  guard (other writers cannot commit). The guard's native SQLite reads the
+  file header and rolls back a hot journal; it never reads table data.
 - No shared memory in the VFS, so no WAL: `journal_mode=wal` leaves the
   database in `delete` mode, and a database already in WAL mode fails to
   open (`unable to open database file`).

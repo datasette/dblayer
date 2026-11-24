@@ -25,17 +25,20 @@ worker's VFS keeps SQLite's lock states in memory: correct between the
 connections inside one worker, invisible to every other process. This
 backend therefore puts every connection of a database (the writer and the
 readers) in **one** Node process (``DatabaseWorker`` placement, shared by
-every ``SqliteNodeWorker`` on the same path in this Python process), and
-starts a new one only after the previous one has exited. Requests to one
-database run one at a time.
+every ``SqliteNodeWorker`` on the same path in this Python process; a
+thread per connection, one request in flight per connection), and starts
+a new one only after the previous one has exited.
 
-**Restriction:** while it is open here, nothing else may write the file
-(no in-process SQLite backend, ``sqlite3`` shell, other worker, other
-Python process), and nothing else should read it during writes: they
-would not see this worker's locks, nor it theirs (see
-``tests/worker/test_nodeworker_locking.py``). After the worker exits, any
-SQLite can open the file, and a hot journal it left is rolled back as
-usual. WAL mode is unavailable (no shared memory in the VFS).
+Other processes are locked out, not merely asked to stay away: while a
+connection is open the worker holds a native ``node:sqlite`` connection in
+``BEGIN EXCLUSIVE`` on the file (``nodeworker/src/guard.mjs``), so any
+other SQLite (in-process backend, ``sqlite3`` shell, another worker, another
+Python process) gets ``database is locked``, and the worker's own ``open``
+waits ``busy_timeout`` for another process's lock, then raises
+``QueryError`` (``SQLITE_BUSY``). After the worker exits, any SQLite can
+open the file, and a hot journal it left is rolled back as usual. WAL mode
+is unavailable (no shared memory in the VFS). See
+``tests/worker/test_nodeworker_locking.py``.
 
 What the Node worker cannot do, and how that shows: named operations
 (``op``) and Python ``init`` hooks, as the C worker (``hello`` says

@@ -43,6 +43,11 @@ def make_worker(request: pytest.FixtureRequest):
         if request.node.name.startswith("test_rlimit_as"):
             pytest.skip("the Node worker does not use RLIMIT_AS (V8 reserves more address space than any useful "
                         "limit; its WebAssembly memory maximum caps SQLite instead)")
+        if request.node.name.startswith("test_idle_readers_recover_a_hot_journal"):
+            # a native writer in another process beside the worker: its
+            # cross-process guard locks that writer out, so the test runs
+            # the worker's own recovery path with the guard off
+            request.getfixturevalue("monkeypatch").setenv("DBLAYER_NODEWORKER_GUARD", "0")
 
         def make_node(path: Any, **kwargs: Any) -> SqliteWorker:
             if kwargs.get("init"):

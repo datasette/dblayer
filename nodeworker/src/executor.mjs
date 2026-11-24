@@ -64,7 +64,11 @@ const sqlite3 = await sqlite3InitModule({
 const { capi, wasm } = sqlite3;
 const X = wasm.exports;
 const C = capi;
-const vfs = installNodeVfs(sqlite3, { lockTable, threadId });
+const vfs = installNodeVfs(sqlite3, {
+  lockTable,
+  threadId,
+  park: (path, fd) => parentPort.postMessage({ park: { path, fd } }),
+});
 const T_READY = now();
 
 const SQLITE_TRANSIENT = -1;

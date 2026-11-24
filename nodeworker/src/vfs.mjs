@@ -9,7 +9,8 @@
 // connections of one worker process (one executor thread each) exclude
 // each other correctly, and nothing outside the process sees them. Hence
 // the backend's rule that one Node process owns a database file while it
-// is open (see dblayer/backends/sqlite_nodeworker.py).
+// is open (see dblayer/backends/sqlite_nodeworker.py), enforced by the
+// main thread's cross-process guard (guard.mjs): hence `park` below.
 //
 // No shared memory for WAL (xShm*), so WAL mode is unavailable:
 // `journal_mode=wal` leaves the database in rollback-journal mode, and a
@@ -21,7 +22,7 @@ import nodePath from 'node:path';
 import { randomFillSync } from 'node:crypto';
 import { openHandle, closeHandle, lock as lockH, unlock as unlockH, reserved, dump } from './locks.mjs';
 
-export function installNodeVfs(sqlite3, { name = 'nodefs', lockTable, threadId }) {
+export function installNodeVfs(sqlite3, { name = 'nodefs', lockTable, threadId, park = null }) {
   const { capi, wasm } = sqlite3;
   const C = capi;
   const mem = () => wasm.heap8u();
@@ -51,6 +52,13 @@ export function installNodeVfs(sqlite3, { name = 'nodefs', lockTable, threadId }
       if (!f) return 0;
       files.delete(pFile);
       if (f.lock) closeHandle(f.lock);
+      if (f.lock && park) {
+        // a main database: closing any descriptor of it would drop the
+        // process's fcntl locks, the cross-process guard among them
+        // (guard.mjs), so the main thread closes it once that is released
+        park(f.path, f.fd);
+        return 0;
+      }
       try {
         fs.closeSync(f.fd);
         if (f.deleteOnClose) fs.rmSync(f.path, { force: true });
