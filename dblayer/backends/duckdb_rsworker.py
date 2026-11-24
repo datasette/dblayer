@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -246,43 +245,7 @@ class RustDatabaseWorker(DatabaseWorker):
     """``DatabaseWorker`` placement whose processes are
     ``ConcurrentWorkerProcess`` running the Rust binary."""
 
-    async def acquire(self) -> WorkerProcess:
-        # DatabaseWorker.acquire, starting ConcurrentWorkerProcess.
-        loop = asyncio.get_running_loop()
-        if self._loop is not loop:
-            self.close()
-            self._loop = loop
-            self._starting_proc = None
-        while True:
-            proc = self.process
-            if proc is not None:
-                break
-            pending = self._starting_proc
-            if pending is not None:
-                await asyncio.wait([pending])
-                continue
-            fut: asyncio.Future[WorkerProcess] = loop.create_future()
-            self._starting_proc = fut
-            try:
-                await self.wait_exited()
-                t0 = time.perf_counter()
-                proc = ConcurrentWorkerProcess(self.config)
-                await proc.start()
-                self.last_start_ms = (time.perf_counter() - t0) * 1000
-            except BaseException:
-                fut.cancel()
-                raise
-            finally:
-                self._starting_proc = None
-            self.started += 1
-            self.procs = [proc]
-            fut.set_result(proc)
-            break
-        proc.handles += 1
-        if proc.idle_timer is not None:
-            proc.idle_timer.cancel()
-            proc.idle_timer = None
-        return proc
+    process_class = ConcurrentWorkerProcess
 
 
 class RustWorkerConnection(WorkerConnection):
