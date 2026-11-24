@@ -127,6 +127,38 @@ jobs:
           uv run --all-extras pytest -ra -k "(cpool or c-pool or cworker_multi) and not rlimit"
           tests/worker/test_cworker_multi.py tests/worker/test_cpool.py tests/faults
 
+  duckdb-rs-worker:
+    # The experimental Rust DuckDB worker (duckdb-rs-worker/): the pinned
+    # prebuilt libduckdb (cached), a cargo build (cached), its Rust unit
+    # tests, then every duckdb-rsworker test. Other jobs do not build it,
+    # so those tests skip there.
+    name: Rust DuckDB worker (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - uses: actions/cache@v4
+        with:
+          path: duckdb-rs-worker/vendor/libduckdb
+          key: libduckdb-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('duckdb-rs-worker/fetch-libduckdb.sh') }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            duckdb-rs-worker/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('duckdb-rs-worker/Cargo.lock', 'duckdb-rs-worker/src/**') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Build the Rust DuckDB worker
+        run: make -C duckdb-rs-worker && duckdb-rs-worker/target/release/dblayer-duckdb-rsworker --version
+      - name: Rust unit tests
+        run: make -C duckdb-rs-worker test
+      - name: Run the Rust worker's tests
+        run: uv run --all-extras pytest -ra -k "rsworker or rust" tests/worker tests/faults tests/conformance
+
   stdlib-only:
     name: Core with no optional dependencies
     runs-on: ubuntu-latest
